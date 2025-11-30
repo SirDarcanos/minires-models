@@ -14,6 +14,8 @@ The model weights are hosted on Hugging Face and downloaded/cached automatically
 Hugging Face model repo:  
 https://huggingface.co/nicolamustone/minires
 
+The repositoriy above includes a helper for creating a suitable CSV of data from STL files.
+
 ## How it works (high level)
 
 The original dataset was built via this pipeline:
@@ -74,7 +76,6 @@ from minires import minires
 model = minires()
 
 row = {
-    "artist": 1,
     "kb": 123.4,
     "volume": 56.7,
     "surface_area": 1234.5,
