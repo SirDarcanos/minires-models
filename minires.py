@@ -51,7 +51,7 @@ def _ensure_cached(filename: str, url: str, cache_dir: Path) -> Path:
 
 class minires:
     """
-    MiniRes: ensemble predictor for resin usage (grams).
+    minires: ensemble predictor for resin usage (grams).
 
     Internally it loads:
       - a Keras NN (.keras)
@@ -69,6 +69,7 @@ class minires:
         nn_url: str | None = None,
         xgb_url: str | None = None,
         meta_url: str | None = None,
+        verbose: int = 0,
     ):
         cache_dir = Path(cache_dir) if cache_dir is not None else DEFAULT_CACHE_DIR
 
@@ -88,6 +89,12 @@ class minires:
 
         self.w_nn: float = float(meta["w_nn"])
         self.features: list[str] = list(meta["features"])
+        self.verbose: int = verbose  # default verbosity for NN predict
+
+        # Print which ensemble weights are used
+        if self.verbose:
+            w_xgb = 1.0 - self.w_nn
+            print(f"[minires] ensemble weights: NN={self.w_nn:.3f}, XGB={w_xgb:.3f}")
 
     # ---------------------- internal helpers ---------------------- #
 
@@ -104,7 +111,7 @@ class minires:
 
     # -------------------------- public API ------------------------ #
 
-    def predict(self, X) -> np.ndarray:
+    def predict(self, X, verbose: int | None = None) -> np.ndarray:
         """
         Predict resin usage (grams) for the given samples.
 
@@ -113,6 +120,9 @@ class minires:
         X : pandas.DataFrame or array-like
             Must contain the feature columns listed in self.features
             (or be in that exact order if array-like).
+        verbose : int or None
+            Verbosity argument passed to Keras model.predict().
+            If None, uses the default set at __init__.
 
         Returns
         -------
@@ -121,7 +131,9 @@ class minires:
         """
         Xp = self._prepare_X(X)
 
-        nn_pred = self.nn.predict(Xp, verbose=0).flatten()
+        v = self.verbose if verbose is None else verbose
+
+        nn_pred = self.nn.predict(Xp, verbose=v).flatten()
         xgb_pred = self.xgb.predict(Xp)
 
         return self.w_nn * nn_pred + (1.0 - self.w_nn) * xgb_pred

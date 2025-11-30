@@ -1,5 +1,5 @@
 {
-  "w_nn": 0.2,
+  "w_nn": 0.35000000000000003,
   "features": [
     "artist",
     "volume",
