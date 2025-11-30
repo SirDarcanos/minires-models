@@ -75,13 +75,13 @@ model = minires()
 
 row = {
     "artist": 1,
-    "volume": 123.4,
-    "mass": 56.7,
-    "volume_mass_interaction": 123.4 * 56.7,
-    "surface_volume_ratio": 0.8,
-    "surface_mass_ratio": 1.2,
-    "base_mm": 2.0,
+    "kb": 123.4,
+    "volume": 56.7,
+    "surface_area": 1234.5,
+    "bbox_area": 789.1
     "euler_number": -1,
+    "scale": 76.76
+    "surface_volume_ratio": 0.8,
 }
 
 df_single = pd.DataFrame([row])
