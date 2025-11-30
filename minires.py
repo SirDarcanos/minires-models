@@ -81,7 +81,7 @@ class minires:
         self.xgb_path = _ensure_cached(XGB_FILENAME, xgb_url,  cache_dir)
         self.meta_path = _ensure_cached(META_FILENAME, meta_url, cache_dir)
 
-        self.nn = load_model(self.nn_path)
+        self.nn = load_model(self.nn_path, compile=False)
         self.xgb = joblib.load(self.xgb_path)
 
         with open(self.meta_path, "r") as f:
@@ -110,6 +110,10 @@ class minires:
         return df[self.features]
 
     # -------------------------- public API ------------------------ #
+
+    def required_features(self):
+        return list(self.features)
+
 
     def predict(self, X, verbose: int | None = None) -> np.ndarray:
         """
