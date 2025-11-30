@@ -1,11 +1,11 @@
 # minires.py
 
 import json
-import joblib
 import numpy as np
 import pandas as pd
 from pathlib import Path
 from tensorflow.keras.models import load_model
+from xgboost import XGBRegressor 
 from huggingface_hub import hf_hub_download
 
 
@@ -16,8 +16,8 @@ from huggingface_hub import hf_hub_download
 REPO_ID = "nicolamustone/minires"
 
 NN_FILENAME   = "minires.keras"
-XGB_FILENAME  = "minires.joblib"
-META_FILENAME = "minires.json"
+XGB_FILENAME  = "minires_xgb.json"
+META_FILENAME = "minires_meta.json"
 
 
 # ---------------------------------------------------------------------
@@ -61,9 +61,10 @@ class minires:
             **download_kwargs,
         )
 
-        # For inference we don't need optimizer state
         self.nn = load_model(self.nn_path, compile=False)
-        self.xgb = joblib.load(self.xgb_path)
+        self.xgb = XGBRegressor()
+        
+        self.xgb.load_model(self.xgb_path)
 
         with open(self.meta_path, "r") as f:
             meta = json.load(f)

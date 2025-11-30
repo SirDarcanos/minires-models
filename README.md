@@ -29,7 +29,7 @@ The original dataset was built via this pipeline:
 Install the required dependencies:
 
 ```bash
-pip install tensorflow xgboost pandas numpy joblib huggingface_hub
+pip install tensorflow xgboost pandas numpy huggingface_hub
 ```
 
 Then add `minires.py` to your project (or install this repo as a package if you set it up that way).
