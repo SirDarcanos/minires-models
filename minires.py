@@ -13,7 +13,7 @@ from tensorflow.keras.models import load_model
 # Config
 # ---------------------------------------------------------------------
 
-DEFAULT_CACHE_DIR = Path.home() / ".keras" / "minires"
+DEFAULT_CACHE_DIR = Path.home() / ".cache" / "minires"
 
 NN_FILENAME   = "minires.keras"
 XGB_FILENAME  = "minires.joblib"
