@@ -1,3 +1,20 @@
+---
+library_name: keras
+license: mit
+pipeline_tag: tabular-regression
+tags:
+  - 3d-printing
+  - resin
+  - regression
+  - tabular
+  - ensemble
+  - xgboost
+  - keras
+  - uvtools
+model-index:
+  - name: MiniRes
+    results: []
+---
 # MiniRes: Resin Usage Predictor for 3D Printed Miniatures
 
 MiniRes is a small Python library + pretrained ensemble model that predicts **resin usage in grams** for pre-supported 3D printed miniatures.
