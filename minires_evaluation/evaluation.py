@@ -140,6 +140,8 @@ class EvaluationResult:
         summary["model_contract"] = deepcopy(self.model_contract)
         if public:
             summary["model_contract"].get("run", {}).pop("split_fingerprint", None)
+            for private_key in ("repository", "revision", "artifacts"):
+                summary["model_contract"].pop(private_key, None)
         summary["model_diagnostics"] = {
             name: asdict(metrics) for name, metrics in self.model_diagnostics.items()
         }
@@ -204,7 +206,13 @@ def evaluate_records(
         run_configuration["learned_baseline"] = asdict(learned_model.config)
     if split_manifest is not None:
         from .splits import freeze_splits
-        manifest = freeze_splits(canonical_rows, input_fingerprint, run_configuration, split_manifest)
+        # Allocation depends only on data eligibility and split controls. Model
+        # configuration is recorded with the run, but must not create a
+        # different holdout for each baseline.
+        split_configuration = asdict(config)
+        manifest = freeze_splits(
+            canonical_rows, input_fingerprint, split_configuration, split_manifest
+        )
     scoring_rows = [row for row in canonical_rows if row.outcome == 'included']
     if manifest is not None and manifest['status'] == 'blocked':
         scoring_rows = []
@@ -306,7 +314,13 @@ def evaluate_records(
         }),
         grouped_evaluation=(_learned_grouped_report(manifest, learned_run, config.tolerance_g)
                             if manifest is not None and learned_run is not None else
-                            _grouped_report(manifest, scoring_rows, predictions, config.tolerance_g)
+                            _grouped_report(
+                                manifest,
+                                scoring_rows,
+                                predictions,
+                                config.tolerance_g,
+                                predictions_blocked=bool(blockers),
+                            )
                             if manifest is not None else None),
     )
     if output_dir is not None:
@@ -455,8 +469,29 @@ def _learned_grouped_report(manifest: dict[str, Any], run: LearnedRun,
     }
 
 
-def _grouped_report(manifest: dict[str, Any], rows: Sequence[CanonicalRow],
-                    predictions: Sequence[Prediction], tolerance: float) -> dict[str, Any]:
+def _grouped_report(
+    manifest: dict[str, Any],
+    rows: Sequence[CanonicalRow],
+    predictions: Sequence[Prediction],
+    tolerance: float,
+    *,
+    predictions_blocked: bool = False,
+) -> dict[str, Any]:
+    if predictions_blocked and not predictions:
+        return {
+            'manifest': manifest,
+            'source_reports': [],
+            'source_count': 0,
+            'sample_count': 0,
+            'eligible_source_count': manifest['eligible_source_count'],
+            'unscored_input_count': len(manifest['unscored_rows']) + len(manifest['included_rows']),
+            'pooled_weighting': 'each_held_out_sample_equal_once',
+            'pooled_sample_denominator': 0,
+            'source_balanced': _balanced_metrics([]),
+            'limitations': [*manifest['limitations'], 'predictions_unavailable'],
+        }
+    if len(predictions) != len(rows):
+        raise ValueError("prediction_count_mismatch")
     by_index = {row.row_index: (row, prediction) for row, prediction in zip(rows, predictions)}
     reports = []
     for fold in manifest['folds']:

@@ -3,6 +3,12 @@
 __pycache__/
 /temp
 
+# Local model downloads are private working data. Keep the two historical
+# public comparison tables tracked, but never stage other data/ contents.
+/data/*
+!/data/3d_print_miniatures_base.csv
+!/data/3d_print_miniatures_data.csv
+
 .DS_Store
 .venv/
 .mypy_cache/

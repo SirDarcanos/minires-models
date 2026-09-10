@@ -48,6 +48,41 @@ class CommandLineInterfaceTests(unittest.TestCase):
         self.assertNotIn("identifying-canary", json.dumps(summary))
         self.assertNotIn("/private", json.dumps(summary))
 
+    def test_cli_and_python_api_return_the_same_public_result(self):
+        from minires_evaluation import EvaluationConfig, PhysicalBaseline, evaluate_records
+
+        with tempfile.TemporaryDirectory() as directory:
+            records_path = Path(directory) / "records.json"
+            records_path.write_text(json.dumps([{"volume": 1000, "weight": 1.1}]))
+            completed = subprocess.run(
+                [
+                    sys.executable,
+                    "-m",
+                    "minires_evaluation",
+                    "--records",
+                    str(records_path),
+                    "--density-g-per-ml",
+                    "1.1",
+                    "--volume-unit",
+                    "mm3",
+                    "--scope-confirmed",
+                    "--public",
+                ],
+                text=True,
+                capture_output=True,
+                check=True,
+            )
+            api_result = evaluate_records(
+                records_path,
+                EvaluationConfig(1.1, "mm3", True),
+                PhysicalBaseline(),
+            ).to_dict(public=True)
+
+        self.assertEqual(
+            json.loads(completed.stdout),
+            json.loads(json.dumps(api_result)),
+        )
+
     def test_ingests_jsonl_and_csv_and_writes_private_run(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

@@ -7,7 +7,14 @@ from pathlib import Path
 import tempfile
 import unittest
 
-from minires_evaluation import EvaluationConfig, PhysicalBaseline, evaluate_records
+from minires_evaluation import (
+    EvaluationConfig,
+    LearnedBaseline,
+    LegacyProvenance,
+    LegacyReference,
+    PhysicalBaseline,
+    evaluate_records,
+)
 from minires_evaluation.ingestion import InputError
 
 
@@ -17,8 +24,18 @@ class GroupedEvaluationTests(unittest.TestCase):
         self.addCleanup(self.temp.cleanup)
         self.manifest = Path(self.temp.name) / 'private' / 'splits.json'
         self.config = EvaluationConfig(1.0, 'mm3', True, seed=17)
-        self.rows = [dict(volume=1000, weight=weight, anonymous_source_group=source,
-                          miniature_family=family)
+        self.rows = [dict(
+            kb=1,
+            volume=1000,
+            surface_area=100,
+            bbox_area=2000,
+            euler_number=2,
+            scale=1,
+            surface_volume_ratio=0.1,
+            weight=weight,
+            anonymous_source_group=source,
+            miniature_family=family,
+        )
                      for source, family, weight in [('a', 'a1', 2), ('a', 'a2', 4),
                                                     ('b', 'b1', 1), ('c', 'c1', 3)]]
 
@@ -47,6 +64,28 @@ class GroupedEvaluationTests(unittest.TestCase):
         self.assertEqual(self.manifest.read_bytes(), before)
         self.assertEqual(result.metrics.sample_count, 4)
         self.assertNotIn('anonymous_source_group', result.canonical_rows[0].features)
+
+    def test_blocked_inference_reports_all_included_rows_as_unscored(self):
+        failing_predictor = lambda rows: (_ for _ in ()).throw(RuntimeError())
+        blocked_legacy = LegacyReference.from_predictors(
+            neural_network=failing_predictor,
+            xgboost=failing_predictor,
+            neural_network_weight=0.2,
+            provenance=LegacyProvenance.unknown(),
+        )
+
+        result = evaluate_records(
+            self.rows,
+            self.config,
+            blocked_legacy,
+            split_manifest=self.manifest,
+        )
+
+        self.assertIn("legacy_inference_failed", result.blockers)
+        assert result.grouped_evaluation is not None
+        self.assertEqual(result.grouped_evaluation["source_count"], 0)
+        self.assertEqual(result.grouped_evaluation["unscored_input_count"], len(self.rows))
+        self.assertIn("predictions_unavailable", result.grouped_evaluation["limitations"])
 
     def test_reports_known_pooled_and_source_balanced_metrics_privately(self):
         result = self.evaluate()
@@ -80,6 +119,19 @@ class GroupedEvaluationTests(unittest.TestCase):
                 self.assertEqual(result.predictions, ())
                 self.assertEqual(result.metrics.sample_count, 0)
                 self.assertEqual(json.loads(self.manifest.read_text())['folds'], [])
+
+    def test_reuses_one_allocation_across_baseline_types(self):
+        physical = self.evaluate()
+        learned = evaluate_records(
+            self.rows,
+            self.config,
+            LearnedBaseline(),
+            split_manifest=self.manifest,
+        )
+
+        self.assertEqual(physical.split_status, 'frozen_source_holdout')
+        self.assertEqual(learned.split_status, 'frozen_source_holdout')
+        self.assertNotIn('split_manifest_mismatch', learned.blockers)
 
     def test_rejects_changed_input_configuration_or_tampered_manifest(self):
         self.evaluate()
