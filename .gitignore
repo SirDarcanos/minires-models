@@ -12,7 +12,7 @@ __pycache__/
 .DS_Store
 .venv/
 .mypy_cache/
-.pi/tasks/
+.pi/
 private/
 *.parquet
 /scanned_minis-*.jsonl
