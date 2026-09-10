@@ -12,6 +12,7 @@ from .ingestion import InputError
 from .private_io import create_private_file
 from .evaluation import EvaluationConfig, PhysicalBaseline, evaluate_records
 from .legacy import LegacyProvenance, LegacyReference, load_legacy_reference
+from .learned import LearnedBaseline
 
 
 class PrivateArgumentParser(argparse.ArgumentParser):
@@ -37,9 +38,14 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument('--split-manifest', type=Path,
                         help='Enable source holdouts; create or reuse a frozen JSON manifest beneath private/')
-    parser.add_argument(
+    model_group = parser.add_mutually_exclusive_group()
+    model_group.add_argument(
         "--legacy-artifacts", type=Path,
         help="Evaluate the pinned released NN, XGBoost, and ensemble from this local cache",
+    )
+    model_group.add_argument(
+        "--learned-baselines", action="store_true",
+        help="Refit fixed NN/XGBoost baselines inside the frozen folds (optional dependencies)",
     )
     parser.add_argument(
         "--download-legacy-artifacts", action="store_true",
@@ -65,8 +71,12 @@ def main(argv: Sequence[str] | None = None) -> int:
     if args.download_legacy_artifacts and args.legacy_artifacts is None:
         raise SystemExit("legacy_artifact_directory_required")
     try:
-        model: PhysicalBaseline | LegacyReference
-        if args.legacy_artifacts is None:
+        model: PhysicalBaseline | LegacyReference | LearnedBaseline
+        if args.learned_baselines:
+            if args.split_manifest is None:
+                raise InputError("learned_baseline_split_manifest_required")
+            model = LearnedBaseline()
+        elif args.legacy_artifacts is None:
             model = PhysicalBaseline()
         else:
             provenance = (LegacyProvenance.overlap() if args.legacy_provenance == "overlap"

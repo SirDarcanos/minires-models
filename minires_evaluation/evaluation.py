@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from copy import deepcopy
 from dataclasses import asdict, dataclass
 import math
 import platform
@@ -10,6 +11,7 @@ from typing import Any, Sequence, cast
 
 from .ingestion import CanonicalRow, Dataset, VOLUME_FACTORS, TRANSFORMATION_VERSION, fingerprint, load_records, normalize
 from .legacy import LegacyReference
+from .learned import LearnedBaseline, LearnedRun, fit_frozen_folds
 from .reconciliation import reconcile
 
 
@@ -135,16 +137,20 @@ class EvaluationResult:
             },
         }
         summary["provenance_classification"] = self.provenance_classification
-        summary["model_contract"] = self.model_contract
+        summary["model_contract"] = deepcopy(self.model_contract)
+        if public:
+            summary["model_contract"].get("run", {}).pop("split_fingerprint", None)
         summary["model_diagnostics"] = {
             name: asdict(metrics) for name, metrics in self.model_diagnostics.items()
         }
         if self.grouped_evaluation is not None:
             public_grouped_keys = ('source_count', 'sample_count', 'eligible_source_count',
                                    'unscored_input_count', 'pooled_weighting',
-                                   'pooled_sample_denominator', 'source_balanced', 'limitations')
+                                   'pooled_sample_denominator', 'source_balanced',
+                                   'component_source_balanced', 'limitations')
             summary['grouped_evaluation'] = (
-                {key: self.grouped_evaluation[key] for key in public_grouped_keys}
+                {key: self.grouped_evaluation[key] for key in public_grouped_keys
+                 if key in self.grouped_evaluation}
                 if public else self.grouped_evaluation)
         if public:
             return summary
@@ -160,7 +166,7 @@ class EvaluationResult:
 def evaluate_records(
     records: Dataset,
     config: EvaluationConfig,
-    baseline: PhysicalBaseline | LegacyReference,
+    baseline: PhysicalBaseline | LegacyReference | LearnedBaseline,
     *,
     reconcile_with: Sequence[Dataset] = (),
     output_dir: str | Path | None = None,
@@ -173,15 +179,17 @@ def evaluate_records(
     enables frozen source holdouts; otherwise this is an ungrouped diagnostic.
     """
     legacy_model = baseline if isinstance(baseline, LegacyReference) else None
+    learned_model = baseline if isinstance(baseline, LearnedBaseline) else None
     is_legacy = legacy_model is not None
-    if legacy_model is None:
+    is_learned = learned_model is not None
+    if legacy_model is None and learned_model is None:
         assert isinstance(baseline, PhysicalBaseline)
         _require_physical_baseline(baseline)
     if not isinstance(config.seed, int) or isinstance(config.seed, bool):
         from .ingestion import InputError
         raise InputError("invalid_seed")
     loaded, input_fingerprint = load_records(records)
-    canonical_rows = normalize(loaded, config, contract="legacy" if is_legacy else "canonical")
+    canonical_rows = normalize(loaded, config, contract="legacy" if is_legacy or is_learned else "canonical")
     normalized = [NormalizedRecord(row.features["volume_mm3"], row.sliced_resin_mass_g)
                   for row in canonical_rows
                   if row.outcome == "included" and row.features["volume_mm3"] is not None
@@ -191,15 +199,19 @@ def evaluate_records(
         for reason in row.reasons[:1]:
             reasons[reason] = reasons.get(reason, 0) + 1
     manifest = None
+    run_configuration = asdict(config)
+    if learned_model is not None:
+        run_configuration["learned_baseline"] = asdict(learned_model.config)
     if split_manifest is not None:
         from .splits import freeze_splits
-        manifest = freeze_splits(canonical_rows, input_fingerprint, asdict(config), split_manifest)
+        manifest = freeze_splits(canonical_rows, input_fingerprint, run_configuration, split_manifest)
     scoring_rows = [row for row in canonical_rows if row.outcome == 'included']
     if manifest is not None and manifest['status'] == 'blocked':
         scoring_rows = []
     model_diagnostics: dict[str, MetricSummary] = {}
     predictions: tuple[Prediction, ...]
     inference_blockers: tuple[str, ...]
+    learned_run: LearnedRun | None = None
     if is_legacy:
         assert legacy_model is not None
         provenance_blockers = legacy_model.provenance.validate_sources(canonical_rows)
@@ -212,6 +224,15 @@ def evaluate_records(
         blockers = sorted(
             set(legacy_model.blockers) | set(provenance_blockers) | set(inference_blockers)
         )
+    elif is_learned:
+        assert learned_model is not None
+        if manifest is None:
+            predictions, blockers = (), ["learned_baseline_split_manifest_required"]
+        else:
+            artifact_root = Path(output_dir) / "fitted-folds" if output_dir is not None else None
+            learned_run = fit_frozen_folds(learned_model, scoring_rows, manifest, artifact_root)
+            predictions, model_diagnostics = _learned_predictions(learned_run, scoring_rows, config.tolerance_g)
+            blockers = list(learned_run.blockers)
     else:
         predictions = tuple(Prediction(row.features["volume_mm3"] / 1000.0 * row.metadata["resin_density_g_per_ml"], row.sliced_resin_mass_g)
                             for row in scoring_rows
@@ -231,11 +252,12 @@ def evaluate_records(
         seed=config.seed,
         volume_unit=config.volume_unit if config.volume_unit in SUPPORTED_VOLUME_UNITS else None,
         resin_density_g_per_ml=config.resin_density_g_per_ml if _is_finite_positive(config.resin_density_g_per_ml) else None,
-        baseline=legacy_model.name if legacy_model is not None else "volume_density",
+        baseline=(legacy_model.name if legacy_model is not None else
+                  learned_model.name if learned_model is not None else "volume_density"),
         split_status=split_status,
         python_version=platform.python_version(),
         platform=platform.platform(),
-        configuration_fingerprint=fingerprint(asdict(config)),
+        configuration_fingerprint=fingerprint(run_configuration),
         transformation_version=TRANSFORMATION_VERSION,
         tolerance_g=config.tolerance_g if _is_finite_positive(config.tolerance_g) else None,
         scope_confirmed=config.scope_confirmed if isinstance(config.scope_confirmed, bool) else None,
@@ -269,18 +291,23 @@ def evaluate_records(
             and legacy_model.provenance.status == "source_held_out"
             and any(blocker.startswith("source_holdout_") for blocker in blockers)
             else legacy_model.provenance.classification if legacy_model is not None
+            else "clean_unseen_source_evaluation" if learned_model is not None and not blockers
             else "not_applicable"
         ),
         provenance_evidence=(legacy_model.provenance.private_evidence if legacy_model is not None else None),
-        model_contract=(legacy_model.contract if legacy_model is not None else {
+        model_contract=(legacy_model.contract if legacy_model is not None else
+                        learned_run.contract if learned_run is not None else
+                        learned_model.contract if learned_model is not None else {
             "classification": "physical_baseline",
             "name": "volume_density",
             "input": "volume_mm3",
             "density_unit": "g_per_ml",
             "output_unit": "g",
         }),
-        grouped_evaluation=_grouped_report(manifest, scoring_rows, predictions, config.tolerance_g)
-            if manifest is not None else None,
+        grouped_evaluation=(_learned_grouped_report(manifest, learned_run, config.tolerance_g)
+                            if manifest is not None and learned_run is not None else
+                            _grouped_report(manifest, scoring_rows, predictions, config.tolerance_g)
+                            if manifest is not None else None),
     )
     if output_dir is not None:
         from .artifacts import write_private
@@ -338,6 +365,96 @@ def _legacy_predictions(
         return (), {}, ("legacy_inference_failed",)
 
 
+def _learned_predictions(
+    run: LearnedRun, rows: Sequence[CanonicalRow], tolerance: float
+) -> tuple[tuple[Prediction, ...], dict[str, MetricSummary]]:
+    if run.blockers:
+        return (), {}
+    by_index = {row.row_index: row for row in rows}
+    component_values: dict[str, list[Prediction]] = {
+        "neural_network": [], "xgboost": [], "ensemble": []}
+    records: list[NormalizedRecord] = []
+    for fold in run.folds:
+        for position, row_index in enumerate(fold.test_rows):
+            row = by_index[row_index]
+            target = fold.actual[position]
+            records.append(NormalizedRecord(cast(float, row.features["volume_mm3"]), target))
+            for name in component_values:
+                value = cast(tuple[float, ...], getattr(fold, name))[position]
+                component_values[name].append(Prediction(value, target))
+    diagnostics = {name: _metrics(values, records, tolerance)
+                   for name, values in component_values.items()}
+    return tuple(component_values["ensemble"]), diagnostics
+
+
+def _balanced_metrics(summaries: Sequence[dict[str, Any]]) -> dict[str, Any]:
+    count = len(summaries)
+    result: dict[str, Any] = {
+        "weighting": "each_source_equal_then_each_sample_within_source_equal",
+        "source_denominator": count,
+        "sample_count": sum(summary["sample_count"] for summary in summaries),
+    }
+    for key in ("mae_g", "signed_error_g", "within_tolerance_fraction", "underestimation_fraction"):
+        result[key] = math.fsum(summary[key] / count for summary in summaries) if count else None
+    result["rmse_g"] = math.hypot(*(summary["rmse_g"] / math.sqrt(count)
+                                    for summary in summaries)) if count else None
+    under_fraction = result["underestimation_fraction"]
+    result["mean_underestimation_g"] = (
+        math.fsum((summary["mean_underestimation_g"] or 0) * summary["underestimation_fraction"] / count
+                  for summary in summaries) / under_fraction if under_fraction else None)
+    for key in ("absolute_error_bins", "volume_bins"):
+        result[key] = [{"label": item["label"],
+                        "fraction": math.fsum(summary[key][i]["count"] / summary["sample_count"] / count
+                                              for summary in summaries)}
+                       for i, item in enumerate(summaries[0][key])] if count else []
+    return result
+
+
+def _learned_grouped_report(manifest: dict[str, Any], run: LearnedRun,
+                            tolerance: float) -> dict[str, Any]:
+    reports: list[dict[str, Any]] = []
+    for fold in run.folds:
+        predictions = {
+            name: tuple(Prediction(value, actual) for value, actual in zip(getattr(fold, name), fold.actual))
+            for name in ("neural_network", "xgboost", "ensemble")
+        }
+        fold_records = tuple(NormalizedRecord(volume, actual)
+                             for volume, actual in zip(fold.volume_mm3, fold.actual))
+        reports.append({
+            "source": fold.source,
+            "metrics": asdict(_metrics(predictions["ensemble"], fold_records, tolerance)),
+            "component_metrics": {name: asdict(_metrics(values, fold_records, tolerance))
+                                  for name, values in predictions.items()},
+            "predictions": {name: [asdict(value) for value in values]
+                            for name, values in predictions.items()},
+            "selected_neural_network_weight": fold.neural_network_weight,
+            "train_count": len(fold.fit_audit["train_rows"]),
+            "validation_count": len(fold.fit_audit["validation_rows"]),
+            "test_count": len(fold.test_rows),
+            "fit_audit": fold.fit_audit,
+            "fit_metadata": fold.fit_metadata,
+        })
+    count = len(reports)
+    summaries = [report["metrics"] for report in reports]
+    sample_count = sum(report["test_count"] for report in reports)
+    balanced = _balanced_metrics(summaries)
+    return {
+        "manifest": manifest, "source_reports": reports,
+        "source_count": count, "sample_count": sample_count,
+        "eligible_source_count": manifest["eligible_source_count"],
+        "unscored_input_count": len(manifest["unscored_rows"]) + (len(manifest["included_rows"]) if not count else 0),
+        "pooled_weighting": "each_held_out_sample_equal_once",
+        "pooled_sample_denominator": sample_count,
+        "source_balanced": balanced,
+        "component_source_balanced": {
+            name: _balanced_metrics([report["component_metrics"][name] for report in reports])
+            for name in ("neural_network", "xgboost", "ensemble")
+        },
+        "limitations": [item for item in manifest["limitations"]
+                        if item != "no_fitting_or_model_selection"],
+    }
+
+
 def _grouped_report(manifest: dict[str, Any], rows: Sequence[CanonicalRow],
                     predictions: Sequence[Prediction], tolerance: float) -> dict[str, Any]:
     by_index = {row.row_index: (row, prediction) for row, prediction in zip(rows, predictions)}
@@ -352,21 +469,7 @@ def _grouped_report(manifest: dict[str, Any], rows: Sequence[CanonicalRow],
                         'test_count': len(fold['test'])})
     count = len(reports)
     summaries = [report['metrics'] for report in reports]
-    balanced: dict[str, Any] = {'weighting': 'each_source_equal_then_each_sample_within_source_equal',
-                                'source_denominator': count, 'sample_count': len(predictions)}
-    for key in ('mae_g', 'signed_error_g', 'within_tolerance_fraction', 'underestimation_fraction'):
-        balanced[key] = math.fsum(summary[key] / count for summary in summaries) if count else None
-    balanced['rmse_g'] = math.hypot(*(summary['rmse_g'] / math.sqrt(count)
-                                                    for summary in summaries)) if count else None
-    under_fraction = balanced['underestimation_fraction']
-    balanced['mean_underestimation_g'] = (
-        math.fsum((summary['mean_underestimation_g'] or 0) * summary['underestimation_fraction'] / count
-                  for summary in summaries) / under_fraction if under_fraction else None)
-    for key in ('absolute_error_bins', 'volume_bins'):
-        balanced[key] = [{'label': item['label'],
-                          'fraction': math.fsum(summary[key][i]['count'] / summary['sample_count'] / count
-                                                for summary in summaries)}
-                         for i, item in enumerate(summaries[0][key])] if count else []
+    balanced = _balanced_metrics(summaries)
     return {'manifest': manifest, 'source_reports': reports,
             'source_count': count, 'sample_count': len(predictions),
             'eligible_source_count': manifest['eligible_source_count'],

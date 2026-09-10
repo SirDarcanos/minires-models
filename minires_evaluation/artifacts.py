@@ -30,7 +30,11 @@ def write_private(result: EvaluationResult, output_dir: str | Path) -> None:
     if "private" not in output.resolve().parts:
         raise InputError("private_output_directory_required")
     try:
-        output.mkdir(parents=True, exist_ok=False, mode=0o700)
+        if output.exists():
+            if not output.is_dir() or any(item.name != "fitted-folds" for item in output.iterdir()):
+                raise InputError("private_output_directory_unavailable")
+        else:
+            output.mkdir(parents=True, exist_ok=False, mode=0o700)
     except OSError:
         raise InputError("private_output_directory_unavailable") from None
     datasets = [[asdict(row) for row in result.canonical_rows]] + [
@@ -80,11 +84,22 @@ def write_private(result: EvaluationResult, output_dir: str | Path) -> None:
             "transformation_version": TRANSFORMATION_VERSION,
             "run_metadata": asdict(result.run_metadata),
             "pyarrow_version": pa.__version__,
+            **({"learned_baseline": {
+                "version": result.model_contract["version"],
+                "configuration": result.model_contract["run_configuration"],
+                "dependency_versions": result.model_contract.get("run", {}).get("dependency_versions", {}),
+                "numerical_reproducibility": result.model_contract["numerical_reproducibility"],
+            }} if result.model_contract.get("classification") == "clean_fixed_configuration_baseline" else {}),
             "dataset_row_counts": [len(rows) for rows in datasets],
             "feature_units": FEATURE_UNITS,
-            "artifacts": {name: sha256((output / name).read_bytes()).hexdigest() for name in
-                          ("features.parquet", "evaluation_metadata.parquet", "report.json")},
-            "limitations": ["no_mesh_validation", "support_presence_unknown", "no_fitted_transforms",
+            "artifacts": {
+                str(path.relative_to(output)): sha256(path.read_bytes()).hexdigest()
+                for path in sorted(output.rglob("*"))
+                if path.is_file() and path.name != "manifest.json"
+            },
+            "limitations": ["no_mesh_validation", "support_presence_unknown",
+                            *([] if result.model_contract.get("classification") == "clean_fixed_configuration_baseline"
+                              else ["no_fitted_transforms"]),
                             *([] if result.split_status == 'frozen_source_holdout' else ['no_held_out_evidence']),
                             "binary64_precision_no_rounding",
                             "hashed_linkage_is_private_not_proof_of_geometry_identity"],

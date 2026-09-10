@@ -111,4 +111,9 @@ results are not clean holdout evidence by default. See the
 [pinned legacy reference guide](docs/legacy-reference.md) for the exact feature,
 preprocessing, artifact, dependency, and provenance contracts.
 
+The same frozen folds can refit those fixed configurations without holdout
+leakage. See the [clean learned-baseline guide](docs/learned-baselines.md) for
+partition rules, bounded resources, reproducibility metadata, and private
+artifacts.
+
 [MIT License](LICENSE)
