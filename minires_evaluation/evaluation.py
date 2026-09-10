@@ -106,6 +106,7 @@ class EvaluationResult:
     run_metadata: RunMetadata
     canonical_rows: tuple[CanonicalRow, ...]
     reconciliations: tuple[dict[str, Any], ...]
+    grouped_evaluation: dict[str, Any] | None = None
 
     def to_dict(self, *, public: bool = False) -> dict[str, Any]:
         """Serialize a result; public output exposes only an allowlisted summary."""
@@ -128,6 +129,13 @@ class EvaluationResult:
                 "scope_confirmed": self.run_metadata.scope_confirmed,
             },
         }
+        if self.grouped_evaluation is not None:
+            public_grouped_keys = ('source_count', 'sample_count', 'eligible_source_count',
+                                   'unscored_input_count', 'pooled_weighting',
+                                   'pooled_sample_denominator', 'source_balanced', 'limitations')
+            summary['grouped_evaluation'] = (
+                {key: self.grouped_evaluation[key] for key in public_grouped_keys}
+                if public else self.grouped_evaluation)
         if public:
             return summary
         summary["run_metadata"] = asdict(self.run_metadata)
@@ -145,12 +153,13 @@ def evaluate_records(
     *,
     reconcile_with: Sequence[Dataset] = (),
     output_dir: str | Path | None = None,
+    split_manifest: str | Path | None = None,
 ) -> EvaluationResult:
     """Evaluate local records at the public evaluation seam.
 
     The physical baseline only supports cubic-millimetre volume and an explicit
-    resin density in grams per millilitre. It intentionally creates no split:
-    grouped holdout evaluation is a later capability.
+    resin density in grams per millilitre. Supplying a private split manifest
+    enables frozen source holdouts; otherwise this is an ungrouped diagnostic.
     """
     _require_physical_baseline(baseline)
     if not isinstance(config.seed, int) or isinstance(config.seed, bool):
@@ -166,12 +175,22 @@ def evaluate_records(
     for row in canonical_rows:
         for reason in row.reasons[:1]:
             reasons[reason] = reasons.get(reason, 0) + 1
+    manifest = None
+    if split_manifest is not None:
+        from .splits import freeze_splits
+        manifest = freeze_splits(canonical_rows, input_fingerprint, asdict(config), split_manifest)
+    scoring_rows = [row for row in canonical_rows if row.outcome == 'included']
+    if manifest is not None and manifest['status'] == 'blocked':
+        scoring_rows = []
     predictions = tuple(Prediction(row.features["volume_mm3"] / 1000.0 * row.metadata["resin_density_g_per_ml"], row.sliced_resin_mass_g)
-                        for row in canonical_rows if row.outcome == "included"
-                        and row.features["volume_mm3"] is not None and row.sliced_resin_mass_g is not None)
+                        for row in scoring_rows
+                        if row.features["volume_mm3"] is not None and row.sliced_resin_mass_g is not None)
     blockers = sorted({reason for row in canonical_rows for reason in row.reasons
                        if reason in {"resin_density_required", "invalid_resin_density", "unsupported_volume_unit", "invalid_tolerance"}}) if not predictions else []
-    metrics = _metrics(predictions, normalized, config.tolerance_g)
+    if manifest is not None:
+        blockers = sorted(set(blockers) | set(manifest['blockers']))
+    metrics = _metrics(predictions, normalized if predictions else (), config.tolerance_g)
+    split_status = manifest['status'] if manifest is not None else 'not_applicable'
     accepted_count = len(normalized)
     needs_review_count = sum(row.outcome == "needs_review" for row in canonical_rows)
     excluded_count = sum(row.outcome == "excluded" for row in canonical_rows)
@@ -182,7 +201,7 @@ def evaluate_records(
         volume_unit=config.volume_unit if config.volume_unit in SUPPORTED_VOLUME_UNITS else None,
         resin_density_g_per_ml=config.resin_density_g_per_ml if _is_finite_positive(config.resin_density_g_per_ml) else None,
         baseline="volume_density",
-        split_status="not_applicable",
+        split_status=split_status,
         python_version=platform.python_version(),
         platform=platform.platform(),
         configuration_fingerprint=fingerprint(asdict(config)),
@@ -197,7 +216,7 @@ def evaluate_records(
         reconciliations.append(reconcile(canonical_rows, normalize(comparison, config), comparison_fingerprint))
     result = EvaluationResult(
         status=status,
-        split_status="not_applicable",
+        split_status=split_status,
         blockers=tuple(blockers),
         normalized_records=tuple(normalized),
         predictions=tuple(predictions),
@@ -212,11 +231,51 @@ def evaluate_records(
         run_metadata=metadata,
         canonical_rows=tuple(canonical_rows),
         reconciliations=tuple(reconciliations),
+        grouped_evaluation=_grouped_report(manifest, scoring_rows, predictions, config.tolerance_g)
+            if manifest is not None else None,
     )
     if output_dir is not None:
         from .artifacts import write_private
         write_private(result, output_dir)
     return result
+
+
+def _grouped_report(manifest: dict[str, Any], rows: Sequence[CanonicalRow],
+                    predictions: Sequence[Prediction], tolerance: float) -> dict[str, Any]:
+    by_index = {row.row_index: (row, prediction) for row, prediction in zip(rows, predictions)}
+    reports = []
+    for fold in manifest['folds']:
+        pairs = [by_index[index] for index in fold['test']]
+        metrics = _metrics([pair[1] for pair in pairs],
+                           [NormalizedRecord(pair[0].features['volume_mm3'], pair[1].actual_sliced_resin_mass_g)
+                            for pair in pairs if pair[0].features['volume_mm3'] is not None], tolerance)
+        reports.append({'source': fold['source'], 'metrics': asdict(metrics),
+                        'train_count': len(fold['train']), 'validation_count': len(fold['validation']),
+                        'test_count': len(fold['test'])})
+    count = len(reports)
+    summaries = [report['metrics'] for report in reports]
+    balanced: dict[str, Any] = {'weighting': 'each_source_equal_then_each_sample_within_source_equal',
+                                'source_denominator': count, 'sample_count': len(predictions)}
+    for key in ('mae_g', 'signed_error_g', 'within_tolerance_fraction', 'underestimation_fraction'):
+        balanced[key] = math.fsum(summary[key] / count for summary in summaries) if count else None
+    balanced['rmse_g'] = math.hypot(*(summary['rmse_g'] / math.sqrt(count)
+                                                    for summary in summaries)) if count else None
+    under_fraction = balanced['underestimation_fraction']
+    balanced['mean_underestimation_g'] = (
+        math.fsum((summary['mean_underestimation_g'] or 0) * summary['underestimation_fraction'] / count
+                  for summary in summaries) / under_fraction if under_fraction else None)
+    for key in ('absolute_error_bins', 'volume_bins'):
+        balanced[key] = [{'label': item['label'],
+                          'fraction': math.fsum(summary[key][i]['count'] / summary['sample_count'] / count
+                                                for summary in summaries)}
+                         for i, item in enumerate(summaries[0][key])] if count else []
+    return {'manifest': manifest, 'source_reports': reports,
+            'source_count': count, 'sample_count': len(predictions),
+            'eligible_source_count': manifest['eligible_source_count'],
+            'unscored_input_count': len(manifest['unscored_rows']) + (len(manifest['included_rows']) if not count else 0),
+            'pooled_weighting': 'each_held_out_sample_equal_once',
+            'pooled_sample_denominator': len(predictions),
+            'source_balanced': balanced, 'limitations': manifest['limitations']}
 
 
 def _require_physical_baseline(baseline: PhysicalBaseline) -> None:

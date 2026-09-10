@@ -34,6 +34,8 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Confirm the inputs are within the intended pre-supported-miniature scope",
     )
+    parser.add_argument('--split-manifest', type=Path,
+                        help='Enable source holdouts; create or reuse a frozen JSON manifest beneath private/')
     parser.add_argument("--seed", type=int, default=0, help="Recorded reproducibility seed")
     parser.add_argument(
         "--public", action="store_true", help="Write only the public allowlisted summary"
@@ -59,6 +61,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             baseline=PhysicalBaseline(),
             reconcile_with=args.reconcile,
             output_dir=private_dir,
+            split_manifest=args.split_manifest,
         )
         serialized = json.dumps(result.to_dict(public=args.public), indent=2, sort_keys=True, allow_nan=False) + "\n"
         if args.output:

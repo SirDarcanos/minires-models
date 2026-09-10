@@ -42,9 +42,13 @@ primary dataset's metrics and `canonical_rows`, including rejected rows.
 Each reconciliation contains all comparison rows and their outcomes, but does
 not pool them into primary metrics. `normalized_records` and `predictions`
 contain only included primary rows, in input order; the audit supplies original
-zero-based row indices.
+zero-based row indices. When grouped evaluation is blocked, normalized records
+remain available but predictions are empty.
 
-## Input contract: `minires-normalization-v1`
+## Input contract: `minires-normalization-v2`
+
+Version 2 adds explicit anonymous source aliases and duplicate/geometry evidence
+to private metadata; prediction measurements and units are unchanged.
 
 Supported inputs are a sequence of mappings, a JSON array, JSONL, or CSV.
 JSONL supports the retained export's numeric wrappers: `$numberDouble`,
@@ -150,7 +154,8 @@ Git ignores `private/`, Parquet, the retained export, and its sidecar metadata.
 
 Identity, filenames, free text, and artist mappings are not persisted. Hashed
 linkage tokens are still sensitive and remain private; they are not suitable
-for publication. Source groups are hashed from available source identity.
+for publication. Source groups are hashed from explicit `anonymous_source_group`
+or available source identity; supplied aliases and identity linkage stay private.
 Miniature families stay unresolved unless explicitly supplied: record names are
 not automatically treated as family labels. No public summary contains per-row
 features, targets, linkage, paths, or fingerprints.
@@ -159,8 +164,9 @@ Input fingerprints cover the original file bytes (or all in-memory rows,
 including rejected rows). Configuration and source-code fingerprints support
 reproduction alongside fixed package versions. Same bytes/configuration/code
 produce deterministic row accounting and reports on the same platform. There
-is no split manifest: split status is `not_applicable`, and no result is evidence
-of unseen-source performance. No training, candidate tuning, weights, uncertainty
+is an optional frozen split manifest for [source-holdout evaluation](physical-baseline.md#frozen-source-holdouts).
+Without it, split status is `not_applicable` and the result is not evidence of
+unseen-source performance. No training, candidate tuning, weights, uncertainty
 claims, or uploads are introduced.
 
 ## Verify synthetic behavior

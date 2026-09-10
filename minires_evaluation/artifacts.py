@@ -59,7 +59,7 @@ def write_private(result: EvaluationResult, output_dir: str | Path) -> None:
         pa.field("warnings", pa.list_(pa.string())),
         *[pa.field(key, pa.string()) for key in (
             "anonymous_source_group", "miniature_family", "record_identity", "location_evidence",
-            "source_name_evidence", "volume_unit", "scope_confirmation_origin", "density_origin",
+            "source_name_evidence", "source_identity_evidence", "duplicate_group", "geometry_fingerprint", "volume_unit", "scope_confirmation_origin", "density_origin",
             "slicing_conditions_fingerprint")],
         *[pa.field("legacy_" + key + "_unit_unknown", pa.float64()) for key in ("kb", "mass", "scale")],
         pa.field("base_mm", pa.float64()), pa.field("resin_density_g_per_ml", pa.float64()),
@@ -85,7 +85,8 @@ def write_private(result: EvaluationResult, output_dir: str | Path) -> None:
             "artifacts": {name: sha256((output / name).read_bytes()).hexdigest() for name in
                           ("features.parquet", "evaluation_metadata.parquet", "report.json")},
             "limitations": ["no_mesh_validation", "support_presence_unknown", "no_fitted_transforms",
-                            "no_held_out_evidence", "binary64_precision_no_rounding",
+                            *([] if result.split_status == 'frozen_source_holdout' else ['no_held_out_evidence']),
+                            "binary64_precision_no_rounding",
                             "hashed_linkage_is_private_not_proof_of_geometry_identity"],
         }
         write_private_json(output / "manifest.json", manifest)

@@ -53,10 +53,71 @@ allowlisted run configuration only. It omits fingerprints, linkage tokens,
 per-record data, and reconciliation. Review even this summary before publication;
 the workflow performs no uploads.
 
+## Frozen source holdouts
+
+Add `--split-manifest private/splits.json` to the command above, or pass
+`split_manifest="private/splits.json"` to `evaluate_records`. This creates a
+private, create-only manifest **before scoring**. Reuse the same path for repeated
+runs; changed input bytes, configuration, allocation version, or assignments
+raise `split_manifest_mismatch`. Choose a new path for a different experiment.
+Keep the split path outside a new `--private-dir` run directory, since the latter
+must not already exist.
+
+Supply `anonymous_source_group` and `miniature_family` in the private input.
+Source identity can also supply the source group through the legacy adapter.
+When both identity and aliases are present, their mapping must be one-to-one.
+These fields become private hashed metadata, never prediction features.
+Family labels are dataset-global: use the same label for related parts/variants;
+record names and equal geometry measurements do not establish a family.
+
+Optional `duplicate_group` and `geometry_fingerprint` fields assert externally
+verified duplicate/mesh evidence. Only supply these when supported by an audit,
+not by a hash of the tabular features. Shared family, duplicate, geometry, record
+ID, or location evidence joins rows transitively into indivisible components.
+ID/location matches are conservative co-isolation evidence, not proof of equal
+geometry. Repeated rows remain counted; the workflow does not discard or average
+duplicate observations. Unscorable rows also participate as evidence bridges.
+Unavailable duplicate evidence and unreported variants remain limitations.
+
+Every source with at least one included row is eligible, with no minimum sample
+threshold or tail filter. Each eligible source is held out exactly once. A fold
+requires at least two components outside its held-out source: one reserved for
+inner validation, and at least one for training. At least two sources are needed.
+The inner component is selected by a seeded hash ordering, independent of target
+values and errors. This partition is common to future baselines **within that
+outer fold**, not shared across outer folds. A globally shared validation set
+would conflict with rotating source holdouts.
+
+Unknown source/family membership, contradictory source evidence, or any
+infeasible fold blocks the entire rotation with explicit reasons and zero
+predictions. No source is silently dropped and no isolation rule is relaxed.
+The private manifest records included and unscorable row indices, components,
+folds, input fingerprint, transformation/allocation versions, and configuration.
+Assertions check row, component/family/duplicate, and holdout-source isolation.
+
+The stateless physical formula scores each held-out observation once; it uses
+neither the training nor validation labels. No fitting or selection occurs.
+Top-level `metrics` pool these observations with equal sample weight.
+`grouped_evaluation.source_balanced` gives each source weight `1 / source_count`
+and each observation within that source weight `1 / source_sample_count`.
+Balanced RMSE is the square root of the equally weighted source mean squared
+errors, not the mean of source RMSEs. Balanced mean underestimation conditions
+these same weights on negative errors. Zero underestimations give a null
+conditional mean. Counts and denominators accompany both summaries; balanced
+error and volume bins are weighted fractions, while pooled bins are counts.
+
+Detailed per-source metrics and train/validation/test sizes appear only in the
+private report. Public output includes aggregate counts, size/error diagnostics,
+and limitations, but omits manifests, fingerprints, paths, and grouping data.
+A blocked split leaves normalization accounting intact: accepted rows can exist
+with zero scored rows. Source balance describes the observed sources, not a
+claim of population representativeness or an uncertainty interval.
+
 ## Output semantics
 
-- `split_status` is `not_applicable`: this ticket does not yet establish
-  unseen-source performance.
+- Without `--split-manifest`, `split_status` is `not_applicable`; the report is
+  an ungrouped diagnostic. With a manifest it is `frozen_source_holdout`, or
+  `blocked` when grouping or partition sizes prevent isolation.
 - `signed_error_g` means predicted sliced resin mass minus reference sliced
   resin mass. A negative value is underestimation.
 - `within_tolerance_fraction` includes errors exactly equal to the configured

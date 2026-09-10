@@ -11,7 +11,7 @@ import math
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
-TRANSFORMATION_VERSION = "minires-normalization-v1"
+TRANSFORMATION_VERSION = "minires-normalization-v2"
 VOLUME_FACTORS = {"mm3": 1.0, "cm3": 1000.0, "ml": 1000.0}
 # Only these measurements may enter a prediction feature table.
 FEATURE_ALIASES = {
@@ -178,7 +178,10 @@ def normalize(records: Sequence[Any], config: Any) -> list[CanonicalRow]:
                 if value is not None and math.isfinite(value) and value > 0:
                     safe_conditions[key] = value
         metadata = {
-            "anonymous_source_group": _token(raw.get("artist")),
+            "anonymous_source_group": _token(raw.get("anonymous_source_group", raw.get("artist"))),
+            "source_identity_evidence": _token(raw.get("artist")),
+            "duplicate_group": _token(raw.get("duplicate_group")),
+            "geometry_fingerprint": _token(raw.get("geometry_fingerprint")),
             "miniature_family": _token(raw.get("miniature_family")),
             "record_identity": _token(raw.get("_id")),
             "location_evidence": _token(raw.get("file")),
