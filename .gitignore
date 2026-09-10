@@ -4,3 +4,10 @@ __pycache__/
 /temp
 
 .DS_Store
+.venv/
+.mypy_cache/
+.pi/tasks/
+private/
+*.parquet
+/scanned_minis-*.jsonl
+/scanned_minis-*.metadata.json

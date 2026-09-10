@@ -80,9 +80,11 @@ class EvaluationInterfaceTests(unittest.TestCase):
         self.assertEqual(result.metrics.sample_count, 0)
         self.assertEqual(result.data_quality.accepted_count, 0)
         self.assertEqual(result.data_quality.reasons, {
-            "invalid_volume": 2,
+            "invalid_volume": 1,
+            "non_finite_volume_mm3": 1,
             "missing_target_sliced_resin_mass": 1,
-            "invalid_target_sliced_resin_mass": 2,
+            "invalid_target_sliced_resin_mass": 1,
+            "non_finite_target_sliced_resin_mass": 1,
             "scope_confirmation_required": 1,
         })
 

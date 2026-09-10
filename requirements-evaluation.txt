@@ -1,0 +1,2 @@
+# Required only for private Parquet generation; the in-memory baseline uses stdlib.
+pyarrow==23.0.1

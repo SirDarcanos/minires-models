@@ -4,7 +4,8 @@ The physical baseline estimates **sliced resin mass** from mesh volume and an
 explicit resin density. It is a local, reproducible reference for MiniRes
 experiments, not a pricing calculation or a measurement of shop consumption.
 
-It supports volume in cubic millimetres (`mm3`) only. The calculation is:
+It accepts volume in cubic millimetres (`mm3`), cubic centimetres (`cm3`), or
+millilitres (`ml`), and normalizes it to `mm3`. The calculation is:
 
 `volume_mm3 / 1000 × resin_density_g_per_ml`
 
@@ -18,7 +19,9 @@ or `needs_review` result rather than a default estimate.
 Create a local JSON array. `volume` is in `mm3`; `sliced_resin_mass_g` is
 the reference sliced resin mass in grams. `weight` remains a compatibility
 alias for existing data, but new inputs should use the unit-bearing canonical
-name. Extra fields are ignored by the evaluation module.
+name. Canonical unit-bearing fields take precedence over legacy aliases.
+See the [normalization reference](normalization.md) for local file adapters,
+private Parquet, reconciliation, and the full feature contract.
 
 ```json
 [
@@ -38,10 +41,17 @@ python3 -m minires_evaluation \
   --output baseline-summary.json
 ```
 
-Without `--public`, the result also contains normalized records, predictions,
-and a private input fingerprint. Keep that output local. The public form is
-allowlisted: it contains aggregate metrics, data-quality reason counts, and
-non-identifying run configuration only.
+Without `--public` or `--output`, the CLI creates a new run directory under
+`private/`, containing typed Parquet, predictions, a row audit, reconciliation,
+and fingerprints. Install `requirements-evaluation.txt` for Parquet support.
+Use `--private-dir private/my-run` to choose a new directory. Existing run
+directories and output files are never overwritten. A private JSON-only
+`--output` must also be beneath a `private/` directory.
+
+The public form contains aggregate metrics, data-quality reason counts, and
+allowlisted run configuration only. It omits fingerprints, linkage tokens,
+per-record data, and reconciliation. Review even this summary before publication;
+the workflow performs no uploads.
 
 ## Output semantics
 
