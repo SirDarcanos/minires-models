@@ -199,7 +199,7 @@ def _normalize(
         normalized.append(
             NormalizedRecord(
                 volume_mm3=float(record["volume"]),
-                sliced_resin_mass_g=float(record["weight"]),
+                sliced_resin_mass_g=float(_target_sliced_resin_mass(record)),
             )
         )
     return normalized, reasons
@@ -210,13 +210,23 @@ def _record_reason(
 ) -> str | None:
     if not _is_finite_positive(record.get("volume")):
         return "invalid_volume"
-    if not _is_finite_nonnegative(record.get("weight")):
-        return "missing_target_weight"
+    target = _target_sliced_resin_mass(record)
+    if target is None:
+        return "missing_target_sliced_resin_mass"
+    if not _is_finite_nonnegative(target):
+        return "invalid_target_sliced_resin_mass"
     if blocked:
         return "evaluation_configuration_blocked"
     if config.scope_confirmed is not True:
         return "scope_confirmation_required"
     return None
+
+
+def _target_sliced_resin_mass(record: Mapping[str, Any]) -> Any:
+    """Read the canonical target, retaining legacy CSV compatibility."""
+    if "sliced_resin_mass_g" in record:
+        return record["sliced_resin_mass_g"]
+    return record.get("weight")
 
 
 def _predict(

@@ -15,12 +15,14 @@ or `needs_review` result rather than a default estimate.
 
 ## Run locally
 
-Create a local JSON array. `volume` is in `mm3`; `weight` is the reference
-sliced resin mass in grams. Extra fields are ignored by the evaluation module.
+Create a local JSON array. `volume` is in `mm3`; `sliced_resin_mass_g` is
+the reference sliced resin mass in grams. `weight` remains a compatibility
+alias for existing data, but new inputs should use the unit-bearing canonical
+name. Extra fields are ignored by the evaluation module.
 
 ```json
 [
-  {"volume": 1000.0, "weight": 1.1}
+  {"volume": 1000.0, "sliced_resin_mass_g": 1.1}
 ]
 ```
 

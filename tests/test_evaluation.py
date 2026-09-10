@@ -64,7 +64,9 @@ class EvaluationInterfaceTests(unittest.TestCase):
                 {"volume": 0, "weight": 1},
                 {"volume": float("nan"), "weight": 1},
                 {"volume": 1000, "weight": None},
-                {"volume": 1000, "weight": 1.1},
+                {"volume": 1000, "weight": float("nan")},
+                {"volume": 1000, "weight": -1},
+                {"volume": 1000, "sliced_resin_mass_g": 1.1},
             ],
             config=EvaluationConfig(
                 resin_density_g_per_ml=1.1,
@@ -79,7 +81,8 @@ class EvaluationInterfaceTests(unittest.TestCase):
         self.assertEqual(result.data_quality.accepted_count, 0)
         self.assertEqual(result.data_quality.reasons, {
             "invalid_volume": 2,
-            "missing_target_weight": 1,
+            "missing_target_sliced_resin_mass": 1,
+            "invalid_target_sliced_resin_mass": 2,
             "scope_confirmation_required": 1,
         })
 
@@ -139,6 +142,17 @@ class EvaluationInterfaceTests(unittest.TestCase):
         self.assertEqual(first.run_metadata.seed, 17)
         self.assertEqual(first.run_metadata.volume_unit, "mm3")
         self.assertNotIn("canary", first.run_metadata.input_fingerprint)
+
+    def test_prefers_canonical_unit_bearing_target_key(self):
+        result = evaluate_records(
+            records=[
+                {"volume": 1000, "weight": 9.9, "sliced_resin_mass_g": 1.1},
+            ],
+            config=self.config,
+            baseline=PhysicalBaseline(),
+        )
+
+        self.assertAlmostEqual(result.predictions[0].actual_sliced_resin_mass_g, 1.1)
 
 
 if __name__ == "__main__":
