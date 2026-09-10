@@ -3,6 +3,46 @@
 Use Python 3.11 or later. The CLI and notebook callers use `evaluate_records`;
 no database connection or notebook execution is needed.
 
+## Prepare the historical labeled records
+
+Use the retained export as the primary record set because it contains the private
+path evidence needed for grouping. Reconcile the existing labeled CSV without
+assuming that equal measurements or record names prove row identity:
+
+```bash
+.venv/bin/python -m minires_evaluation.prepare \
+  --records local-export.jsonl \
+  --reconcile data/3d_print_miniatures_base.csv \
+  --private-dir private/prepared-v1 \
+  --seed 0
+```
+
+The command writes no record data to stdout. It creates a new private directory
+and fails rather than overwriting one. The prepared JSONL removes source names,
+record names, and paths. Stable anonymous source groups come from private source
+evidence. A miniature family is assigned only when the record name appears
+exactly once as a directory in its private path; descendants of that directory
+remain in one family. Repeated exact paths provide duplicate evidence. Missing
+or ambiguous evidence becomes a `needs_review` outcome. Equal geometry values
+and names without path evidence never create a group.
+
+The prepared records attach the pinned slicing provenance: EBMiniManager revision
+`1a841195813136ee3b380ab1d192727f385f7a55`, profile
+`prediction/config-anycubic-mono.ini` with SHA-256
+`06acac3fe2a3d762fb56ec2d1bde58fe9e15104556091438c81c4e90131d2d0e`,
+density `1.1 g/ml`, layer height `0.05 mm`, disabled slicer-added supports,
+`WeightG` extraction through `UVtoolsCmd`, and the maintainer's pre-supported
+scope attestation. Targets and supplied features retain binary64 precision. If
+the legacy `surface_volume_ratio` is absent, preparation derives it directly as
+`surface_area / volume` without decimal rounding; it is not grouping evidence.
+
+Artifacts include `prepared-records.jsonl`, private grouping and source-mapping
+evidence, a reconciliation report, provenance, reusable frozen folds, a coverage
+report, and SHA-256 checksums. Coverage says whether the grouped records can
+support the frozen folds; it does not claim model quality or dataset equivalence.
+The input and every reconciliation input are hashed before and after preparation
+and must remain byte-for-byte unchanged.
+
 ## Run a private audit
 
 ```bash
@@ -45,10 +85,12 @@ contain only included primary rows, in input order; the audit supplies original
 zero-based row indices. When grouped evaluation is blocked, normalized records
 remain available but predictions are empty.
 
-## Input contract: `minires-normalization-v2`
+## Input contract: `minires-normalization-v3`
 
-Version 2 adds explicit anonymous source aliases and duplicate/geometry evidence
-to private metadata; prediction measurements and units are unchanged.
+Version 3 accepts bounded preparation outcomes so ambiguous source/family
+evidence remains unscored instead of being silently included. Version 2 added
+explicit anonymous source aliases and duplicate/geometry evidence to private
+metadata; prediction measurements and units remain unchanged.
 
 Supported inputs are a sequence of mappings, a JSON array, JSONL, or CSV.
 JSONL supports the retained export's numeric wrappers: `$numberDouble`,
@@ -95,9 +137,10 @@ Every parsed record gets exactly one outcome:
   non-finite values from other invalid values. Positive geometric measurements
   are required when supplied; Euler characteristic may be negative or zero but
   must be integral. The target may be zero, but not negative.
-- **needs_review**: unavailable label, unknown/invalid density, unknown volume
-  units, unsupported scope (`scope_confirmed=false`), missing scope confirmation,
-  invalid tolerance, or a non-finite computed prediction.
+- **needs_review**: unavailable label, unresolved or ambiguous preparation
+  evidence, unknown/invalid density, unknown volume units, unsupported scope
+  (`scope_confirmed=false`), missing scope confirmation, invalid tolerance, or a
+  non-finite computed prediction.
 
 Rows can have multiple reasons. Invalid required data takes outcome precedence;
 `data_quality.reasons` counts only the first reason, so its total equals the

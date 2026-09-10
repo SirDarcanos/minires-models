@@ -11,7 +11,7 @@ import math
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
-TRANSFORMATION_VERSION = "minires-normalization-v2"
+TRANSFORMATION_VERSION = "minires-normalization-v3"
 VOLUME_FACTORS = {"mm3": 1.0, "cm3": 1000.0, "ml": 1000.0}
 # Only these measurements may enter a prediction feature table.
 FEATURE_ALIASES = {
@@ -111,6 +111,17 @@ def normalize(
             continue
         reasons: list[str] = []
         warnings: list[str] = []
+        preparation_reasons = raw.get("preparation_reasons", ())
+        if isinstance(preparation_reasons, (list, tuple)) and all(
+            reason in {
+                "unresolved_source_group", "unresolved_miniature_family",
+                "ambiguous_family_path", "ambiguous_record_linkage", "invalid_record",
+            }
+            for reason in preparation_reasons
+        ):
+            reasons.extend(preparation_reasons)
+        elif preparation_reasons:
+            reasons.append("invalid_preparation_evidence")
         unit = raw.get("volume_unit", config.volume_unit)
         factor = VOLUME_FACTORS.get(unit) if isinstance(unit, str) else None
         features: dict[str, float | None] = {}
@@ -155,7 +166,12 @@ def normalize(
         scope = raw.get("scope_confirmed", config.scope_confirmed)
         if isinstance(scope, str) and scope.lower() in {"true", "false"}:
             scope = scope.lower() == "true"
-        excluded = any(reason != "missing_target_sliced_resin_mass" for reason in reasons)
+        review_only_reasons = {
+            "missing_target_sliced_resin_mass", "unresolved_source_group",
+            "unresolved_miniature_family", "ambiguous_family_path",
+            "ambiguous_record_linkage", "invalid_preparation_evidence",
+        }
+        excluded = any(reason not in review_only_reasons for reason in reasons)
         if factor is None and "volume_mm3" not in raw:
             reasons.append("unsupported_volume_unit")
         if contract == "canonical" and density is None:

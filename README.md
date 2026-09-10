@@ -101,6 +101,10 @@ Weights are cached locally by `huggingface_hub` after the first download.
 
 ## Evaluation workflows
 
+Historical labeled records can be prepared as an identity-redacted private input
+with evidence-based source/family groups and a bounded reconciliation report.
+See the [local normalization reference](docs/normalization.md#prepare-the-historical-labeled-records).
+
 A dependency-free local volume-and-density baseline is available for
 reproducible evaluation. It estimates **sliced resin mass**, not prices or
 actual shop consumption. See [the physical baseline guide](docs/physical-baseline.md).
