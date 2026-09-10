@@ -99,4 +99,10 @@ Make sure you compute the same features as listed in `model.features`.
 
 Weights are cached locally by `huggingface_hub` after the first download.
 
+## Physical baseline evaluation
+
+A dependency-free local volume-and-density baseline is available for
+reproducible evaluation. It estimates **sliced resin mass**, not prices or
+actual shop consumption. See [the physical baseline guide](docs/physical-baseline.md).
+
 [MIT License](LICENSE)
