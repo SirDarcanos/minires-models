@@ -2,6 +2,7 @@ import json
 from pathlib import Path
 import tempfile
 import unittest
+from unittest.mock import patch
 
 from minires_evaluation import (
     EvaluationConfig,
@@ -142,15 +143,21 @@ class BaselineEvidenceTests(unittest.TestCase):
             legacy = root / "legacy"
             legacy.mkdir()
             output = root / "private" / "evidence"
-            evidence = produce_evidence_package(
-                records=records,
-                reconciliations=(comparison,),
-                output_root=output,
-                split_manifest=root / "private" / "split.json",
-                legacy_artifacts=legacy,
-                config=self.config,
-                verification=[{"command": "python -m unittest", "outcome": "passed"}],
-            )
+            # This tests package orchestration and bounded dependency handling,
+            # not the optional third-party training runtime exercised by smoke tests.
+            with patch(
+                "minires_evaluation.learned.TensorflowXGBoostRuntime",
+                side_effect=ImportError,
+            ):
+                evidence = produce_evidence_package(
+                    records=records,
+                    reconciliations=(comparison,),
+                    output_root=output,
+                    split_manifest=root / "private" / "split.json",
+                    legacy_artifacts=legacy,
+                    config=self.config,
+                    verification=[{"command": "python -m unittest", "outcome": "passed"}],
+                )
 
             self.assertEqual(
                 set(evidence["runs"]),

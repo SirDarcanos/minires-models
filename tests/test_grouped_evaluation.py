@@ -6,6 +6,7 @@ from minires_evaluation.__main__ import main
 from pathlib import Path
 import tempfile
 import unittest
+from unittest.mock import patch
 
 from minires_evaluation import (
     EvaluationConfig,
@@ -122,12 +123,17 @@ class GroupedEvaluationTests(unittest.TestCase):
 
     def test_reuses_one_allocation_across_baseline_types(self):
         physical = self.evaluate()
-        learned = evaluate_records(
-            self.rows,
-            self.config,
-            LearnedBaseline(),
-            split_manifest=self.manifest,
-        )
+        # Split compatibility must not invoke the optional training integration.
+        with patch(
+            "minires_evaluation.learned.TensorflowXGBoostRuntime",
+            side_effect=ImportError,
+        ):
+            learned = evaluate_records(
+                self.rows,
+                self.config,
+                LearnedBaseline(),
+                split_manifest=self.manifest,
+            )
 
         self.assertEqual(physical.split_status, 'frozen_source_holdout')
         self.assertEqual(learned.split_status, 'frozen_source_holdout')
