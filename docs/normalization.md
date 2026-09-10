@@ -80,7 +80,9 @@ the schema's `prediction_features` allowlist, never every Parquet column.
 a warning. Legacy `kb`, `mass`, and `scale` are retained as optional numeric
 metadata named `legacy_*_unit_unknown`: this workflow does not assert their
 physical units. Existing engineered CSV columns are ignored; their prior
-rounding, filtering, or density assumptions are not repeated.
+rounding, filtering, or density assumptions are not repeated. The checksum-pinned
+legacy model has a separate, non-fitting compatibility contract and does not
+change this normalization version; see [Pinned legacy reference](legacy-reference.md).
 
 ### Row accounting and missing values
 

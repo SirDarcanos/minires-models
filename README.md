@@ -99,10 +99,16 @@ Make sure you compute the same features as listed in `model.features`.
 
 Weights are cached locally by `huggingface_hub` after the first download.
 
-## Physical baseline evaluation
+## Evaluation workflows
 
 A dependency-free local volume-and-density baseline is available for
 reproducible evaluation. It estimates **sliced resin mass**, not prices or
 actual shop consumption. See [the physical baseline guide](docs/physical-baseline.md).
+
+The released neural network, XGBoost model, and fixed ensemble can also be run
+as a checksum-pinned **legacy reference** through the same diagnostics. Legacy
+results are not clean holdout evidence by default. See the
+[pinned legacy reference guide](docs/legacy-reference.md) for the exact feature,
+preprocessing, artifact, dependency, and provenance contracts.
 
 [MIT License](LICENSE)

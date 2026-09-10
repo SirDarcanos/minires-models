@@ -76,6 +76,27 @@ class CommandLineInterfaceTests(unittest.TestCase):
         self.assertNotIn("location-canary", completed.stderr)
         self.assertNotIn("Traceback", completed.stderr)
 
+    def test_legacy_mode_reports_missing_pinned_artifacts_without_echoing_paths(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            records = root / "records.json"
+            canary_artifacts = root / "private-artifact-canary"
+            records.write_text(json.dumps([{
+                "kb": 1, "volume": 1000, "surface_area": 10, "bbox_area": 20,
+                "euler_number": 1, "scale": 30, "weight": 2,
+            }]))
+            completed = subprocess.run([
+                sys.executable, "-m", "minires_evaluation", "--records", str(records),
+                "--volume-unit", "mm3", "--scope-confirmed", "--legacy-artifacts",
+                str(canary_artifacts), "--public",
+            ], text=True, capture_output=True, check=True)
+            report = json.loads(completed.stdout)
+
+        self.assertEqual(report["status"], "blocked")
+        self.assertEqual(report["provenance_classification"], "legacy_reference_training_provenance_unknown")
+        self.assertIn("legacy_artifact_missing_minires_keras", report["blockers"])
+        self.assertNotIn("private-artifact-canary", completed.stdout + completed.stderr)
+
     def test_json_is_private_at_creation_without_post_write_chmod(self):
         import os
         import stat

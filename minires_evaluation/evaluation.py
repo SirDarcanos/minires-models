@@ -6,9 +6,10 @@ from dataclasses import asdict, dataclass
 import math
 import platform
 from pathlib import Path
-from typing import Any, Sequence
+from typing import Any, Sequence, cast
 
 from .ingestion import CanonicalRow, Dataset, VOLUME_FACTORS, TRANSFORMATION_VERSION, fingerprint, load_records, normalize
+from .legacy import LegacyReference
 from .reconciliation import reconcile
 
 
@@ -106,6 +107,10 @@ class EvaluationResult:
     run_metadata: RunMetadata
     canonical_rows: tuple[CanonicalRow, ...]
     reconciliations: tuple[dict[str, Any], ...]
+    model_diagnostics: dict[str, MetricSummary]
+    provenance_classification: str
+    provenance_evidence: dict[str, Any] | None
+    model_contract: dict[str, Any]
     grouped_evaluation: dict[str, Any] | None = None
 
     def to_dict(self, *, public: bool = False) -> dict[str, Any]:
@@ -120,7 +125,7 @@ class EvaluationResult:
                 "seed": self.run_metadata.seed,
                 "volume_unit": self.run_metadata.volume_unit if self.run_metadata.volume_unit in SUPPORTED_VOLUME_UNITS else None,
                 "resin_density_g_per_ml": self.run_metadata.resin_density_g_per_ml,
-                "baseline": "volume_density",
+                "baseline": self.run_metadata.baseline,
                 "split_status": self.run_metadata.split_status,
                 "python_version": self.run_metadata.python_version,
                 "platform": self.run_metadata.platform,
@@ -128,6 +133,11 @@ class EvaluationResult:
                 "tolerance_g": self.run_metadata.tolerance_g,
                 "scope_confirmed": self.run_metadata.scope_confirmed,
             },
+        }
+        summary["provenance_classification"] = self.provenance_classification
+        summary["model_contract"] = self.model_contract
+        summary["model_diagnostics"] = {
+            name: asdict(metrics) for name, metrics in self.model_diagnostics.items()
         }
         if self.grouped_evaluation is not None:
             public_grouped_keys = ('source_count', 'sample_count', 'eligible_source_count',
@@ -138,6 +148,7 @@ class EvaluationResult:
                 if public else self.grouped_evaluation)
         if public:
             return summary
+        summary["provenance_evidence"] = self.provenance_evidence
         summary["run_metadata"] = asdict(self.run_metadata)
         summary["normalized_records"] = [asdict(record) for record in self.normalized_records]
         summary["predictions"] = [asdict(prediction) for prediction in self.predictions]
@@ -149,7 +160,7 @@ class EvaluationResult:
 def evaluate_records(
     records: Dataset,
     config: EvaluationConfig,
-    baseline: PhysicalBaseline,
+    baseline: PhysicalBaseline | LegacyReference,
     *,
     reconcile_with: Sequence[Dataset] = (),
     output_dir: str | Path | None = None,
@@ -161,12 +172,16 @@ def evaluate_records(
     resin density in grams per millilitre. Supplying a private split manifest
     enables frozen source holdouts; otherwise this is an ungrouped diagnostic.
     """
-    _require_physical_baseline(baseline)
+    legacy_model = baseline if isinstance(baseline, LegacyReference) else None
+    is_legacy = legacy_model is not None
+    if legacy_model is None:
+        assert isinstance(baseline, PhysicalBaseline)
+        _require_physical_baseline(baseline)
     if not isinstance(config.seed, int) or isinstance(config.seed, bool):
         from .ingestion import InputError
         raise InputError("invalid_seed")
     loaded, input_fingerprint = load_records(records)
-    canonical_rows = normalize(loaded, config)
+    canonical_rows = normalize(loaded, config, contract="legacy" if is_legacy else "canonical")
     normalized = [NormalizedRecord(row.features["volume_mm3"], row.sliced_resin_mass_g)
                   for row in canonical_rows
                   if row.outcome == "included" and row.features["volume_mm3"] is not None
@@ -182,11 +197,27 @@ def evaluate_records(
     scoring_rows = [row for row in canonical_rows if row.outcome == 'included']
     if manifest is not None and manifest['status'] == 'blocked':
         scoring_rows = []
-    predictions = tuple(Prediction(row.features["volume_mm3"] / 1000.0 * row.metadata["resin_density_g_per_ml"], row.sliced_resin_mass_g)
-                        for row in scoring_rows
-                        if row.features["volume_mm3"] is not None and row.sliced_resin_mass_g is not None)
-    blockers = sorted({reason for row in canonical_rows for reason in row.reasons
-                       if reason in {"resin_density_required", "invalid_resin_density", "unsupported_volume_unit", "invalid_tolerance"}}) if not predictions else []
+    model_diagnostics: dict[str, MetricSummary] = {}
+    predictions: tuple[Prediction, ...]
+    inference_blockers: tuple[str, ...]
+    if is_legacy:
+        assert legacy_model is not None
+        provenance_blockers = legacy_model.provenance.validate_sources(canonical_rows)
+        if provenance_blockers:
+            predictions, model_diagnostics, inference_blockers = (), {}, ()
+        else:
+            predictions, model_diagnostics, inference_blockers = _legacy_predictions(
+                legacy_model, scoring_rows, config.tolerance_g
+            )
+        blockers = sorted(
+            set(legacy_model.blockers) | set(provenance_blockers) | set(inference_blockers)
+        )
+    else:
+        predictions = tuple(Prediction(row.features["volume_mm3"] / 1000.0 * row.metadata["resin_density_g_per_ml"], row.sliced_resin_mass_g)
+                            for row in scoring_rows
+                            if row.features["volume_mm3"] is not None and row.sliced_resin_mass_g is not None)
+        blockers = sorted({reason for row in canonical_rows for reason in row.reasons
+                           if reason in {"resin_density_required", "invalid_resin_density", "unsupported_volume_unit", "invalid_tolerance"}}) if not predictions else []
     if manifest is not None:
         blockers = sorted(set(blockers) | set(manifest['blockers']))
     metrics = _metrics(predictions, normalized if predictions else (), config.tolerance_g)
@@ -200,7 +231,7 @@ def evaluate_records(
         seed=config.seed,
         volume_unit=config.volume_unit if config.volume_unit in SUPPORTED_VOLUME_UNITS else None,
         resin_density_g_per_ml=config.resin_density_g_per_ml if _is_finite_positive(config.resin_density_g_per_ml) else None,
-        baseline="volume_density",
+        baseline=legacy_model.name if legacy_model is not None else "volume_density",
         split_status=split_status,
         python_version=platform.python_version(),
         platform=platform.platform(),
@@ -231,6 +262,23 @@ def evaluate_records(
         run_metadata=metadata,
         canonical_rows=tuple(canonical_rows),
         reconciliations=tuple(reconciliations),
+        model_diagnostics=model_diagnostics,
+        provenance_classification=(
+            "legacy_reference_source_holdout_unverified"
+            if legacy_model is not None
+            and legacy_model.provenance.status == "source_held_out"
+            and any(blocker.startswith("source_holdout_") for blocker in blockers)
+            else legacy_model.provenance.classification if legacy_model is not None
+            else "not_applicable"
+        ),
+        provenance_evidence=(legacy_model.provenance.private_evidence if legacy_model is not None else None),
+        model_contract=(legacy_model.contract if legacy_model is not None else {
+            "classification": "physical_baseline",
+            "name": "volume_density",
+            "input": "volume_mm3",
+            "density_unit": "g_per_ml",
+            "output_unit": "g",
+        }),
         grouped_evaluation=_grouped_report(manifest, scoring_rows, predictions, config.tolerance_g)
             if manifest is not None else None,
     )
@@ -238,6 +286,56 @@ def evaluate_records(
         from .artifacts import write_private
         write_private(result, output_dir)
     return result
+
+
+def _legacy_predictions(
+    model: Any, rows: Sequence[CanonicalRow], tolerance: float
+) -> tuple[tuple[Prediction, ...], dict[str, MetricSummary], tuple[str, ...]]:
+    if model.blockers or model.neural_network is None or model.xgboost is None:
+        return (), {}, ()
+    if not rows:
+        empty = _metrics((), (), tolerance)
+        return (), {name: empty for name in ("neural_network", "xgboost", "ensemble")}, ()
+    from .legacy import prepare_canonical_legacy_features
+
+    try:
+        matrix = tuple(prepare_canonical_legacy_features(row) for row in rows)
+        neural_values = tuple(float(value) for value in model.neural_network(matrix))
+        xgboost_values = tuple(float(value) for value in model.xgboost(matrix))
+        if len(neural_values) != len(rows) or len(xgboost_values) != len(rows):
+            return (), {}, ("legacy_prediction_count_mismatch",)
+        if not all(math.isfinite(value) for value in neural_values + xgboost_values):
+            return (), {}, ("non_finite_legacy_prediction",)
+        actual = tuple(row.sliced_resin_mass_g for row in rows)
+        if any(value is None for value in actual):
+            return (), {}, ("legacy_target_unavailable",)
+        component_values = {
+            "neural_network": neural_values,
+            "xgboost": xgboost_values,
+            "ensemble": tuple(
+                model.neural_network_weight * neural + (1.0 - model.neural_network_weight) * xgboost
+                for neural, xgboost in zip(neural_values, xgboost_values)
+            ),
+        }
+        records = tuple(
+            NormalizedRecord(
+                cast(float, row.features["volume_mm3"]),
+                cast(float, row.sliced_resin_mass_g),
+            )
+            for row in rows
+        )
+        component_predictions = {
+            name: tuple(Prediction(value, cast(float, target)) for value, target in zip(values, actual))
+            for name, values in component_values.items()
+        }
+        diagnostics = {
+            name: _metrics(values, records, tolerance)
+            for name, values in component_predictions.items()
+        }
+        return component_predictions["ensemble"], diagnostics, ()
+    except Exception:
+        # Third-party runtimes can include input values or local paths in errors.
+        return (), {}, ("legacy_inference_failed",)
 
 
 def _grouped_report(manifest: dict[str, Any], rows: Sequence[CanonicalRow],

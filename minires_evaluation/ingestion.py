@@ -23,6 +23,10 @@ FEATURE_ALIASES = {
     "bounding_box_volume_mm3": "bbox_area",
     "euler_number": "euler_number",
 }
+LEGACY_INFERENCE_FEATURES = (
+    "kb", "volume", "surface_area", "bbox_area", "euler_number", "scale",
+    "surface_volume_ratio",
+)
 Dataset = Sequence[Mapping[str, Any]] | str | Path
 
 
@@ -94,7 +98,11 @@ def _token(value: Any) -> str | None:
     return None if value is None or value == "" else fingerprint(value)
 
 
-def normalize(records: Sequence[Any], config: Any) -> list[CanonicalRow]:
+def normalize(
+    records: Sequence[Any], config: Any, *, contract: str = "canonical"
+) -> list[CanonicalRow]:
+    if contract not in {"canonical", "legacy"}:
+        raise ValueError("unknown normalization contract")
     rows = []
     for index, raw in enumerate(records):
         if not isinstance(raw, Mapping):
@@ -107,7 +115,8 @@ def normalize(records: Sequence[Any], config: Any) -> list[CanonicalRow]:
         factor = VOLUME_FACTORS.get(unit) if isinstance(unit, str) else None
         features: dict[str, float | None] = {}
         for canonical, alias in FEATURE_ALIASES.items():
-            value = number(raw.get(canonical, raw.get(alias)))
+            raw_value = raw.get(alias) if contract == "legacy" else raw.get(canonical, raw.get(alias))
+            value = number(raw_value)
             if value is not None and not math.isfinite(value):
                 reasons.append("non_finite_" + canonical)
                 value = None
@@ -116,11 +125,12 @@ def normalize(records: Sequence[Any], config: Any) -> list[CanonicalRow]:
                 value = None
             elif value is None and canonical == "volume_mm3":
                 reasons.append("invalid_volume")
-            elif value is None and raw.get(canonical, raw.get(alias)) not in (None, ""):
+            elif value is None and raw_value not in (None, ""):
                 reasons.append("invalid_" + canonical)
             # Unit-bearing canonical fields are already mm-based. Legacy bbox and
             # surface measurements have a fixed mm contract independent of volume_unit.
-            if canonical == "volume_mm3" and canonical not in raw:
+            uses_legacy_alias = contract == "legacy" or canonical not in raw
+            if canonical == "volume_mm3" and uses_legacy_alias:
                 value = value * factor if value is not None and factor is not None else None
                 if value is not None and not math.isfinite(value):
                     reasons.append("non_finite_volume_mm3")
@@ -148,9 +158,9 @@ def normalize(records: Sequence[Any], config: Any) -> list[CanonicalRow]:
         excluded = any(reason != "missing_target_sliced_resin_mass" for reason in reasons)
         if factor is None and "volume_mm3" not in raw:
             reasons.append("unsupported_volume_unit")
-        if density is None:
+        if contract == "canonical" and density is None:
             reasons.append("resin_density_required")
-        elif not math.isfinite(density) or density <= 0:
+        elif density is not None and (not math.isfinite(density) or density <= 0):
             reasons.append("invalid_resin_density")
             density = None
         if scope is False:
@@ -160,7 +170,7 @@ def normalize(records: Sequence[Any], config: Any) -> list[CanonicalRow]:
         if not isinstance(config.tolerance_g, (int, float)) or isinstance(config.tolerance_g, bool) or not math.isfinite(config.tolerance_g) or config.tolerance_g <= 0:
             reasons.append("invalid_tolerance")
         volume = features["volume_mm3"]
-        if not reasons and volume is not None and density is not None:
+        if contract == "canonical" and not reasons and volume is not None and density is not None:
             prediction = volume / 1000.0 * density
             if not math.isfinite(prediction):
                 reasons.append("non_finite_prediction")
@@ -190,7 +200,8 @@ def normalize(records: Sequence[Any], config: Any) -> list[CanonicalRow]:
             "base_mm": base,
             "geometry_valid": None,
             "support_presence": None,
-            "volume_unit": "mm3" if "volume_mm3" in raw else (unit if factor is not None else None),
+            "volume_unit": ("mm3" if contract != "legacy" and "volume_mm3" in raw
+                            else (unit if factor is not None else None)),
             "resin_density_g_per_ml": density,
             "density_origin": "record" if "resin_density_g_per_ml" in raw else "configuration",
             "scope_confirmed": scope if isinstance(scope, bool) else None,
@@ -205,6 +216,28 @@ def normalize(records: Sequence[Any], config: Any) -> list[CanonicalRow]:
             if value is None and raw.get(alias) not in (None, ""):
                 warnings.append("invalid_optional_" + alias)
             metadata["legacy_" + alias + "_unit_unknown"] = value
+        legacy_ratio = number(raw.get("surface_volume_ratio"))
+        if legacy_ratio is not None and not math.isfinite(legacy_ratio):
+            legacy_ratio = None
+        metadata["legacy_surface_volume_ratio"] = legacy_ratio
+        if contract == "legacy":
+            required_aliases = LEGACY_INFERENCE_FEATURES
+            required = {
+                "surface_area": features["surface_area_mm2"],
+                "bbox_area": features["bounding_box_volume_mm3"],
+                "euler_number": features["euler_number"],
+                "kb": metadata["legacy_kb_unit_unknown"],
+                "scale": metadata["legacy_scale_unit_unknown"],
+                "surface_volume_ratio": legacy_ratio,
+            }
+            if any(name not in raw for name in required_aliases) or any(
+                value is None for value in required.values()
+            ):
+                reasons.append("legacy_required_features_unavailable")
+                excluded = True
+            if metadata["volume_unit"] != "mm3":
+                reasons.append("legacy_volume_unit_must_be_mm3")
+                excluded = True
         rows.append(CanonicalRow(index, features, target, "excluded" if excluded else "needs_review" if reasons else "included",
                                  tuple(reasons), tuple(warnings), metadata))
     return rows

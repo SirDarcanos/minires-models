@@ -11,6 +11,7 @@ from uuid import uuid4
 from .ingestion import InputError
 from .private_io import create_private_file
 from .evaluation import EvaluationConfig, PhysicalBaseline, evaluate_records
+from .legacy import LegacyProvenance, LegacyReference, load_legacy_reference
 
 
 class PrivateArgumentParser(argparse.ArgumentParser):
@@ -36,6 +37,18 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument('--split-manifest', type=Path,
                         help='Enable source holdouts; create or reuse a frozen JSON manifest beneath private/')
+    parser.add_argument(
+        "--legacy-artifacts", type=Path,
+        help="Evaluate the pinned released NN, XGBoost, and ensemble from this local cache",
+    )
+    parser.add_argument(
+        "--download-legacy-artifacts", action="store_true",
+        help="Download only the checksum-pinned release into --legacy-artifacts",
+    )
+    parser.add_argument(
+        "--legacy-provenance", choices=("unknown", "overlap"), default="unknown",
+        help="Training relationship; legacy output is never a clean holdout by default",
+    )
     parser.add_argument("--seed", type=int, default=0, help="Recorded reproducibility seed")
     parser.add_argument(
         "--public", action="store_true", help="Write only the public allowlisted summary"
@@ -49,7 +62,20 @@ def main(argv: Sequence[str] | None = None) -> int:
     private_dir = args.private_dir
     if not args.public and not args.output and private_dir is None:
         private_dir = Path("private") / ("run-" + uuid4().hex)
+    if args.download_legacy_artifacts and args.legacy_artifacts is None:
+        raise SystemExit("legacy_artifact_directory_required")
     try:
+        model: PhysicalBaseline | LegacyReference
+        if args.legacy_artifacts is None:
+            model = PhysicalBaseline()
+        else:
+            provenance = (LegacyProvenance.overlap() if args.legacy_provenance == "overlap"
+                          else LegacyProvenance.unknown())
+            model = load_legacy_reference(
+                args.legacy_artifacts,
+                download=args.download_legacy_artifacts,
+                provenance=provenance,
+            )
         result = evaluate_records(
             records=args.records,
             config=EvaluationConfig(
@@ -58,7 +84,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 scope_confirmed=True if args.scope_confirmed else None,
                 seed=args.seed,
             ),
-            baseline=PhysicalBaseline(),
+            baseline=model,
             reconcile_with=args.reconcile,
             output_dir=private_dir,
             split_manifest=args.split_manifest,
