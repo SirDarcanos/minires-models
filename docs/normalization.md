@@ -21,10 +21,13 @@ The command writes no record data to stdout. It creates a new private directory
 and fails rather than overwriting one. The prepared JSONL removes source names,
 record names, and paths. Stable anonymous source groups come from private source
 evidence. A miniature family is assigned only when the record name appears
-exactly once as a directory in its private path; descendants of that directory
-remain in one family. Repeated exact paths provide duplicate evidence. Missing
-or ambiguous evidence becomes a `needs_review` outcome. Equal geometry values
-and names without path evidence never create a group.
+with exact casing once as a directory in its private path; the evidenced pack
+path and family directory form the key, and descendants remain in one family.
+If one source/name pair resolves to distinct family directories, all of those
+rows require review rather than being linked by name. Repeated byte-identical
+path strings provide duplicate evidence. Missing or ambiguous evidence becomes
+a `needs_review` outcome. Equal geometry values and names without path evidence
+never create a group.
 
 The prepared records attach the pinned slicing provenance: EBMiniManager revision
 `1a841195813136ee3b380ab1d192727f385f7a55`, profile

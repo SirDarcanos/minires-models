@@ -66,13 +66,29 @@ def _family_alias(raw: Mapping[str, Any], source: str | None) -> tuple[str | Non
     parts = _path_parts(raw.get("file"))
     if source is None or not isinstance(name, str) or not name:
         return None, "unresolved_miniature_family"
-    matches = [index for index, part in enumerate(parts[:-1]) if part.casefold() == name.casefold()]
+    matches = [index for index, part in enumerate(parts[:-1]) if part == name]
     if len(matches) != 1:
         return None, "ambiguous_family_path" if len(matches) > 1 else "unresolved_miniature_family"
-    return fingerprint([GROUPING_VERSION, "family", source, name]), "unique_named_directory_in_private_path"
+    family_directory = parts[:matches[0] + 1]
+    return fingerprint([
+        GROUPING_VERSION, "family-directory", source, family_directory,
+    ]), "unique_exact_directory_in_private_path"
 
 
-def _safe_record(raw: Any, repeated_paths: set[str]) -> tuple[dict[str, Any], dict[str, Any]]:
+def _safe_numeric(value: Any) -> Any:
+    parsed = number(value)
+    if parsed is None:
+        return None if value in (None, "") else "invalid_numeric_value"
+    if not math.isfinite(parsed):
+        return str(parsed)
+    return value
+
+
+def _safe_record(
+    raw: Any,
+    repeated_paths: set[str],
+    ambiguous_families: set[tuple[str, str]],
+) -> tuple[dict[str, Any], dict[str, Any]]:
     if not isinstance(raw, Mapping):
         return {"preparation_reasons": ["invalid_record"]}, {
             "source_group": None, "miniature_family": None,
@@ -81,27 +97,31 @@ def _safe_record(raw: Any, repeated_paths: set[str]) -> tuple[dict[str, Any], di
         }
     source = _source_alias(raw)
     family, family_evidence = _family_alias(raw, source)
+    name = raw.get("mini")
+    if source is not None and isinstance(name, str) and (source, name) in ambiguous_families:
+        family, family_evidence = None, "ambiguous_family_path"
     reasons = []
     if source is None:
         reasons.append("unresolved_source_group")
     if family is None:
         reasons.append(family_evidence)
-    path_parts = _path_parts(raw.get("file"))
-    normalized_path = "/".join(path_parts)
+    exact_path = raw.get("file") if isinstance(raw.get("file"), str) else None
     duplicate = (
-        fingerprint([GROUPING_VERSION, "exact-private-path", normalized_path])
-        if normalized_path and normalized_path in repeated_paths else None
+        fingerprint([GROUPING_VERSION, "exact-private-path", exact_path])
+        if exact_path and exact_path in repeated_paths else None
     )
-    record: dict[str, Any] = {field: number(raw.get(field)) for field in _SAFE_NUMERIC_FIELDS}
-    if record["surface_volume_ratio"] is None:
-        surface, volume = record["surface_area"], record["volume"]
+    record: dict[str, Any] = {
+        field: _safe_numeric(raw.get(field)) for field in _SAFE_NUMERIC_FIELDS
+    }
+    if number(record["surface_volume_ratio"]) is None:
+        surface, volume = number(record["surface_area"]), number(record["volume"])
         if (
             surface is not None and volume is not None
             and math.isfinite(surface) and math.isfinite(volume) and volume > 0
         ):
             record["surface_volume_ratio"] = surface / volume
     record.update({
-        "sliced_resin_mass_g": number(raw.get("sliced_resin_mass_g", raw.get("weight"))),
+        "sliced_resin_mass_g": _safe_numeric(raw.get("sliced_resin_mass_g", raw.get("weight"))),
         "volume_unit": "mm3",
         "resin_density_g_per_ml": DENSITY_G_PER_ML,
         "scope_confirmed": True,
@@ -154,12 +174,27 @@ def prepare_private_dataset(
         Path(dataset).read_bytes() if isinstance(dataset, (str, Path)) else None
         for dataset in comparison_records
     ]
-    path_counts = Counter(
-        "/".join(_path_parts(raw.get("file")))
-        for raw in loaded if isinstance(raw, Mapping) and _path_parts(raw.get("file"))
-    )
+    path_counts: Counter[str] = Counter()
+    for raw in loaded:
+        path = raw.get("file") if isinstance(raw, Mapping) else None
+        if isinstance(path, str) and path:
+            path_counts[path] += 1
     repeated_paths = {path for path, count in path_counts.items() if count > 1}
-    prepared_and_evidence = [_safe_record(raw, repeated_paths) for raw in loaded]
+    family_candidates: dict[tuple[str, str], set[str]] = {}
+    for raw in loaded:
+        if not isinstance(raw, Mapping):
+            continue
+        source = _source_alias(raw)
+        name = raw.get("mini")
+        family, _ = _family_alias(raw, source)
+        if source is not None and isinstance(name, str) and family is not None:
+            family_candidates.setdefault((source, name), set()).add(family)
+    ambiguous_families = {
+        key for key, families in family_candidates.items() if len(families) > 1
+    }
+    prepared_and_evidence = [
+        _safe_record(raw, repeated_paths, ambiguous_families) for raw in loaded
+    ]
     prepared = [item[0] for item in prepared_and_evidence]
     evidence = [dict(row_index=index, **item[1]) for index, item in enumerate(prepared_and_evidence)]
     source_mapping = sorted({
@@ -191,7 +226,7 @@ def prepare_private_dataset(
             "identity_values_persisted": False,
             "rules": {
                 "source": "stable_alias_from_private_source_evidence",
-                "family": "unique_exact_record_directory_in_private_path",
+                "family": "unique_exact_family_directory_and_pack_path",
                 "duplicate": "repeated_exact_private_path_only",
                 "equal_features_or_names_alone": "never_grouped",
             },

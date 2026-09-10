@@ -136,6 +136,85 @@ class PrivateDatasetPreparationTests(unittest.TestCase):
         self.assertEqual(primary_accounted, 5)
         self.assertEqual(comparison_accounted, 2)
 
+    def test_path_evidence_is_exact_and_distinct_pack_locations_fail_closed(self):
+        records = self.records()
+        records.extend([
+            {
+                **records[0],
+                "_id": "case-mismatch",
+                "mini": "CaseSensitiveFamily",
+                "file": "/root/source/casesensitivefamily/model.stl",
+            },
+            {
+                **records[0],
+                "_id": "pack-a",
+                "mini": "RepeatedFamily",
+                "file": "/root/source/pack-a/RepeatedFamily/model.stl",
+            },
+            {
+                **records[0],
+                "_id": "pack-b",
+                "mini": "RepeatedFamily",
+                "file": "/root/source/pack-b/RepeatedFamily/model.stl",
+            },
+            {
+                **records[0],
+                "_id": "path-form-a",
+                "mini": "PathFormA",
+                "file": "/root/source/PathFormA/model.stl",
+            },
+            {
+                **records[0],
+                "_id": "path-form-b",
+                "mini": "PathFormB",
+                "file": "root/./source/PathFormB/model.stl",
+            },
+        ])
+        output = self.root / "private" / "path-evidence"
+
+        result = prepare_private_dataset(records, output_dir=output)
+
+        self.assertEqual(result.needs_review_count, 3)
+        prepared = [json.loads(line) for line in (output / "prepared-records.jsonl").read_text().splitlines()]
+        self.assertEqual(prepared[4]["preparation_reasons"], ["unresolved_miniature_family"])
+        self.assertEqual(prepared[5]["preparation_reasons"], ["ambiguous_family_path"])
+        self.assertEqual(prepared[6]["preparation_reasons"], ["ambiguous_family_path"])
+        coverage = json.loads((output / "coverage.json").read_text())
+        self.assertEqual(coverage["duplicate_group_count"], 0)
+
+    def test_invalid_numeric_evidence_remains_a_row_outcome(self):
+        records = self.records()
+        records.extend([
+            {
+                **records[0],
+                "_id": "invalid-number",
+                "mini": "InvalidNumberFamily",
+                "file": "/root/source/InvalidNumberFamily/model.stl",
+                "volume": "not-a-number-canary",
+                "weight": "invalid-target-canary",
+            },
+            {
+                **records[0],
+                "_id": "non-finite",
+                "mini": "NonFiniteFamily",
+                "file": "/root/source/NonFiniteFamily/model.stl",
+                "volume": float("inf"),
+            },
+        ])
+        output = self.root / "private" / "invalid-evidence"
+
+        result = prepare_private_dataset(records, output_dir=output)
+
+        self.assertEqual(result.input_count, 6)
+        self.assertEqual(result.excluded_count, 2)
+        coverage = json.loads((output / "coverage.json").read_text())
+        self.assertEqual(coverage["outcome_reasons"]["invalid_volume"], 1)
+        self.assertEqual(coverage["outcome_reasons"]["invalid_target_sliced_resin_mass"], 1)
+        self.assertEqual(coverage["outcome_reasons"]["non_finite_volume_mm3"], 1)
+        serialized = (output / "prepared-records.jsonl").read_text()
+        self.assertNotIn("not-a-number-canary", serialized)
+        self.assertNotIn("invalid-target-canary", serialized)
+
     def test_file_preparation_is_byte_stable_and_cli_never_changes_inputs(self):
         records = self.root / "records.jsonl"
         records.write_text("".join(json.dumps(row) + "\n" for row in self.records()))
