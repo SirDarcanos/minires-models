@@ -21,6 +21,7 @@ from minires_evaluation.tuning import (
     DeclaredCandidate,
     LockedFit,
     SearchLimits,
+    create_search_plan,
     evaluate_declared_candidate,
     generate_search_plan,
     load_locked_candidate,
@@ -111,6 +112,18 @@ class PredictionMutatingRuntime(RecordingTuningRuntime):
 
 
 class CandidateSearchPlanTests(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.records = [
+            CandidateTuningTests.row(source, family, index + 1)
+            for index, (source, family) in enumerate(
+                (("private-a", "a1"), ("private-a", "a2"),
+                 ("private-b", "b1"), ("private-b", "b2"))
+            )
+        ]
+        self.config = EvaluationConfig(None, "mm3", True, seed=17)
+
     def test_same_identity_and_seed_generate_the_same_bounded_plan(self):
         limits = SearchLimits(seed=41)
 
@@ -128,17 +141,135 @@ class CandidateSearchPlanTests(unittest.TestCase):
         self.assertEqual([item.family for item in first.component_trials].count("xgboost"), 6)
         self.assertEqual(first.resource_limits["maximum_candidate_runs"], 20)
         self.assertEqual(first.resource_limits["maximum_elapsed_seconds"], 7200.0)
-        self.assertEqual(first.ensemble_rule["trial_count"], 3)
+        self.assertEqual(len(first.ensemble_rules), 3)
+        self.assertEqual(
+            [rule["component_rank"] for rule in first.ensemble_rules], [1, 2, 3]
+        )
+        self.assertEqual(first.second_seed_rule["candidate_count"], 5)
+        self.assertEqual(first.eligibility_gates["pooled_above_5g_fraction_maximum"], 0.01)
+        self.assertFalse(first.control["candidate_slot_consumed"])
         self.assertIn("layers", first.parameter_domains["neural_network"])
         self.assertIn("n_jobs", first.parameter_domains["xgboost"])
+        self.assertTrue(first.plan_id.startswith("search-plan-"))
 
-    def test_search_plan_cannot_expand_the_two_hour_budget(self):
-        with self.assertRaisesRegex(ValueError, "invalid_search_plan"):
-            generate_search_plan(
-                SearchLimits(seed=41, maximum_elapsed_seconds=7200.001),
-                input_fingerprint="input", code_fingerprint="code",
-                dependency_versions={"runtime": "synthetic-1"},
+    def test_plan_generation_persists_repeatable_private_checksummed_content(self):
+        first_root = Path(self.temp.name) / "private" / "plan-a"
+        second_root = Path(self.temp.name) / "private" / "plan-b"
+
+        first = create_search_plan(
+            self.records, self.config, limits=SearchLimits(seed=41),
+            dependency_versions={"runtime": "synthetic-1"}, output_root=first_root,
+        )
+        second = create_search_plan(
+            self.records, self.config, limits=SearchLimits(seed=41),
+            dependency_versions={"runtime": "synthetic-1"}, output_root=second_root,
+        )
+
+        first_bytes = (first_root / "search-plan.json").read_bytes()
+        self.assertEqual(first, second)
+        self.assertEqual(first_bytes, (second_root / "search-plan.json").read_bytes())
+        manifest = json.loads((first_root / "manifest.json").read_text())
+        self.assertEqual(
+            manifest["artifacts"]["search-plan.json"], sha256(first_bytes).hexdigest()
+        )
+        self.assertTrue(manifest["create_only"])
+        self.assertFalse(manifest["publication_performed"])
+        self.assertNotIn("private-a", first_bytes.decode())
+        self.assertNotIn("private-b", first_bytes.decode())
+        with self.assertRaisesRegex(ValueError, "search_plan_output_unavailable"):
+            create_search_plan(
+                self.records, self.config, limits=SearchLimits(seed=41),
+                dependency_versions={"runtime": "synthetic-1"}, output_root=first_root,
             )
+
+    def test_plan_identity_binds_inputs_allocation_code_configuration_domain_and_version(self):
+        baseline = create_search_plan(
+            self.records, self.config, limits=SearchLimits(seed=41),
+            dependency_versions={"runtime": "synthetic-1"},
+        )
+        changed_records = [dict(row) for row in self.records]
+        changed_records[0]["weight"] += 1
+        changed_input = create_search_plan(
+            changed_records, self.config, limits=SearchLimits(seed=41),
+            dependency_versions={"runtime": "synthetic-1"},
+        )
+        changed_allocation = create_search_plan(
+            self.records, replace(self.config, seed=18), limits=SearchLimits(seed=41),
+            dependency_versions={"runtime": "synthetic-1"},
+        )
+        changed_seed = create_search_plan(
+            self.records, self.config, limits=SearchLimits(seed=42),
+            dependency_versions={"runtime": "synthetic-1"},
+        )
+        changed_domains = {
+            family: {name: tuple(values) for name, values in domain.items()}
+            for family, domain in baseline.parameter_domains.items()
+        }
+        changed_domains["neural_network"]["activation"] = ("relu", "selu")
+        changed_domain = create_search_plan(
+            self.records, self.config, limits=SearchLimits(seed=41),
+            dependency_versions={"runtime": "synthetic-1"},
+            parameter_domains=changed_domains,
+        )
+
+        self.assertEqual(len({
+            baseline.plan_id, changed_input.plan_id, changed_allocation.plan_id,
+            changed_seed.plan_id, changed_domain.plan_id,
+        }), 5)
+        self.assertNotEqual(baseline.input_fingerprint, changed_input.input_fingerprint)
+        self.assertNotEqual(
+            baseline.source_allocation_fingerprint,
+            changed_allocation.source_allocation_fingerprint,
+        )
+        self.assertTrue(baseline.normalized_input_fingerprint)
+        self.assertTrue(baseline.code_configuration_fingerprint)
+        self.assertEqual(baseline.generator_version, baseline.version)
+
+    def test_domain_key_order_does_not_change_candidates_or_plan_identity(self):
+        baseline = create_search_plan(
+            self.records, self.config, limits=SearchLimits(seed=41),
+            dependency_versions={"runtime": "synthetic-1"},
+        )
+        reversed_domains = {
+            family: dict(reversed(tuple(domain.items())))
+            for family, domain in reversed(tuple(baseline.parameter_domains.items()))
+        }
+
+        reordered = create_search_plan(
+            self.records, self.config, limits=SearchLimits(seed=41),
+            dependency_versions={"runtime": "synthetic-1"},
+            parameter_domains=reversed_domains,
+        )
+
+        self.assertEqual(reordered, baseline)
+
+    def test_invalid_domains_and_resources_fail_at_the_plan_generation_interface(self):
+        invalid = {
+            "neural_network": {
+                "layers": ((64, 32),), "activation": ("unsupported",),
+                "dropout": (math.nan,), "optimizer": ("adam",),
+                "loss": ("mean_absolute_error",), "learning_rate": (0.001,),
+                "l2": (0.0,), "batch_size": (32,), "maximum_epochs": (100,),
+                "early_stopping_patience": (8,),
+            },
+            "xgboost": {},
+        }
+        invalid_cases = (
+            {"parameter_domains": invalid},
+            {"limits": SearchLimits(seed=41, ensemble_neural_network_weights=())},
+            {"limits": SearchLimits(seed=41, neural_network_trials=7)},
+            {"limits": SearchLimits(seed=41, maximum_elapsed_seconds=7200.001)},
+        )
+        for overrides in invalid_cases:
+            with self.subTest(overrides=overrides), self.assertRaisesRegex(
+                ValueError, "invalid_search_plan"
+            ):
+                create_search_plan(
+                    self.records, self.config,
+                    limits=overrides.get("limits", SearchLimits(seed=41)),
+                    dependency_versions={"runtime": "synthetic-1"},
+                    parameter_domains=overrides.get("parameter_domains"),
+                )
 
 
 class DeclaredCandidateEvaluationTests(unittest.TestCase):

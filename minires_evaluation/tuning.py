@@ -27,10 +27,10 @@ from .ingestion import (
 from .learned import LearnedBaselineConfig, _matrix, _predict
 from .legacy import LEGACY_FEATURES
 from .private_io import create_private_file, write_private_json
-from .splits import freeze_splits
+from .splits import ALLOCATION_VERSION, freeze_splits
 
 
-TUNING_VERSION = "minires-candidate-tuning-v1"
+TUNING_VERSION = "minires-candidate-tuning-v2"
 
 NEURAL_NETWORK_DOMAIN: dict[str, tuple[Any, ...]] = {
     "layers": ((64, 32), (128, 64), (128, 64, 32), (256, 128, 64),
@@ -161,17 +161,36 @@ class DeclaredCandidate:
 
 
 @dataclass(frozen=True)
+class SearchPlanIdentities:
+    normalized_input_fingerprint: str
+    source_allocation_fingerprint: str
+    code_fingerprint: str
+    configuration_fingerprint: str
+    code_configuration_fingerprint: str
+
+
+@dataclass(frozen=True)
 class SearchPlan:
     version: str
+    generator_version: str
+    plan_id: str
     seed: int
     second_seed: int
     input_fingerprint: str
+    normalized_input_fingerprint: str
+    source_allocation_fingerprint: str
     code_fingerprint: str
+    configuration_fingerprint: str
+    code_configuration_fingerprint: str
     dependency_versions: dict[str, str]
+    dependency_contract: dict[str, Any]
     parameter_domains: dict[str, dict[str, tuple[Any, ...]]]
+    generator: dict[str, Any]
     component_trials: tuple[Candidate, ...]
-    ensemble_rule: dict[str, Any]
+    ensemble_rules: tuple[dict[str, Any], ...]
+    eligibility_gates: dict[str, float]
     ranking_rule: tuple[str, ...]
+    second_seed_rule: dict[str, Any]
     resource_limits: dict[str, int | float]
     control: dict[str, Any]
 
@@ -393,47 +412,174 @@ def load_locked_candidate(
         raise InputError("locked_candidate_unavailable") from None
 
 
+def create_search_plan(
+    records: Dataset,
+    config: EvaluationConfig,
+    *,
+    limits: SearchLimits,
+    dependency_versions: Mapping[str, str],
+    output_root: str | Path | None = None,
+    parameter_domains: Mapping[str, Mapping[str, Sequence[Any]]] | None = None,
+) -> SearchPlan:
+    """Build and optionally persist a private plan without fitting or scoring."""
+    loaded, input_fingerprint = load_records(records)
+    rows = normalize(loaded, config, contract="legacy")
+    identities = _search_plan_identities(rows, config)
+    plan = _generate_bound_search_plan(
+        limits, input_fingerprint, dependency_versions, identities,
+        parameter_domains=parameter_domains,
+    )
+    if output_root is None:
+        return plan
+    output = Path(output_root)
+    if "private" not in output.resolve().parts:
+        raise ValueError("search_plan_output_unavailable")
+    try:
+        output.mkdir(parents=True, exist_ok=False, mode=0o700)
+        write_private_json(output / "search-plan.json", plan.to_dict())
+        plan_path = output / "search-plan.json"
+        write_private_json(output / "manifest.json", {
+            "version": TUNING_VERSION,
+            "artifacts": {"search-plan.json": sha256(plan_path.read_bytes()).hexdigest()},
+            "create_only": True,
+            "publication_performed": False,
+        })
+    except (InputError, OSError, TypeError, ValueError):
+        raise ValueError("search_plan_output_unavailable") from None
+    return plan
+
+
+def _generate_bound_search_plan(
+    limits: SearchLimits,
+    input_fingerprint: str,
+    dependency_versions: Mapping[str, str],
+    identities: SearchPlanIdentities,
+    *,
+    parameter_domains: Mapping[str, Mapping[str, Sequence[Any]]] | None = None,
+) -> SearchPlan:
+    return generate_search_plan(
+        limits,
+        input_fingerprint=input_fingerprint,
+        normalized_input_fingerprint=identities.normalized_input_fingerprint,
+        source_allocation_fingerprint=identities.source_allocation_fingerprint,
+        code_fingerprint=identities.code_fingerprint,
+        configuration_fingerprint=identities.configuration_fingerprint,
+        code_configuration_fingerprint=identities.code_configuration_fingerprint,
+        dependency_versions=dependency_versions,
+        parameter_domains=parameter_domains,
+    )
+
+
 def generate_search_plan(
     limits: SearchLimits,
     *,
     input_fingerprint: str,
     code_fingerprint: str,
     dependency_versions: Mapping[str, str],
+    normalized_input_fingerprint: str | None = None,
+    source_allocation_fingerprint: str | None = None,
+    configuration_fingerprint: str | None = None,
+    code_configuration_fingerprint: str | None = None,
+    parameter_domains: Mapping[str, Mapping[str, Sequence[Any]]] | None = None,
 ) -> SearchPlan:
-    """Generate the complete finite component plan without inspecting labels."""
+    """Generate the complete finite component plan without inspecting labels or scores."""
     _validate_limits(limits)
+    if (
+        not dependency_versions
+        or any(
+            not isinstance(name, str) or not name
+            or not isinstance(version, str) or not version
+            for name, version in dependency_versions.items()
+        )
+        or any(
+            not isinstance(value, str) or not value
+            for value in (
+                input_fingerprint, code_fingerprint,
+                normalized_input_fingerprint or input_fingerprint,
+                source_allocation_fingerprint or "derived",
+                configuration_fingerprint or code_fingerprint,
+                code_configuration_fingerprint or "derived",
+            )
+        )
+    ):
+        raise ValueError("invalid_search_plan")
+    domains = _validated_parameter_domains(parameter_domains)
     neural = _space_filling_candidates(
-        "neural_network", NEURAL_NETWORK_DOMAIN, limits.neural_network_trials, limits.seed
+        "neural_network", domains["neural_network"], limits.neural_network_trials,
+        limits.seed,
     )
     xgboost = _space_filling_candidates(
-        "xgboost", XGBOOST_DOMAIN, limits.xgboost_trials, limits.seed ^ 0x5EED
+        "xgboost", domains["xgboost"], limits.xgboost_trials, limits.seed ^ 0x5EED
     )
-    return SearchPlan(
-        version=TUNING_VERSION,
-        seed=limits.seed,
-        second_seed=limits.resolved_second_seed,
-        input_fingerprint=input_fingerprint,
-        code_fingerprint=code_fingerprint,
-        dependency_versions=dict(sorted(dependency_versions.items())),
-        parameter_domains={
-            "neural_network": NEURAL_NETWORK_DOMAIN,
-            "xgboost": XGBOOST_DOMAIN,
+    components = neural + xgboost
+    if len({candidate.candidate_id for candidate in components}) != len(components):
+        raise ValueError("invalid_search_plan")
+    for candidate in components:
+        _validate_declared_candidate(candidate)
+    normalized_identity = normalized_input_fingerprint or input_fingerprint
+    allocation_identity = source_allocation_fingerprint or fingerprint({
+        "allocation_version": ALLOCATION_VERSION,
+        "input_fingerprint": normalized_identity,
+    })
+    configuration_identity = configuration_fingerprint or code_fingerprint
+    combined_identity = code_configuration_fingerprint or fingerprint({
+        "code": code_fingerprint, "configuration": configuration_identity,
+    })
+    dependencies = dict(sorted(dependency_versions.items()))
+    ensemble_rules = tuple({
+        "ensemble_slot": rank,
+        "component_rank": rank,
+        "pairing": "rank_each_component_family_then_pair_equal_rank",
+        "component_ranking_partition": "development_validation_only",
+        "weight_selection_partition": "development_validation_only",
+        "neural_network_weight_grid": limits.ensemble_neural_network_weights,
+        "stable_tie_breaker": "candidate_id_ascending",
+    } for rank in range(1, limits.ensemble_trials + 1))
+    plan_payload: dict[str, Any] = {
+        "version": TUNING_VERSION,
+        "generator_version": TUNING_VERSION,
+        "seed": limits.seed,
+        "second_seed": limits.resolved_second_seed,
+        "input_fingerprint": input_fingerprint,
+        "normalized_input_fingerprint": normalized_identity,
+        "source_allocation_fingerprint": allocation_identity,
+        "code_fingerprint": code_fingerprint,
+        "configuration_fingerprint": configuration_identity,
+        "code_configuration_fingerprint": combined_identity,
+        "dependency_versions": dependencies,
+        "dependency_contract": {
+            "python_supported": ">=3.11,<3.14",
+            "versions_must_match": True,
+            "versions": dependencies,
         },
-        component_trials=neural + xgboost,
-        ensemble_rule={
-            "trial_count": limits.ensemble_trials,
-            "pairing": "rank_each_component_family_then_pair_equal_rank",
-            "weight_selection_partition": "development_validation_only",
-            "neural_network_weight_grid": limits.ensemble_neural_network_weights,
+        "parameter_domains": domains,
+        "generator": {
+            "strategy": "seeded_cyclic_space_filling",
+            "ordered": True,
+            "target_access": False,
+            "prior_score_access": False,
         },
-        ranking_rule=(
+        "component_trials": components,
+        "ensemble_rules": ensemble_rules,
+        "eligibility_gates": {
+            "pooled_above_5g_fraction_maximum": 0.01,
+            "source_balanced_above_5g_fraction_maximum": 0.01,
+            "per_source_above_5g_fraction_maximum": 0.02,
+        },
+        "ranking_rule": (
             "eligible_serious_error_gates_first",
             "source_balanced_mae_g_ascending",
             "pooled_mae_g_ascending",
             "pooled_within_2g_fraction_descending",
             "stable_candidate_id_ascending",
         ),
-        resource_limits={
+        "second_seed_rule": {
+            "candidate_count": limits.second_seed_candidates,
+            "selection": "best_eligible_initial_candidates_by_ranking_rule",
+            "combination": "equal_seed_weight",
+            "unfavorable_repetitions_retained": True,
+        },
+        "resource_limits": {
             "maximum_candidate_runs": limits.maximum_candidate_runs,
             "maximum_elapsed_seconds": limits.maximum_elapsed_seconds,
             "initial_neural_network_trials": limits.neural_network_trials,
@@ -441,11 +587,91 @@ def generate_search_plan(
             "initial_ensemble_trials": limits.ensemble_trials,
             "second_seed_candidates": limits.second_seed_candidates,
         },
-        control={
+        "control": {
             "classification": "clean_fixed_configuration_baseline",
+            "candidate_id": "clean-fixed-control",
+            "configuration": asdict(LearnedBaselineConfig()),
             "candidate_slot_consumed": False,
             "configuration_mutable": False,
         },
+    }
+    plan_id = "search-plan-" + fingerprint(_jsonable(plan_payload))[:24]
+    return SearchPlan(plan_id=plan_id, **plan_payload)
+
+
+def _validated_parameter_domains(
+    supplied: Mapping[str, Mapping[str, Sequence[Any]]] | None,
+) -> dict[str, dict[str, tuple[Any, ...]]]:
+    supported = {
+        "neural_network": NEURAL_NETWORK_DOMAIN,
+        "xgboost": XGBOOST_DOMAIN,
+    }
+    source = supported if supplied is None else supplied
+    if set(source) != set(supported):
+        raise ValueError("invalid_search_plan")
+    domains: dict[str, dict[str, tuple[Any, ...]]] = {}
+    for family, expected_domain in supported.items():
+        proposed = source[family]
+        if set(proposed) != set(expected_domain):
+            raise ValueError("invalid_search_plan")
+        domains[family] = {}
+        for name in sorted(proposed):
+            values = proposed[name]
+            if isinstance(values, (str, bytes)):
+                raise ValueError("invalid_search_plan")
+            choices = tuple(_freeze_json_lists(value) for value in values)
+            if not choices or any(
+                not _supported_domain_value(value, expected_domain[name]) for value in choices
+            ):
+                raise ValueError("invalid_search_plan")
+            domains[family][name] = choices
+    return domains
+
+
+def _jsonable(value: Any) -> Any:
+    if isinstance(value, Candidate):
+        return asdict(value)
+    if isinstance(value, Mapping):
+        return {key: _jsonable(item) for key, item in value.items()}
+    if isinstance(value, (tuple, list)):
+        return [_jsonable(item) for item in value]
+    return value
+
+
+def _search_plan_identities(
+    rows: Sequence[CanonicalRow], config: EvaluationConfig,
+) -> SearchPlanIdentities:
+    code_identity = fingerprint({
+        path.name: path.read_text() for path in sorted(Path(__file__).parent.glob("*.py"))
+    })
+    configuration_identity = fingerprint(asdict(config))
+    normalized_identity = fingerprint([asdict(row) for row in rows])
+    allocation_identity = fingerprint({
+        "allocation_version": ALLOCATION_VERSION,
+        "transformation_version": TRANSFORMATION_VERSION,
+        "configuration": asdict(config),
+        "grouping_evidence": [
+            {
+                "row_index": row.row_index,
+                "outcome": row.outcome,
+                "anonymous_source_group": row.metadata.get("anonymous_source_group"),
+                "miniature_family": row.metadata.get("miniature_family"),
+                "duplicate_group": row.metadata.get("duplicate_group"),
+                "geometry_fingerprint": row.metadata.get("geometry_fingerprint"),
+                "record_identity": row.metadata.get("record_identity"),
+                "location_evidence": row.metadata.get("location_evidence"),
+            }
+            for row in rows
+        ],
+    })
+    return SearchPlanIdentities(
+        normalized_input_fingerprint=normalized_identity,
+        source_allocation_fingerprint=allocation_identity,
+        code_fingerprint=code_identity,
+        configuration_fingerprint=configuration_identity,
+        code_configuration_fingerprint=fingerprint({
+            "code": code_identity, "configuration": configuration_identity,
+        }),
     )
 
 
@@ -453,7 +679,7 @@ def _space_filling_candidates(
     family: str, domain: Mapping[str, tuple[Any, ...]], count: int, seed: int
 ) -> tuple[Candidate, ...]:
     rng = random.Random(seed)
-    keys = tuple(domain)
+    keys = tuple(sorted(domain))
     offsets = {key: rng.randrange(len(domain[key])) for key in keys}
     steps = {key: rng.choice([step for step in range(1, len(domain[key]) + 1)
                              if math.gcd(step, len(domain[key])) == 1]) for key in keys}
@@ -631,23 +857,18 @@ def tune_candidates(
 
     loaded, input_fingerprint = load_records(records)
     rows = normalize(loaded, config, contract="legacy")
-    code_fingerprint = fingerprint({
-        path.name: path.read_text() for path in sorted(Path(__file__).parent.glob("*.py"))
-    })
-    selected_plan = plan or generate_search_plan(
-        limits,
-        input_fingerprint=input_fingerprint,
-        code_fingerprint=code_fingerprint,
-        dependency_versions=runtime.dependency_versions,
+    plan_identities = _search_plan_identities(rows, config)
+    selected_plan = plan or _generate_bound_search_plan(
+        limits, input_fingerprint, runtime.dependency_versions, plan_identities,
     )
     try:
-        _validate_plan(selected_plan, limits, input_fingerprint, code_fingerprint,
-                       runtime.dependency_versions)
+        _validate_plan(
+            selected_plan, limits, input_fingerprint,
+            runtime.dependency_versions, plan_identities,
+        )
     except ValueError:
-        evidence_plan = generate_search_plan(
-            limits, input_fingerprint=input_fingerprint,
-            code_fingerprint=code_fingerprint,
-            dependency_versions=runtime.dependency_versions,
+        evidence_plan = _generate_bound_search_plan(
+            limits, input_fingerprint, runtime.dependency_versions, plan_identities,
         )
         result = TuningResult(
             "blocked", ("invalid_search_plan",), 0,
@@ -1249,20 +1470,15 @@ def _supported_domain_value(value: Any, supported: Sequence[Any]) -> bool:
     return False
 
 
-def _validate_plan(plan: SearchPlan, limits: SearchLimits, input_fingerprint: str,
-                   code_fingerprint: str, dependencies: Mapping[str, str]) -> None:
+def _validate_plan(
+    plan: SearchPlan, limits: SearchLimits, input_fingerprint: str,
+    dependencies: Mapping[str, str], identities: SearchPlanIdentities,
+) -> None:
     _validate_limits(limits)
-    expected_plan = generate_search_plan(
-        limits, input_fingerprint=input_fingerprint, code_fingerprint=code_fingerprint,
-        dependency_versions=dependencies,
+    expected_plan = _generate_bound_search_plan(
+        limits, input_fingerprint, dependencies, identities,
     )
     if plan != expected_plan:
-        raise ValueError("invalid_search_plan")
-    if (plan.version != TUNING_VERSION or plan.seed != limits.seed
-            or plan.second_seed != limits.resolved_second_seed
-            or plan.input_fingerprint != input_fingerprint
-            or plan.code_fingerprint != code_fingerprint
-            or plan.dependency_versions != dict(sorted(dependencies.items()))):
         raise ValueError("invalid_search_plan")
     families = [candidate.family for candidate in plan.component_trials]
     if families.count("neural_network") != 6 or families.count("xgboost") != 6:
@@ -1651,6 +1867,7 @@ def _validate_limits(limits: SearchLimits) -> None:
         raise ValueError("invalid_search_plan")
     if limits.second_seed is not None and (
         not isinstance(limits.second_seed, int) or isinstance(limits.second_seed, bool)
+        or limits.second_seed == limits.seed
     ):
         raise ValueError("invalid_search_plan")
     expected = (6, 6, 3, 5, 20)
@@ -1664,9 +1881,11 @@ def _validate_limits(limits: SearchLimits) -> None:
         0 < limits.maximum_elapsed_seconds <= 7200.0
     ):
         raise ValueError("invalid_search_plan")
-    if any(not isinstance(weight, (int, float)) or isinstance(weight, bool)
-           or not math.isfinite(weight) or not 0 <= weight <= 1
-           for weight in limits.ensemble_neural_network_weights):
+    if not limits.ensemble_neural_network_weights or any(
+        not isinstance(weight, (int, float)) or isinstance(weight, bool)
+        or not math.isfinite(weight) or not 0 <= weight <= 1
+        for weight in limits.ensemble_neural_network_weights
+    ):
         raise ValueError("invalid_search_plan")
     if tuple(sorted(set(limits.ensemble_neural_network_weights))) != limits.ensemble_neural_network_weights:
         raise ValueError("invalid_search_plan")
