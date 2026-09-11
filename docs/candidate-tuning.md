@@ -22,6 +22,58 @@ evidence described in [the normalization reference](normalization.md). Source,
 family, duplicate, location, and record identity evidence is used only for
 partitioning; it never enters a model feature matrix.
 
+## Evaluate one declared candidate
+
+Use `evaluate_declared_candidate` as the high-level tracer before orchestration. Both
+supported model families use the same rotating anonymous-source holdout interface.
+The declared contract is complete and serializable, and its `candidate_id` is derived
+from the configuration content rather than supplied by the caller.
+
+```python
+from minires_evaluation import EvaluationConfig
+from minires_evaluation.tuning import (
+    DeclaredCandidate,
+    TensorflowXGBoostCandidateRuntime,
+    evaluate_declared_candidate,
+)
+
+candidate = DeclaredCandidate(
+    family="xgboost",
+    parameters={
+        "n_estimators": 600,
+        "max_depth": 5,
+        "learning_rate": 0.03,
+        "subsample": 0.75,
+        "colsample_bytree": 0.9,
+        "min_child_weight": 3.0,
+        "gamma": 0.05,
+        "reg_alpha": 0.001,
+        "reg_lambda": 1.0,
+        "objective": "reg:squarederror",
+        "n_jobs": 1,
+        "early_stopping_rounds": 50,
+    },
+)
+result = evaluate_declared_candidate(
+    records,
+    EvaluationConfig(None, "mm3", True, seed=17),
+    candidate=candidate,
+    runtime=TensorflowXGBoostCandidateRuntime(),
+    seed=41,
+    output_root="private/declared-candidates/xgb-001",
+)
+```
+
+The output directory is create-only. Its private report includes row-level
+predictions, partition audits, fitted-state and held-out-data fingerprints, fit
+metadata, aggregate diagnostics, dependency versions, and process resource use.
+Each fold's fitted artifact and every report file is SHA-256 checksummed in
+`manifest.json`. Invalid contracts, partition failures, missing runtimes,
+non-finite predictions, model failures, and artifact failures return bounded blocker
+codes without exposing raw third-party errors. Neural-network normalization and both
+families' early stopping receive only fold-training and fold-validation records,
+respectively.
+
 ## Run the bounded candidate search
 
 Choose a new output directory beneath `private/` for every attempt:

@@ -1,4 +1,5 @@
 from dataclasses import replace
+from hashlib import sha256
 import contextlib
 import io
 import json
@@ -17,8 +18,10 @@ from minires_evaluation.assessment import (
 from minires_evaluation.ingestion import fingerprint, load_records
 from minires_evaluation.tuning import (
     CandidateFoldFit,
+    DeclaredCandidate,
     LockedFit,
     SearchLimits,
+    evaluate_declared_candidate,
     generate_search_plan,
     load_locked_candidate,
     main as tuning_main,
@@ -58,6 +61,9 @@ class RecordingTuningRuntime:
     def load_locked(self, candidate, directory, contract):
         return lambda rows: [row[1] / 1000.0 for row in rows]
 
+    def serialize_fold(self, fitted):
+        return {"model.bin": str(fitted.fitted_state).encode()}
+
 
 class SeedShiftRuntime(RecordingTuningRuntime):
     def fit_fold(self, candidate, seed, train_features, train_targets,
@@ -78,6 +84,30 @@ class FailingCandidateRuntime(RecordingTuningRuntime):
             raise RuntimeError("private runtime detail")
         return super().fit_fold(candidate, seed, train_features, train_targets,
                                 validation_features, validation_targets)
+
+
+class NonFiniteCandidateRuntime(RecordingTuningRuntime):
+    def fit_fold(self, candidate, seed, train_features, train_targets,
+                 validation_features, validation_targets):
+        fitted = super().fit_fold(candidate, seed, train_features, train_targets,
+                                  validation_features, validation_targets)
+        return replace(fitted, predictor=lambda rows: [math.nan for _ in rows])
+
+
+class PredictionMutatingRuntime(RecordingTuningRuntime):
+    def fit_fold(self, candidate, seed, train_features, train_targets,
+                 validation_features, validation_targets):
+        self.fit_calls.append((candidate.candidate_id, seed, tuple(train_features),
+                               tuple(validation_features)))
+        state = {"prediction_inputs": []}
+        metadata = {"prediction_call_count": 0}
+
+        def predict(rows):
+            state["prediction_inputs"].append(tuple(rows))
+            metadata["prediction_call_count"] += 1
+            return [row[1] / 1000.0 for row in rows]
+
+        return CandidateFoldFit(predictor=predict, metadata=metadata, fitted_state=state)
 
 
 class CandidateSearchPlanTests(unittest.TestCase):
@@ -109,6 +139,165 @@ class CandidateSearchPlanTests(unittest.TestCase):
                 input_fingerprint="input", code_fingerprint="code",
                 dependency_versions={"runtime": "synthetic-1"},
             )
+
+
+class DeclaredCandidateEvaluationTests(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.records = [
+            CandidateTuningTests.row(source, family, index + 1)
+            for index, (source, family) in enumerate(
+                (("a", "a1"), ("a", "a2"), ("b", "b1"),
+                 ("b", "b2"), ("c", "c1"), ("c", "c2"))
+            )
+        ]
+        self.config = EvaluationConfig(None, "mm3", True, seed=17)
+
+    @staticmethod
+    def candidate(family):
+        plan = generate_search_plan(
+            SearchLimits(seed=41), input_fingerprint="input", code_fingerprint="code",
+            dependency_versions={"runtime": "synthetic-1"},
+        )
+        generated = next(item for item in plan.component_trials if item.family == family)
+        return DeclaredCandidate(family=family, parameters=generated.parameters)
+
+    def test_neural_network_and_xgboost_use_the_same_rotating_holdout_seam(self):
+        for family in ("neural_network", "xgboost"):
+            with self.subTest(family=family):
+                runtime = RecordingTuningRuntime()
+                result = evaluate_declared_candidate(
+                    self.records, self.config, candidate=self.candidate(family),
+                    runtime=runtime, seed=41,
+                )
+
+                self.assertEqual(result.status, "completed")
+                self.assertEqual(result.contract["family"], family)
+                self.assertEqual(len(result.source_reports), 3)
+                self.assertEqual(len(runtime.fit_calls), 3)
+                self.assertEqual(result.metrics["sample_count"], len(self.records))
+                self.assertEqual(result.dependency_versions, runtime.dependency_versions)
+                self.assertTrue(all(
+                    {"sample_count", "mae_g", "within_2g_fraction", "above_5g_fraction"}
+                    <= set(report)
+                    for report in result.source_reports
+                ))
+                self.assertTrue(all(
+                    "fitted_state_fingerprint" in metadata
+                    for metadata in result.fit_metadata
+                ))
+                self.assertTrue(all(
+                    not set(report["test_rows"]) &
+                    (set(report["train_rows"]) | set(report["validation_rows"]))
+                    for report in result.source_reports
+                ))
+
+    def test_contract_identifier_is_stable_and_invalid_values_block_before_fitting(self):
+        candidate = self.candidate("xgboost")
+        serialized = json.loads(json.dumps(candidate.to_dict(), sort_keys=True))
+        equivalent = DeclaredCandidate(
+            family=serialized["family"], parameters=serialized["parameters"]
+        )
+        self.assertEqual(candidate.candidate_id, equivalent.candidate_id)
+        self.assertEqual(
+            serialized["runtime_configuration"]["tree_method"], "hist"
+        )
+        self.assertEqual(
+            serialized["runtime_configuration"]["eval_metric"], "mae"
+        )
+        with self.assertRaises(TypeError):
+            candidate.parameters["n_jobs"] = -1
+
+        runtime = RecordingTuningRuntime()
+        invalid = DeclaredCandidate(
+            family="xgboost", parameters={**candidate.parameters, "n_jobs": -1}
+        )
+        result = evaluate_declared_candidate(
+            self.records, self.config, candidate=invalid, runtime=runtime, seed=41,
+        )
+
+        self.assertEqual(result.status, "blocked")
+        self.assertEqual(result.blockers, ("invalid_candidate_configuration",))
+        self.assertEqual(runtime.fit_calls, [])
+
+    def test_missing_runtime_and_non_finite_predictions_return_bounded_blockers(self):
+        candidate = self.candidate("neural_network")
+        with patch(
+            "minires_evaluation.tuning.TensorflowXGBoostCandidateRuntime",
+            side_effect=ImportError("private dependency detail"),
+        ):
+            missing = evaluate_declared_candidate(
+                self.records, self.config, candidate=candidate, seed=41,
+            )
+        self.assertEqual(
+            missing.blockers, ("candidate_evaluation_dependencies_required",)
+        )
+
+        non_finite = evaluate_declared_candidate(
+            self.records, self.config, candidate=candidate,
+            runtime=NonFiniteCandidateRuntime(), seed=41,
+        )
+        self.assertEqual(non_finite.blockers, ("candidate_runtime_failed",))
+        self.assertNotIn("nan", json.dumps(non_finite.to_dict()))
+
+    def test_private_report_and_fold_artifacts_are_create_only_and_checksummed(self):
+        root = Path(self.temp.name) / "private" / "declared-candidate"
+        result = evaluate_declared_candidate(
+            self.records, self.config, candidate=self.candidate("neural_network"),
+            runtime=RecordingTuningRuntime(), seed=41, output_root=root,
+        )
+
+        self.assertEqual(result.status, "completed")
+        self.assertTrue((root / "candidate-report.json").exists())
+        manifest = json.loads((root / "manifest.json").read_text())
+        self.assertEqual(set(result.artifact_checksums), {
+            "fold-artifacts/fold-000/model.bin",
+            "fold-artifacts/fold-001/model.bin",
+            "fold-artifacts/fold-002/model.bin",
+        })
+        for name, checksum in manifest["artifacts"].items():
+            self.assertEqual(sha256((root / name).read_bytes()).hexdigest(), checksum)
+        blocked = evaluate_declared_candidate(
+            self.records, self.config, candidate=self.candidate("neural_network"),
+            runtime=RecordingTuningRuntime(), seed=41, output_root=root,
+        )
+        self.assertEqual(blocked.blockers, ("candidate_artifact_failed",))
+
+    def test_held_out_data_changes_only_test_evidence_for_its_fold(self):
+        baseline_root = Path(self.temp.name) / "private" / "baseline"
+        baseline = evaluate_declared_candidate(
+            self.records, self.config, candidate=self.candidate("neural_network"),
+            runtime=PredictionMutatingRuntime(), seed=41, output_root=baseline_root,
+        )
+        changed = [dict(row) for row in self.records]
+        changed[0] = {**changed[0], "kb": 999, "volume": 999000,
+                      "surface_area": 99900, "bbox_area": 1098900,
+                      "euler_number": 999, "scale": 999, "weight": 999}
+        repeated_root = Path(self.temp.name) / "private" / "repeated"
+        repeated = evaluate_declared_candidate(
+            changed, self.config, candidate=self.candidate("neural_network"),
+            runtime=PredictionMutatingRuntime(), seed=41, output_root=repeated_root,
+        )
+
+        before_index, before = next(
+            (index, report) for index, report in enumerate(baseline.source_reports)
+            if 0 in report["test_rows"]
+        )
+        after_index, after = next(
+            (index, report) for index, report in enumerate(repeated.source_reports)
+            if 0 in report["test_rows"]
+        )
+        self.assertEqual(baseline.fit_metadata[before_index], repeated.fit_metadata[after_index])
+        self.assertEqual(
+            baseline.artifact_checksums[
+                f"fold-artifacts/fold-{before_index:03d}/model.bin"
+            ],
+            repeated.artifact_checksums[
+                f"fold-artifacts/fold-{after_index:03d}/model.bin"
+            ],
+        )
+        self.assertNotEqual(before["test_data_fingerprint"], after["test_data_fingerprint"])
 
 
 class CandidateTuningTests(unittest.TestCase):
