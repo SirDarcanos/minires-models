@@ -37,6 +37,10 @@ PUBLIC_PRIVATE_KEYS = {
 }
 ROW_LEVEL_KEYS = {"canonical_rows", "normalized_records", "predictions", "source_reports"}
 PATH_MARKERS = ("/Users/", "/home/", "private/", "\\Users\\")
+PRIVATE_KEY_MARKERS = (
+    "artist", "fingerprint", "checksum", "source_mapping", "source_identity",
+    "anonymous_source_group", "miniature_family", "row_index", "local_path",
+)
 SMALL_SOURCE_COUNT_THRESHOLD = 5
 DEPENDENCIES = ("pyarrow", "numpy", "keras", "tensorflow", "xgboost")
 
@@ -147,11 +151,15 @@ def review_public_summary(summary: Mapping[str, Any]) -> dict[str, Any]:
     findings: set[str] = set()
 
     def visit(value: Any, key: str | None = None) -> None:
-        if key in PUBLIC_PRIVATE_KEYS:
+        normalized_key = key.lower() if isinstance(key, str) else ""
+        if (
+            key in PUBLIC_PRIVATE_KEYS
+            or any(marker in normalized_key for marker in PRIVATE_KEY_MARKERS)
+        ):
             findings.add("identifying_or_private_key")
-        if key in ROW_LEVEL_KEYS:
+        if key in ROW_LEVEL_KEYS or normalized_key in {"rows", "row", "records"}:
             findings.add("row_level_output")
-        if key == "error":
+        if key == "error" or normalized_key.endswith("_error"):
             findings.add("raw_error_detail")
         if isinstance(value, str) and any(marker in value for marker in PATH_MARKERS):
             findings.add("local_path")

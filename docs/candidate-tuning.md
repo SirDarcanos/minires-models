@@ -22,6 +22,112 @@ evidence described in [the normalization reference](normalization.md). Source,
 family, duplicate, location, and record identity evidence is used only for
 partitioning; it never enters a model feature matrix.
 
+## Run the complete command-level workflow
+
+The end-to-end command is the preferred lifecycle tracer. It creates the search
+plan, runs the bounded development search, repeats finalists, locks an eligible
+candidate, and then assesses that immutable candidate against explicitly supplied
+final evidence. It never publishes anything.
+
+First create a private slicing-configuration record. The volume unit must agree
+with the command and every accepted final row must carry exactly the declared
+supported slicing conditions:
+
+```json
+{
+  "volume_unit": "mm3",
+  "slicing_conditions": {
+    "layer_height_mm": 0.05
+  }
+}
+```
+
+Then choose a new output directory beneath `private/`:
+
+```bash
+.venv-candidates/bin/python -m minires_evaluation.workflow \
+  --development-records private/development-records.json \
+  --final-records private/final-test-records.json \
+  --legacy-artifacts private/legacy-artifacts \
+  --slicing-configuration private/slicing-configuration.json \
+  --output-root private/end-to-end/run-001 \
+  --volume-unit mm3 \
+  --scope-confirmed \
+  --seed 41 \
+  --second-seed 42 \
+  --bootstrap-seed 1729 \
+  --neural-network-trials 6 \
+  --xgboost-trials 6 \
+  --ensemble-trials 3 \
+  --second-seed-candidates 5 \
+  --maximum-candidate-runs 20 \
+  --maximum-elapsed-seconds 7200
+```
+
+The fixed budget is six neural-network trials, six XGBoost trials, three
+validation-selected ensembles, and a second-seed repetition of the best five
+eligible initial candidates. The fixed learned model remains a separate control.
+Changing the 6/6/3 plus best-five allocation, exceeding 20 candidate runs, or
+requesting more than 7,200 seconds is rejected rather than treated as permission
+to expand the experiment.
+
+Development evidence is used for fitting, preprocessing, early stopping,
+ensemble selection, threshold selection, ranking, training-duration selection,
+and candidate locking. Final evidence is not read until the lock has been created
+and checksum-verified. The final stage only performs paired assessment; it cannot
+change candidate weights, training duration, ranking, or the compute budget.
+
+The create-only package contains:
+
+- `tuning/search-plan.json`, every candidate outcome, both seed results, rankings,
+  selected epoch/tree counts, partition evidence, and the locked fitted artifacts;
+- `assessment/assessment.json` with the paired final result, blockers, confidence
+  analysis, gate outcomes, and private row-level evidence;
+- `evidence-index.json` with code/configuration and normalized-input identities,
+  development split identities, dependency and platform versions, elapsed and CPU
+  time, peak memory, before/after input checks, phase status, promotion decision,
+  and checksums;
+- `public-summary-draft.json`, containing only aggregate statuses, metrics,
+  resource summaries, gates, and limitations; and
+- `public-summary-review.json` plus `manifest.json`, recording automated screening,
+  the required manual content review, create-only checksums, and that publication
+  did not occur.
+
+Interrupted, time-limited, failed, or blocked runs retain completed phase evidence
+and skipped-run accounting. They cannot claim an incomplete search, candidate lock,
+or assessment as complete. Missing or mismatched slicing evidence, unavailable
+pinned artifacts, insufficient source coverage, or failed promotion gates remain
+bounded blockers. Inputs, released weights, retained notebooks, and supplied final
+records are never written by this workflow.
+
+To reassess an existing lock without tuning, candidate selection, or additional
+compute, use the same command in assessment-only mode:
+
+```bash
+.venv-candidates/bin/python -m minires_evaluation.workflow \
+  --assessment-only \
+  --locked-candidate private/end-to-end/run-001/tuning/locked-candidate \
+  --final-records private/final-test-records.json \
+  --legacy-artifacts private/legacy-artifacts \
+  --slicing-configuration private/slicing-configuration.json \
+  --output-root private/end-to-end/reassessment-001 \
+  --volume-unit mm3 \
+  --scope-confirmed \
+  --bootstrap-seed 1729
+```
+
+Issue #11 can supply at most one of the three required untouched final source
+groups. Actual promotion remains blocked until at least two additional qualifying
+untouched groups are supplied, with at least 200 accepted records in every group.
+This blocker does not invalidate completed tuning evidence and must not be resolved
+by weakening the final-evidence requirement.
+
+Automated screening is only a mechanical safety gate. A person must review and
+explicitly publish an approved aggregate separately. Even a promoted result is
+limited unseen-source evidence for internal advisory use with human review of every
+estimate. It does not establish population-wide performance, a prediction interval,
+actual shop consumption, pricing accuracy, or an operational allowance.
+
 ## Evaluate one declared candidate
 
 Use `evaluate_declared_candidate` as the high-level tracer before orchestration. Both
