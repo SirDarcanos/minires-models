@@ -74,6 +74,42 @@ codes without exposing raw third-party errors. Neural-network normalization and 
 families' early stopping receive only fold-training and fold-validation records,
 respectively.
 
+## Generate the search plan
+
+Generate and review the complete plan before starting expensive fitting. The
+plan-generation interface normalizes the development input only to derive stable
+input and source-allocation identities; it does not fit, score, read prior candidate
+results, or use targets to choose candidate parameters.
+
+```python
+from minires_evaluation import EvaluationConfig
+from minires_evaluation.tuning import SearchLimits, create_search_plan
+
+plan = create_search_plan(
+    records,
+    EvaluationConfig(None, "mm3", True, seed=17),
+    limits=SearchLimits(seed=41),
+    dependency_versions={"tensorflow": "pinned-version", "xgboost": "pinned-version"},
+    output_root="private/candidate-plans/plan-001",
+)
+```
+
+The output directory is private and create-only. `search-plan.json` has canonical,
+repeatable JSON content and `manifest.json` records its SHA-256 checksum. The plan
+identity binds the raw and normalized development input, source-allocation contract,
+code and evaluation configuration, complete parameter domains, exact dependencies,
+seed, and generator version. A changed bound identity produces a changed plan ID.
+The plan also records all 12 ordered component candidates, three equal-rank
+ensemble-construction rules, eligibility and ranking rules, the best-five second-seed
+repetition, the 20-run and two-hour limits, and the immutable fixed learned control.
+Private source names are represented only by one-way identities and are never written
+to the plan.
+
+Only supported subsets of the declared domains are accepted. Missing or empty
+domains, unsupported choices, non-finite values, duplicate/impossible trial
+allocations, unsafe worker settings, and invalid resource limits fail with
+`invalid_search_plan` before any runtime can fit.
+
 ## Run the bounded candidate search
 
 Choose a new output directory beneath `private/` for every attempt:
@@ -88,10 +124,11 @@ Choose a new output directory beneath `private/` for every attempt:
 ```
 
 The workflow creates `search-plan.json` before fitting. The fixed-seed plan
-contains six dense neural-network trials and six XGBoost trials. Within each
-outer source holdout, it builds three ensembles from the strongest equal-rank
-component pairings on that fold's permitted validation predictions only. It
-then repeats the five highest-ranked eligible candidates with the second seed.
+contains six dense neural-network trials and six XGBoost trials and predeclares
+three deterministic equal-rank ensemble rules. Within each outer source holdout,
+it applies those rules to component rankings from that fold's permitted validation
+predictions only. It then repeats the five highest-ranked eligible candidates with
+the second seed.
 One complete
 cross-validated candidate evaluation is one run, including an ensemble whose
 components must be refitted. The fixed learned configuration is evaluated as a
