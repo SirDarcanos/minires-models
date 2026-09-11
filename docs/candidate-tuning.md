@@ -135,35 +135,57 @@ components must be refitted. The fixed learned configuration is evaluated as a
 control and does not consume a candidate run.
 
 The workflow never starts a candidate after 20 new runs or after 7,200 elapsed
-seconds. A partial search cannot select or lock a candidate. Runtime failures,
-invalid plans, missing grouping evidence, deadline exhaustion, and the absence
-of eligible candidates remain bounded blockers in `tuning-result.json`. The
-private `candidate_history` records the control, every completed or failed launch,
-and every skipped slot with its bounded stop reason. A stopped search preserves
-all completed results and cannot lock a candidate.
+seconds. If fewer than five initial candidates are eligible, it repeats every
+eligible candidate and records the finalist shortfall; unused capacity does not
+expand the search. A partial repetition stage cannot select or lock a candidate.
+Runtime failures, invalid plans, missing grouping evidence, deadline exhaustion,
+and the absence of eligible candidates remain bounded outcomes in
+`tuning-result.json`. The private `candidate_history` records the control, every
+completed or failed launch, and every skipped slot with its bounded stop reason.
+A stopped search preserves all completed results and cannot lock a candidate.
 
 Eligibility applies the observed above-5-g error limits before ranking: no more
 than 1% pooled, 1% under equal source weighting, and 2% for each source with at
 least 200 accepted records. Smaller sources remain part of pooled and
 source-balanced metrics, but do not receive the separate per-source gate.
 Ineligible results remain in the private initial results and history but are
-excluded from `promotable_ranking`. Eligible candidates rank by source-balanced
-mean absolute error, pooled mean absolute error, within-2-g fraction, and stable
-candidate ID. The report records that rationale and each ensemble's selected
-fold weights explicitly. First- and second-seed metrics receive equal weight.
-The selected configuration is refitted on all eligible development records with
-median cross-validation-derived epoch and tree counts and without final-test
-early stopping.
+excluded from `initial_promotable_ranking`. Eligible candidates rank by
+source-balanced mean absolute error, pooled mean absolute error, within-2-g
+fraction, and stable candidate ID. The five highest-ranked eligible candidates,
+or every eligible candidate when fewer than five qualify, receive the second
+seed. First- and second-seed metrics receive equal weight, including unfavorable
+results; eligibility and `promotable_ranking` are then recomputed from those
+combined metrics. The report records both rankings, the finalist shortfall, and
+each ensemble's selected fold weights explicitly.
+
+A complete repetition stage selects the best combined eligible result by the
+same deterministic rule. Epoch and tree counts are fixed from the median values
+selected across every permitted development fold and both seeds. The chosen
+component or resolved ensemble is refitted on all included development records,
+without validation data or final-test early stopping. A resolved ensemble keeps
+its component contracts and fixes its convex weight from the same two-seed fold
+evidence. If no initial candidate qualifies, the run records the best initial
+development result, performs no repetitions or refit, and ends as
+`completed_no_candidate` without expanding the budget.
 
 ## Locked candidate
 
 A successful search creates `locked-candidate/` with:
 
-- the complete candidate, ranking, eligibility, feature, preprocessing,
-  dependency, input, code, and development-split contract;
+- the complete component or ensemble configuration and output unit;
+- the two seeds, equal-weight combined evidence, deterministic ranking and
+  eligibility rules, and fixed training counts;
+- feature, preprocessing, dependency-environment, input, code, search-plan, and
+  development-split identities;
 - the fitted model artifact or artifacts;
 - the fitted preprocessing state; and
 - SHA-256 checksums in a create-only lock manifest.
+
+The tuning and refit seam receives only normalized development features and
+labels. It has no final-test argument or final-test path, and the contract records
+that final-test access did not occur. Final-test records, source metadata,
+fingerprints, labels, and predictions enter only through the later assessment
+command after lock verification.
 
 Use `load_locked_candidate` from `minires_evaluation.tuning` when assessment runs
 in a later process. Loading and assessment fail closed if an artifact,
