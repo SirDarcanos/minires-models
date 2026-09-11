@@ -14,6 +14,7 @@ from minires_evaluation.assessment import (
     FinalAssessmentConfig,
     assess_locked_candidate,
     evaluate_promotion_gates,
+    main as assessment_main,
 )
 from minires_evaluation.ingestion import fingerprint, load_records
 from minires_evaluation.tuning import (
@@ -944,6 +945,20 @@ class CandidateTuningTests(unittest.TestCase):
         self.assertEqual(runtime.fit_calls, [])
 
 
+class ShortLockedPredictionRuntime(RecordingTuningRuntime):
+    def load_locked(self, candidate, directory, contract):
+        return lambda rows: [row[1] / 1000.0 for row in rows[:-1]]
+
+
+class CandidatePredictionRuntime(RecordingTuningRuntime):
+    def __init__(self, predict):
+        super().__init__()
+        self.predict = predict
+
+    def load_locked(self, candidate, directory, contract):
+        return self.predict
+
+
 class LockedAssessmentTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
@@ -999,6 +1014,39 @@ class LockedAssessmentTests(unittest.TestCase):
         self.assertNotIn("predictions", public)
         self.assertNotIn("source_reports", public)
         self.assertNotIn("source_counts", public["row_accounting"])
+        self.assertIn("not_operational_allowance", public["limitations"])
+        self.assertEqual(
+            json.loads((self.root / "assessment" / "public-summary-review.json").read_text())[
+                "status"
+            ],
+            "automated_screening_passed",
+        )
+        manifest = json.loads((self.root / "assessment" / "manifest.json").read_text())
+        for name, checksum in manifest["artifacts"].items():
+            self.assertEqual(
+                sha256((self.root / "assessment" / name).read_bytes()).hexdigest(),
+                checksum,
+            )
+        self.assertFalse(manifest["publication_performed"])
+
+    def test_one_failed_gate_composes_an_honest_not_promoted_outcome(self):
+        runtime = CandidatePredictionRuntime(
+            lambda rows: [row[1] / 1000.0 + 3.0 for row in rows]
+        )
+
+        result = assess_locked_candidate(
+            self.final_rows(), EvaluationConfig(None, "mm3", True),
+            self.locked, self.legacy, output_root=self.root / "assessment-not-promoted",
+            runtime=runtime,
+        )
+
+        self.assertEqual(result.status, "not_promoted")
+        self.assertFalse(result.promoted)
+        self.assertEqual(result.blockers, ("promotion_gates_not_met",))
+        self.assertFalse(result.gates["pooled_mae_noninferior"])
+        self.assertTrue(result.gates["pooled_tail"])
+        self.assertIn("pooled_tail_confidence_interval_95", result.confidence_analysis)
+        self.assertIn("tail_confidence_interval_95", result.source_reports[0])
 
     def test_insufficient_final_sources_block_before_scoring(self):
         result = assess_locked_candidate(
@@ -1010,6 +1058,137 @@ class LockedAssessmentTests(unittest.TestCase):
         self.assertEqual(result.status, "blocked")
         self.assertIn("insufficient_final_source_groups", result.blockers)
         self.assertEqual(result.predictions, ())
+
+    def test_final_sources_are_confirmed_absent_from_candidate_development(self):
+        self.assertEqual(
+            len(self.locked.contract["development_source_groups"]), 3
+        )
+        self.assertEqual(
+            set(self.locked.contract["development_data_usage"]),
+            {
+                "fitting", "preprocessing", "early_stopping", "ensemble_selection",
+                "threshold_selection", "candidate_locking",
+            },
+        )
+
+        overlap = assess_locked_candidate(
+            self.final_rows(("a", "new-b", "new-c")),
+            EvaluationConfig(None, "mm3", True), self.locked, self.legacy,
+            output_root=self.root / "assessment-overlap", runtime=self.runtime,
+        )
+        self.assertEqual(overlap.status, "blocked")
+        self.assertIn("final_source_used_in_candidate_development", overlap.blockers)
+        self.assertEqual(overlap.predictions, ())
+
+    def test_undersized_sources_and_distinct_row_outcomes_block_with_accounting(self):
+        undersized = self.final_rows()
+        del undersized[-1]
+        result = assess_locked_candidate(
+            undersized, EvaluationConfig(None, "mm3", True),
+            self.locked, self.legacy, output_root=self.root / "assessment-undersized",
+            runtime=self.runtime,
+        )
+        self.assertEqual(result.status, "blocked")
+        self.assertIn("insufficient_final_source_records", result.blockers)
+        self.assertEqual(result.row_accounting["source_counts"], {
+            fingerprint("new-a"): 200,
+            fingerprint("new-b"): 200,
+            fingerprint("new-c"): 199,
+        })
+
+        mixed = self.final_rows()
+        invalid = dict(mixed[0], volume=0)
+        outside_scope = dict(mixed[1], scope_confirmed=False)
+        missing_scope = dict(mixed[2], scope_confirmed=None)
+        result = assess_locked_candidate(
+            [*mixed, invalid, outside_scope, missing_scope],
+            EvaluationConfig(None, "mm3", True), self.locked, self.legacy,
+            output_root=self.root / "assessment-accounting", runtime=self.runtime,
+        )
+        self.assertEqual(result.status, "blocked")
+        self.assertEqual(result.row_accounting["accepted_count"], 600)
+        self.assertEqual(result.row_accounting["excluded_count"], 1)
+        self.assertEqual(result.row_accounting["needs_review_count"], 2)
+        self.assertEqual(result.row_accounting["reasons"]["invalid_volume"], 1)
+        self.assertEqual(result.row_accounting["reasons"]["unsupported_scope"], 1)
+        self.assertEqual(
+            result.row_accounting["reasons"]["scope_confirmation_required"], 1
+        )
+        self.assertIn("final_row_accounting_incomplete", result.blockers)
+        self.assertEqual(result.predictions, ())
+
+    def test_missing_evidence_and_prediction_row_mismatch_return_bounded_blockers(self):
+        missing = assess_locked_candidate(
+            self.root / "missing-final-records.json",
+            EvaluationConfig(None, "mm3", True), self.locked, self.legacy,
+            output_root=self.root / "assessment-missing", runtime=self.runtime,
+        )
+        self.assertEqual(missing.status, "blocked")
+        self.assertEqual(missing.blockers, ("final_evidence_unavailable_or_malformed",))
+        self.assertTrue((self.root / "assessment-missing" / "assessment.json").exists())
+
+        mismatch = assess_locked_candidate(
+            self.final_rows(), EvaluationConfig(None, "mm3", True),
+            self.locked, self.legacy, output_root=self.root / "assessment-mismatch",
+            runtime=ShortLockedPredictionRuntime(),
+        )
+        self.assertEqual(mismatch.status, "blocked")
+        self.assertEqual(
+            mismatch.blockers, ("paired_prediction_row_mismatch_or_failure",)
+        )
+        self.assertEqual(mismatch.predictions, ())
+
+        malformed_path = self.root / "malformed-final-records.jsonl"
+        malformed_path.write_text('{"partial":\n')
+        malformed = assess_locked_candidate(
+            malformed_path, EvaluationConfig(None, "mm3", True),
+            self.locked, self.legacy,
+            output_root=self.root / "assessment-malformed", runtime=self.runtime,
+        )
+        self.assertEqual(malformed.status, "blocked")
+        self.assertEqual(
+            malformed.blockers, ("final_evidence_unavailable_or_malformed",)
+        )
+
+    def test_malformed_locked_contract_returns_persisted_bounded_outcomes(self):
+        contract_path = self.locked.directory / "candidate-contract.json"
+        contract = json.loads(contract_path.read_text())
+        contract["dependency_environment"] = None
+        contract_path.write_text(json.dumps(contract))
+        manifest_path = self.locked.directory / "lock-manifest.json"
+        manifest = json.loads(manifest_path.read_text())
+        manifest["files"]["candidate-contract.json"] = sha256(
+            contract_path.read_bytes()
+        ).hexdigest()
+        manifest_path.write_text(json.dumps(manifest))
+
+        result = assess_locked_candidate(
+            self.final_rows(), EvaluationConfig(None, "mm3", True),
+            self.locked, self.legacy,
+            output_root=self.root / "assessment-invalid-lock", runtime=self.runtime,
+        )
+        self.assertEqual(result.status, "blocked")
+        self.assertIn("locked_candidate_contract_mismatch", result.blockers)
+
+        cli_output = io.StringIO()
+        with patch(
+            "minires_evaluation.assessment.TensorflowXGBoostCandidateRuntime",
+            return_value=self.runtime,
+        ), contextlib.redirect_stdout(cli_output):
+            code = assessment_main([
+                "--records", str(self.root / "unused.json"),
+                "--locked-candidate", str(self.locked.directory),
+                "--legacy-artifacts", str(self.root / "unused-legacy"),
+                "--output-root", str(self.root / "assessment-invalid-lock-cli"),
+                "--volume-unit", "mm3", "--scope-confirmed",
+            ])
+        self.assertEqual(code, 0)
+        self.assertEqual(
+            json.loads(cli_output.getvalue())["status"], "blocked"
+        )
+        self.assertTrue(
+            (self.root / "assessment-invalid-lock-cli" / "assessment.json").exists()
+        )
 
     def test_changed_locked_artifact_blocks_assessment(self):
         (self.locked.directory / "model.bin").write_bytes(b"changed")
@@ -1074,6 +1253,85 @@ class LockedAssessmentTests(unittest.TestCase):
         self.assertIn("final_scope_evidence_incomplete", result.blockers)
         self.assertEqual(result.row_accounting["accepted_count"], 0)
 
+    def test_family_clustered_bootstrap_has_known_deterministic_bounds(self):
+        rows = self.final_rows()
+        for index, row in enumerate(rows):
+            row["miniature_family"] = f"{row['anonymous_source_group']}-{index % 200 // 100}"
+        runtime = CandidatePredictionRuntime(lambda matrix: [
+            row[1] / 1000.0 + (0.0 if (int(row[1] / 1000.0) - 1) % 200 < 100 else 2.0)
+            for row in matrix
+        ])
+        legacy_predictor = lambda matrix: [row[1] / 1000.0 + 1.0 for row in matrix]
+        legacy = LegacyReference.from_predictors(
+            neural_network=legacy_predictor, xgboost=legacy_predictor,
+            neural_network_weight=0.2, provenance=LegacyProvenance.unknown(),
+        )
+
+        first = assess_locked_candidate(
+            rows, EvaluationConfig(None, "mm3", True), self.locked, legacy,
+            output_root=self.root / "assessment-clustered-a", runtime=runtime,
+        )
+        second = assess_locked_candidate(
+            rows, EvaluationConfig(None, "mm3", True), self.locked, legacy,
+            output_root=self.root / "assessment-clustered-b", runtime=runtime,
+        )
+
+        self.assertEqual(first.confidence_analysis, second.confidence_analysis)
+        self.assertAlmostEqual(
+            first.confidence_analysis["pooled_mae_relative_regression_upper_95"],
+            2 / 3,
+        )
+        self.assertAlmostEqual(
+            first.confidence_analysis[
+                "source_balanced_mae_relative_regression_upper_95"
+            ],
+            2 / 3,
+        )
+        self.assertEqual(
+            first.confidence_analysis["source_balanced_weighting"],
+            "each_observed_source_equal_in_every_replicate",
+        )
+
+    def test_source_balanced_bootstrap_weights_unequal_sources_equally(self):
+        rows = []
+        for source_index, count in enumerate((200, 300, 400)):
+            for index in range(count):
+                value = source_index * 1000 + index + 1
+                rows.append({
+                    **CandidateTuningTests.row(
+                        f"unequal-{source_index}", f"family-{source_index}", value
+                    ),
+                    "slicing_conditions": {"layer_height_mm": 0.05},
+                })
+        runtime = CandidatePredictionRuntime(lambda matrix: [
+            row[1] / 1000.0 + int(row[1] / 1_000_000.0) for row in matrix
+        ])
+        legacy_predictor = lambda matrix: [row[1] / 1000.0 + 1.0 for row in matrix]
+        legacy = LegacyReference.from_predictors(
+            neural_network=legacy_predictor, xgboost=legacy_predictor,
+            neural_network_weight=0.2, provenance=LegacyProvenance.unknown(),
+        )
+
+        result = assess_locked_candidate(
+            rows, EvaluationConfig(None, "mm3", True), self.locked, legacy,
+            output_root=self.root / "assessment-unequal-sources", runtime=runtime,
+        )
+
+        self.assertAlmostEqual(result.observed["pooled_candidate_mae_g"], 11 / 9)
+        self.assertAlmostEqual(
+            result.observed["source_balanced_candidate_mae_g"], 1.0
+        )
+        self.assertAlmostEqual(
+            result.confidence_analysis["pooled_mae_relative_regression_upper_95"],
+            2 / 9,
+        )
+        self.assertAlmostEqual(
+            result.confidence_analysis[
+                "source_balanced_mae_relative_regression_upper_95"
+            ],
+            0.0,
+        )
+
     def test_noninferiority_and_tail_boundaries_are_inclusive(self):
         observed = {
             "pooled_above_5g_fraction": 0.01,
@@ -1085,13 +1343,49 @@ class LockedAssessmentTests(unittest.TestCase):
             "source_balanced_mae_relative_regression_upper_95": 0.02,
             "pooled_within_2g_difference_lower_95": -0.01,
             "source_balanced_within_2g_difference_lower_95": -0.01,
+            "pooled_tail_confidence_interval_95": [0.0, 1.0],
+            "source_balanced_tail_confidence_interval_95": [0.0, 1.0],
         }
 
         gates = evaluate_promotion_gates(observed, confidence, FinalAssessmentConfig())
 
         self.assertTrue(all(gates.values()))
-        outside = dict(confidence, pooled_mae_relative_regression_upper_95=0.020001)
-        self.assertFalse(evaluate_promotion_gates(observed, outside)["pooled_mae_noninferior"])
+        cases = {
+            "pooled_mae_noninferior": (
+                confidence, "pooled_mae_relative_regression_upper_95", 0.020001
+            ),
+            "source_balanced_mae_noninferior": (
+                confidence, "source_balanced_mae_relative_regression_upper_95", 0.020001
+            ),
+            "pooled_within_2g_noninferior": (
+                confidence, "pooled_within_2g_difference_lower_95", -0.010001
+            ),
+            "source_balanced_within_2g_noninferior": (
+                confidence, "source_balanced_within_2g_difference_lower_95", -0.010001
+            ),
+            "pooled_tail": (observed, "pooled_above_5g_fraction", 0.010001),
+            "source_balanced_tail": (
+                observed, "source_balanced_above_5g_fraction", 0.010001
+            ),
+            "every_source_tail": (
+                observed, "maximum_source_above_5g_fraction", 0.020001
+            ),
+        }
+        for gate, (target, key, value) in cases.items():
+            with self.subTest(gate=gate):
+                changed_observed = dict(observed)
+                changed_confidence = dict(confidence)
+                if target is observed:
+                    changed_observed[key] = value
+                else:
+                    changed_confidence[key] = value
+                self.assertFalse(evaluate_promotion_gates(
+                    changed_observed, changed_confidence
+                )[gate])
+        inconclusive = dict(confidence, pooled_mae_relative_regression_upper_95=None)
+        self.assertFalse(evaluate_promotion_gates(
+            observed, inconclusive
+        )["pooled_mae_noninferior"])
 
 
 if __name__ == "__main__":

@@ -30,7 +30,11 @@ from .private_io import create_private_file, write_private_json
 from .splits import ALLOCATION_VERSION, freeze_splits
 
 
-TUNING_VERSION = "minires-candidate-tuning-v4"
+TUNING_VERSION = "minires-candidate-tuning-v5"
+DEVELOPMENT_ONLY_STAGES = (
+    "fitting", "preprocessing", "early_stopping", "ensemble_selection",
+    "threshold_selection", "candidate_locking",
+)
 POOLED_ABOVE_5G_FRACTION_MAXIMUM = 0.01
 SOURCE_BALANCED_ABOVE_5G_FRACTION_MAXIMUM = 0.01
 PER_SOURCE_ABOVE_5G_FRACTION_MAXIMUM = 0.02
@@ -399,16 +403,17 @@ def verify_locked_candidate_files(
         if expected_contract is not None and contract != json.loads(json.dumps(expected_contract)):
             blockers.add("locked_candidate_contract_mismatch")
         expected_dependencies = dict(sorted(dependency_versions.items()))
+        dependency_environment = contract.get("dependency_environment")
         if (
             contract.get("dependency_versions") != expected_dependencies
-            or contract.get("dependency_environment", {}).get("versions")
-            != expected_dependencies
+            or not isinstance(dependency_environment, Mapping)
+            or dependency_environment.get("versions") != expected_dependencies
         ):
             blockers.add("locked_candidate_dependency_mismatch")
         preprocessing = json.loads((root / "preprocessing-state.json").read_text())
         if not isinstance(preprocessing, dict) or not _valid_locked_contract(contract):
             blockers.add("locked_candidate_contract_mismatch")
-    except (OSError, ValueError, TypeError, json.JSONDecodeError):
+    except (AttributeError, OSError, ValueError, TypeError, json.JSONDecodeError):
         blockers.add("locked_candidate_unavailable")
     return tuple(sorted(blockers)), manifest, contract
 
@@ -1481,6 +1486,13 @@ def _refit_and_lock(
             "search_plan_fingerprint": fingerprint(plan.to_dict()),
             "development_split_fingerprint": fingerprint(development_manifest),
         },
+        "development_source_groups": sorted({
+            row.metadata["anonymous_source_group"] for row in rows
+            if row.metadata.get("anonymous_source_group")
+        }),
+        "development_data_usage": {
+            stage: "development_records_only" for stage in DEVELOPMENT_ONLY_STAGES
+        },
         "code_fingerprint": plan.code_fingerprint,
         "transformation_version": TRANSFORMATION_VERSION,
         "feature_contract": {"ordered_features": list(LEGACY_FEATURES), "dtype": "float32"},
@@ -1586,6 +1598,9 @@ def _valid_locked_contract(contract: Mapping[str, Any]) -> bool:
     feature_contract = contract.get("feature_contract")
     fixed_counts = contract.get("fixed_training_counts")
     seeds = contract.get("selection_seeds")
+    development_sources = contract.get("development_source_groups")
+    development_usage = contract.get("development_data_usage")
+    required_development_stages = set(DEVELOPMENT_ONLY_STAGES)
     try:
         candidate = _candidate_from_dict(contract["candidate"])
     except (KeyError, TypeError, ValueError):
@@ -1602,6 +1617,13 @@ def _valid_locked_contract(contract: Mapping[str, Any]) -> bool:
             "source_allocation_fingerprint", "search_plan_fingerprint",
             "development_split_fingerprint",
         ))
+        and isinstance(development_sources, list) and bool(development_sources)
+        and development_sources == sorted(set(development_sources))
+        and all(isinstance(source, str) and source for source in development_sources)
+        and isinstance(development_usage, Mapping)
+        and set(development_usage) == required_development_stages
+        and all(value == "development_records_only"
+                for value in development_usage.values())
         and isinstance(feature_contract, Mapping)
         and feature_contract.get("ordered_features") == list(LEGACY_FEATURES)
         and feature_contract.get("dtype") == "float32"

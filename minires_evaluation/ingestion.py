@@ -35,6 +35,11 @@ class InputError(ValueError):
 
 
 @dataclass(frozen=True)
+class MalformedLocalRecord:
+    """Marker retained when one local JSONL record cannot be parsed."""
+
+
+@dataclass(frozen=True)
 class CanonicalRow:
     row_index: int
     features: dict[str, float | None]
@@ -67,7 +72,7 @@ def load_records(dataset: Dataset) -> tuple[list[Any], str]:
                 try:
                     records.append(json.loads(line))
                 except json.JSONDecodeError:
-                    records.append(None)
+                    records.append(MalformedLocalRecord())
         elif path.suffix.lower() == ".json":
             records = json.loads(text)
             if not isinstance(records, list):
