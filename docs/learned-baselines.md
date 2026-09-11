@@ -57,7 +57,9 @@ weights. XGBoost receives the same unnormalized float32 matrix.
 The run records the dataset fingerprint, transformation and allocation
 versions, split configuration/fingerprint, seed, complete model configuration,
 Python/platform and dependency versions, elapsed runtime, fold counts, and
-absolute/relative numerical tolerances of `1e-6`. The run is capped at 32
+absolute/relative numerical tolerances of `1e-6`. TensorFlow dataset operations
+run synchronously and deterministically to avoid platform-specific asynchronous
+input-pipeline stalls. The run is capped at 32
 folds, 100 neural epochs, 900 trees, 21 ensemble candidates, and one XGBoost
 worker. A limit, missing dependency, unsupported Python, or runtime failure
 returns a bounded blocker instead of falling back or starting a search.

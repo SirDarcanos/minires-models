@@ -13,11 +13,24 @@ import time
 from typing import Any, Callable, Protocol, Sequence
 
 from .ingestion import CanonicalRow, fingerprint
-from .legacy import LEGACY_FEATURES, prepare_canonical_legacy_features
+from .legacy import LEGACY_FEATURES, _predict_keras_model, prepare_canonical_legacy_features
 
 
 BatchPredictor = Callable[[Sequence[tuple[float, ...]]], Sequence[float]]
 LEARNED_BASELINE_VERSION = "minires-clean-fixed-baselines-v1"
+
+
+def enable_synchronous_dataset_execution() -> bool:
+    """Configure TensorFlow before any model runtime can create a dataset."""
+    try:
+        import tensorflow as tf
+    except ImportError:
+        return False
+    try:
+        tf.data.experimental.enable_debug_mode()
+    except ValueError:
+        return False
+    return True
 
 
 @dataclass(frozen=True)
@@ -88,6 +101,7 @@ class LearnedBaseline:
                 "neural_network": "float32; per-feature normalization fitted on fold train only",
                 "xgboost": "same float32 matrix without normalization",
                 "normalization_fit_partition": "fold_train_only",
+                "dataset_execution": "synchronous deterministic tf.data execution",
                 "legacy_versus_new": (
                     "no whole-dataset tail filter, integer cast, rounding, ratio recomputation, "
                     "or embedded released normalization; clean NN normalization is fitted per fold"
@@ -268,6 +282,9 @@ class TensorflowXGBoostRuntime:
         import xgboost
         if not ((3, 11) <= sys.version_info[:2] <= (3, 13)):
             raise RuntimeError("unsupported Python")
+        # Also configure direct callers that do not use the evidence runner.
+        if not enable_synchronous_dataset_execution():
+            raise RuntimeError("synchronous_tensorflow_dataset_runtime_required")
         self.np = np
         self.tf = tf
         self.xgboost_module = xgboost
@@ -339,7 +356,7 @@ class TensorflowXGBoostRuntime:
             parameter_hash.update(np.asarray(weights).tobytes())
         parameter_hash.update(bytes(xgb.get_booster().save_raw()))
         return FittedFold(
-            neural_network=lambda rows: model.predict(np.asarray(rows, dtype=np.float32), verbose=0).reshape(-1).tolist(),
+            neural_network=lambda rows: _predict_keras_model(model, np, rows),
             xgboost=lambda rows: xgb.predict(np.asarray(rows, dtype=np.float32)).reshape(-1).tolist(),
             metadata={
                 "normalization_mean": normalizer.mean.numpy().reshape(-1).tolist(),

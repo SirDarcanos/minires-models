@@ -13,7 +13,7 @@ Use the normalized local export and only evidence you can attest:
 - `anonymous_source_group` and `miniature_family` are private evaluation evidence, not prediction features.
 - The legacy provenance defaults to unknown. Do not claim source-held-out provenance without separate evidence.
 
-Downloaded models and partial downloads under `data/` are ignored and must remain uncommitted. Released legacy weights belong in an ignored private cache. Do not modify the retained export, public comparison tables, or released weights.
+The entire local `data/` directory is ignored and must remain uncommitted. Released legacy weights belong in an ignored private cache. Do not modify the retained export, local comparison datasets, or released weights.
 
 ## Run the package
 

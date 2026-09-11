@@ -198,7 +198,7 @@ always false. No rounding is introduced to make datasets appear equivalent.
 Files are created locally with mode `0600` in a new `0700` run directory beneath
 `private/`. Runs never overwrite inputs, old reports, notebooks, or weights.
 A failed write may leave a partial directory; use a new directory after diagnosis.
-Git ignores `private/`, Parquet, the retained export, and its sidecar metadata.
+Git ignores `private/`, the entire local `data/` directory, Parquet, the retained export, and its sidecar metadata.
 
 Identity, filenames, free text, and artist mappings are not persisted. Hashed
 linkage tokens are still sensitive and remain private; they are not suitable

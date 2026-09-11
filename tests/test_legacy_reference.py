@@ -1,7 +1,9 @@
 import hashlib
 import json
 from pathlib import Path
+import sys
 import tempfile
+import types
 import unittest
 from unittest.mock import patch
 
@@ -192,6 +194,61 @@ class LegacyCompatibilityTests(unittest.TestCase):
             ):
                 loaded = load_legacy_reference(root)
             self.assertEqual(loaded.blockers, ("legacy_inference_dependencies_required",))
+
+    def test_loaded_neural_network_inference_avoids_keras_dataset_pipeline(self):
+        import numpy as np
+
+        class FakeNeuralNetwork:
+            def predict(self, *_args, **_kwargs):
+                raise AssertionError("Keras predict dataset pipeline must not be used")
+
+            def __call__(self, rows, *, training):
+                self.training = training
+                return np.full((len(rows), 1), 5.0, dtype=np.float32)
+
+        class FakeXGBoost:
+            def load_model(self, _path):
+                pass
+
+            def predict(self, rows):
+                return np.full(len(rows), 4.0, dtype=np.float32)
+
+        neural_model = FakeNeuralNetwork()
+        tensorflow = types.ModuleType("tensorflow")
+        tensorflow_keras = types.ModuleType("tensorflow.keras")
+        tensorflow_models = types.ModuleType("tensorflow.keras.models")
+        tensorflow_models.load_model = lambda *_args, **_kwargs: neural_model
+        xgboost = types.ModuleType("xgboost")
+        xgboost.XGBRegressor = FakeXGBoost
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            contents = {
+                "minires.keras": b"nn",
+                "minires_xgb.json": b"xgb",
+                "minires_meta.json": json.dumps(
+                    {"w_nn": 0.2, "features": list(LEGACY_FEATURES)}
+                ).encode(),
+            }
+            specs = []
+            for name, content in contents.items():
+                (root / name).write_bytes(content)
+                specs.append(PinnedArtifact(name, hashlib.sha256(content).hexdigest(), len(content)))
+            modules = {
+                "tensorflow": tensorflow,
+                "tensorflow.keras": tensorflow_keras,
+                "tensorflow.keras.models": tensorflow_models,
+                "xgboost": xgboost,
+            }
+            with patch("minires_evaluation.legacy.PINNED_ARTIFACTS", tuple(specs)), patch.dict(
+                sys.modules, modules
+            ):
+                loaded = load_legacy_reference(root)
+
+        assert loaded.neural_network is not None
+        predictions = loaded.neural_network([(1.0,) * len(LEGACY_FEATURES)])
+        self.assertEqual(predictions, [5.0])
+        self.assertFalse(neural_model.training)
 
     def test_pinned_manifest_records_immutable_provenance_and_real_checksums(self):
         self.assertEqual(
