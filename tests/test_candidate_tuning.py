@@ -78,6 +78,28 @@ class SeedShiftRuntime(RecordingTuningRuntime):
         )
 
 
+class OneIneligibleCandidateRuntime(RecordingTuningRuntime):
+    def __init__(self):
+        super().__init__()
+        self.ineligible_candidate_id = None
+
+    def fit_fold(self, candidate, seed, train_features, train_targets,
+                 validation_features, validation_targets):
+        fitted = super().fit_fold(candidate, seed, train_features, train_targets,
+                                  validation_features, validation_targets)
+        if candidate.family == "neural_network" and self.ineligible_candidate_id is None:
+            self.ineligible_candidate_id = candidate.candidate_id
+        shift = 6.0 if candidate.candidate_id == self.ineligible_candidate_id else 0.0
+        return replace(
+            fitted,
+            predictor=lambda rows: [row[1] / 1000.0 + shift for row in rows],
+        )
+
+
+class UnavailableTuningRuntime(RecordingTuningRuntime):
+    startup_blockers = ("candidate_tuning_dependencies_required",)
+
+
 class FailingCandidateRuntime(RecordingTuningRuntime):
     def fit_fold(self, candidate, seed, train_features, train_targets,
                  validation_features, validation_targets):
@@ -93,6 +115,21 @@ class NonFiniteCandidateRuntime(RecordingTuningRuntime):
         fitted = super().fit_fold(candidate, seed, train_features, train_targets,
                                   validation_features, validation_targets)
         return replace(fitted, predictor=lambda rows: [math.nan for _ in rows])
+
+
+class SelectiveTailRuntime(RecordingTuningRuntime):
+    def __init__(self, shifted_values):
+        super().__init__()
+        self.shifted_values = set(shifted_values)
+
+    def fit_fold(self, candidate, seed, train_features, train_targets,
+                 validation_features, validation_targets):
+        fitted = super().fit_fold(candidate, seed, train_features, train_targets,
+                                  validation_features, validation_targets)
+        return replace(fitted, predictor=lambda rows: [
+            row[1] / 1000.0 + (6.0 if row[1] / 1000.0 in self.shifted_values else 0.0)
+            for row in rows
+        ])
 
 
 class PredictionMutatingRuntime(RecordingTuningRuntime):
@@ -372,6 +409,42 @@ class DeclaredCandidateEvaluationTests(unittest.TestCase):
         self.assertEqual(non_finite.blockers, ("candidate_runtime_failed",))
         self.assertNotIn("nan", json.dumps(non_finite.to_dict()))
 
+    def test_per_source_tail_gate_applies_only_at_200_accepted_records(self):
+        candidate = self.candidate("xgboost")
+        small_sources = [
+            CandidateTuningTests.row(f"source-{source}", f"family-{source}-{row}",
+                                     source * 2 + row + 1)
+            for source in range(101) for row in range(2)
+        ]
+
+        small_tail = evaluate_declared_candidate(
+            small_sources, self.config, candidate=candidate,
+            runtime=SelectiveTailRuntime({1}), seed=41,
+        )
+
+        self.assertEqual(small_tail.status, "completed")
+        self.assertEqual(small_tail.blockers, ())
+        self.assertIsNone(small_tail.metrics["maximum_qualifying_source_above_5g_fraction"])
+
+        qualifying_sources = [
+            CandidateTuningTests.row(f"source-{source}", f"family-{source}-{row}",
+                                     source * 200 + row + 1)
+            for source in range(3) for row in range(200)
+        ]
+        qualifying_tail = evaluate_declared_candidate(
+            qualifying_sources, self.config, candidate=candidate,
+            runtime=SelectiveTailRuntime({1, 2, 3, 4, 5}), seed=41,
+        )
+
+        self.assertEqual(qualifying_tail.status, "completed")
+        self.assertEqual(
+            qualifying_tail.blockers, ("development_serious_error_gate_failed",)
+        )
+        self.assertGreater(
+            qualifying_tail.metrics["maximum_qualifying_source_above_5g_fraction"],
+            0.02,
+        )
+
     def test_private_report_and_fold_artifacts_are_create_only_and_checksummed(self):
         root = Path(self.temp.name) / "private" / "declared-candidate"
         result = evaluate_declared_candidate(
@@ -495,6 +568,52 @@ class CandidateTuningTests(unittest.TestCase):
             item.candidate.parameters["selection_partition"] == "fold_validation_only"
             for item in ensembles
         ))
+        private_report = result.to_dict()
+        ranked_ids = [item["candidate_id"] for item in private_report["promotable_ranking"]]
+        execution_ids = [item.candidate.candidate_id for item in result.initial_results]
+        self.assertNotEqual(execution_ids, sorted(execution_ids))
+        self.assertEqual(ranked_ids, sorted(execution_ids))
+        self.assertEqual(
+            [item["rank"] for item in private_report["promotable_ranking"]],
+            list(range(1, 16)),
+        )
+        self.assertTrue(all(
+            item["rationale"] == list(result.plan.ranking_rule)
+            for item in private_report["promotable_ranking"]
+        ))
+        self.assertEqual(
+            len(private_report["candidate_history"]),
+            1 + result.run_count,
+        )
+        self.assertEqual(private_report["candidate_history"][0]["candidate_id"],
+                         "clean-fixed-control")
+        self.assertEqual(private_report["candidate_history"][0]["allocation"], "control")
+        self.assertEqual(len(private_report["selected_ensemble_weights"]), 3)
+
+    def test_ineligible_candidate_remains_in_history_but_not_promotable_ranking(self):
+        runtime = OneIneligibleCandidateRuntime()
+
+        result = tune_candidates(
+            self.records, self.config, runtime=runtime, output_root=self.root,
+            limits=SearchLimits(seed=41), clock=lambda: 0.0,
+        )
+
+        report = result.to_dict()
+        assert runtime.ineligible_candidate_id is not None
+        ineligible = next(
+            item for item in report["initial_results"]
+            if item["candidate"]["candidate_id"] == runtime.ineligible_candidate_id
+        )
+        self.assertFalse(ineligible["eligible"])
+        self.assertIn("development_serious_error_gate_failed", ineligible["blockers"])
+        self.assertNotIn(
+            runtime.ineligible_candidate_id,
+            [item["candidate_id"] for item in report["promotable_ranking"]],
+        )
+        self.assertIn(
+            runtime.ineligible_candidate_id,
+            [item["candidate_id"] for item in report["candidate_history"]],
+        )
 
     def test_second_seed_aggregation_retains_the_unfavorable_repetition(self):
         result = tune_candidates(
@@ -509,6 +628,22 @@ class CandidateTuningTests(unittest.TestCase):
             self.assertEqual(combined["equal_seed_weight"], 0.5)
             self.assertAlmostEqual(combined["metrics"]["pooled_mae_g"], 1.0)
 
+    def test_startup_failure_records_its_reason_for_every_skipped_slot(self):
+        result = tune_candidates(
+            self.records, self.config, runtime=UnavailableTuningRuntime(),
+            output_root=self.root, limits=SearchLimits(seed=41), clock=lambda: 0.0,
+        )
+
+        report = result.to_dict()
+        self.assertEqual(result.blockers, ("candidate_tuning_dependencies_required",))
+        self.assertEqual(result.run_count, 0)
+        self.assertEqual(len(report["candidate_history"]), 20)
+        self.assertTrue(all(
+            item["status"] == "skipped"
+            and item["reason"] == "candidate_tuning_dependencies_required"
+            for item in report["candidate_history"]
+        ))
+
     def test_runtime_failure_stops_the_round_and_cannot_lock_another_candidate(self):
         result = tune_candidates(
             self.records, self.config, runtime=FailingCandidateRuntime(),
@@ -519,7 +654,19 @@ class CandidateTuningTests(unittest.TestCase):
         self.assertEqual(result.run_count, 1)
         self.assertIn("candidate_runtime_failed", result.blockers)
         self.assertIsNone(result.locked_candidate)
-        self.assertNotIn("private runtime detail", json.dumps(result.to_dict()))
+        private_report = result.to_dict()
+        self.assertNotIn("private runtime detail", json.dumps(private_report))
+        self.assertEqual(result.initial_results[0].status, "failed")
+        self.assertEqual(private_report["promotable_ranking"], [])
+        self.assertEqual(
+            [item["status"] for item in private_report["candidate_history"][:2]],
+            ["completed", "failed"],
+        )
+        self.assertTrue(all(
+            item["status"] == "skipped"
+            and item["reason"] == "candidate_runtime_failed"
+            for item in private_report["candidate_history"][2:]
+        ))
 
     def test_deadline_stops_before_a_later_launch_and_marks_the_search_partial(self):
         runtime = RecordingTuningRuntime()
@@ -536,6 +683,10 @@ class CandidateTuningTests(unittest.TestCase):
         self.assertIn("candidate_search_deadline_reached", result.blockers)
         self.assertEqual(result.to_dict()["skipped_candidate_runs"], 19)
         self.assertEqual(len(result.to_dict()["skipped_candidates"]), 19)
+        self.assertTrue(all(
+            item["reason"] == "candidate_search_deadline_reached"
+            for item in result.to_dict()["skipped_candidates"]
+        ))
         self.assertIsNone(result.locked_candidate)
 
     def test_cli_creates_private_result_and_emits_only_bounded_status(self):

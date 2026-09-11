@@ -30,7 +30,11 @@ from .private_io import create_private_file, write_private_json
 from .splits import ALLOCATION_VERSION, freeze_splits
 
 
-TUNING_VERSION = "minires-candidate-tuning-v2"
+TUNING_VERSION = "minires-candidate-tuning-v3"
+POOLED_ABOVE_5G_FRACTION_MAXIMUM = 0.01
+SOURCE_BALANCED_ABOVE_5G_FRACTION_MAXIMUM = 0.01
+PER_SOURCE_ABOVE_5G_FRACTION_MAXIMUM = 0.02
+PER_SOURCE_MINIMUM_ACCEPTED_RECORDS = 200
 
 NEURAL_NETWORK_DOMAIN: dict[str, tuple[Any, ...]] = {
     "layers": ((64, 32), (128, 64), (128, 64, 32), (256, 128, 64),
@@ -188,7 +192,7 @@ class SearchPlan:
     generator: dict[str, Any]
     component_trials: tuple[Candidate, ...]
     ensemble_rules: tuple[dict[str, Any], ...]
-    eligibility_gates: dict[str, float]
+    eligibility_gates: dict[str, float | int]
     ranking_rule: tuple[str, ...]
     second_seed_rule: dict[str, Any]
     resource_limits: dict[str, int | float]
@@ -340,13 +344,17 @@ class TuningResult:
         }
         if public:
             return base
+        skipped = _skipped_candidates(self)
         base.update({
             "search_plan": self.plan.to_dict(),
             "control_result": _run_to_dict(self.control_result),
             "initial_results": [_run_to_dict(item) for item in self.initial_results],
             "second_seed_results": [_run_to_dict(item) for item in self.second_seed_results],
             "combined_results": list(self.combined_results),
-            "skipped_candidates": _skipped_candidates(self),
+            "promotable_ranking": _promotable_ranking(self),
+            "selected_ensemble_weights": _selected_ensemble_weights(self.initial_results),
+            "skipped_candidates": skipped,
+            "candidate_history": _candidate_history(self, skipped),
             "locked_candidate": self.locked_candidate.contract if self.locked_candidate else None,
         })
         return base
@@ -561,11 +569,7 @@ def generate_search_plan(
         },
         "component_trials": components,
         "ensemble_rules": ensemble_rules,
-        "eligibility_gates": {
-            "pooled_above_5g_fraction_maximum": 0.01,
-            "source_balanced_above_5g_fraction_maximum": 0.01,
-            "per_source_above_5g_fraction_maximum": 0.02,
-        },
+        "eligibility_gates": _eligibility_gates(),
         "ranking_rule": (
             "eligible_serious_error_gates_first",
             "source_balanced_mae_g_ascending",
@@ -1123,7 +1127,7 @@ def _evaluate_candidate(
         )
     except Exception:
         return CandidateRun(
-            candidate, seed, "blocked", ("candidate_runtime_failed",), False,
+            candidate, seed, "failed", ("candidate_runtime_failed",), False,
             _empty_metrics(), (), (),
             _resources(time.perf_counter() - started, time.process_time() - cpu_started),
             artifact_checksums,
@@ -1180,6 +1184,7 @@ def _candidate_metrics(reports: Sequence[Mapping[str, Any]]) -> dict[str, float 
                   for prediction, actual in zip(report["predictions"], report["actual"])]
         all_errors.extend(errors)
         source_metrics.append({
+            "sample_count": report["sample_count"],
             "mae": report["mae_g"],
             "within": report["within_2g_fraction"],
             "tail": report["above_5g_fraction"],
@@ -1207,6 +1212,15 @@ def _candidate_metrics(reports: Sequence[Mapping[str, Any]]) -> dict[str, float 
         "maximum_source_above_5g_fraction": (
             max(item["tail"] for item in source_metrics) if source_metrics else None
         ),
+        "qualifying_source_count": sum(
+            item["sample_count"] >= PER_SOURCE_MINIMUM_ACCEPTED_RECORDS
+            for item in source_metrics
+        ),
+        "maximum_qualifying_source_above_5g_fraction": max(
+            (item["tail"] for item in source_metrics
+             if item["sample_count"] >= PER_SOURCE_MINIMUM_ACCEPTED_RECORDS),
+            default=None,
+        ),
     }
 
 
@@ -1215,16 +1229,33 @@ def _empty_metrics() -> dict[str, float | int | None]:
         "sample_count", "source_count", "pooled_mae_g", "source_balanced_mae_g",
         "pooled_within_2g_fraction", "source_balanced_within_2g_fraction",
         "pooled_above_5g_fraction", "source_balanced_above_5g_fraction",
-        "maximum_source_above_5g_fraction",
+        "maximum_source_above_5g_fraction", "qualifying_source_count",
+        "maximum_qualifying_source_above_5g_fraction",
     )}
+
+
+def _eligibility_gates() -> dict[str, float | int]:
+    return {
+        "pooled_above_5g_fraction_maximum": POOLED_ABOVE_5G_FRACTION_MAXIMUM,
+        "source_balanced_above_5g_fraction_maximum": (
+            SOURCE_BALANCED_ABOVE_5G_FRACTION_MAXIMUM
+        ),
+        "per_source_above_5g_fraction_maximum": PER_SOURCE_ABOVE_5G_FRACTION_MAXIMUM,
+        "per_source_minimum_accepted_records": PER_SOURCE_MINIMUM_ACCEPTED_RECORDS,
+    }
 
 
 def _tail_eligible(metrics: Mapping[str, Any]) -> bool:
     return (
         metrics["pooled_above_5g_fraction"] is not None
-        and metrics["pooled_above_5g_fraction"] <= 0.01
-        and metrics["source_balanced_above_5g_fraction"] <= 0.01
-        and metrics["maximum_source_above_5g_fraction"] <= 0.02
+        and metrics["pooled_above_5g_fraction"] <= POOLED_ABOVE_5G_FRACTION_MAXIMUM
+        and metrics["source_balanced_above_5g_fraction"]
+        <= SOURCE_BALANCED_ABOVE_5G_FRACTION_MAXIMUM
+        and (
+            metrics["maximum_qualifying_source_above_5g_fraction"] is None
+            or metrics["maximum_qualifying_source_above_5g_fraction"]
+            <= PER_SOURCE_ABOVE_5G_FRACTION_MAXIMUM
+        )
     )
 
 
@@ -1370,11 +1401,7 @@ def _refit_and_lock(
         "transformation_version": TRANSFORMATION_VERSION,
         "features": list(LEGACY_FEATURES),
         "preprocessing": "locked_fit_on_all_eligible_development_records_only",
-        "eligibility_rule": {
-            "pooled_above_5g_fraction_maximum": 0.01,
-            "source_balanced_above_5g_fraction_maximum": 0.01,
-            "per_source_above_5g_fraction_maximum": 0.02,
-        },
+        "eligibility_rule": _eligibility_gates(),
         "ranking_rule": list(plan.ranking_rule),
         "dependency_versions": dict(plan.dependency_versions),
         "fixed_training_counts": fixed_counts,
@@ -1518,23 +1545,95 @@ def _write_tuning_outputs(output: Path, result: TuningResult) -> None:
     })
 
 
+def _search_stop_reason(result: TuningResult) -> str:
+    return result.blockers[0] if result.blockers else "search_stopped"
+
+
 def _skipped_candidates(result: TuningResult) -> list[dict[str, Any]]:
     attempted = {run.candidate.candidate_id for run in result.initial_results}
+    reason = _search_stop_reason(result)
     skipped = [
-        {"candidate_id": candidate.candidate_id, "phase": "initial", "reason": "search_stopped"}
+        {"candidate_id": candidate.candidate_id, "phase": "initial", "reason": reason}
         for candidate in result.plan.component_trials if candidate.candidate_id not in attempted
     ]
     skipped.extend(
         {"candidate_id": f"ensemble-slot-{index + 1:02d}", "phase": "initial",
-         "reason": "search_stopped"}
+         "reason": reason}
         for index in range(result.allocation["ensemble"], 3)
     )
     skipped.extend(
         {"candidate_id": f"second-seed-slot-{index + 1:02d}", "phase": "second_seed",
-         "reason": "search_stopped"}
+         "reason": reason}
         for index in range(result.allocation["second_seed"], 5)
     )
     return skipped[:max(0, 20 - result.run_count)]
+
+
+def _promotable_ranking(result: TuningResult) -> list[dict[str, Any]]:
+    ranked = sorted(
+        (run for run in result.initial_results
+         if run.status == "completed" and run.eligible),
+        key=_rank_key,
+    )
+    return [
+        {
+            "rank": rank,
+            "candidate_id": run.candidate.candidate_id,
+            "family": run.candidate.family,
+            "metrics": dict(run.metrics),
+            "rationale": list(result.plan.ranking_rule),
+        }
+        for rank, run in enumerate(ranked, 1)
+    ]
+
+
+def _selected_ensemble_weights(runs: Sequence[CandidateRun]) -> list[dict[str, Any]]:
+    return [
+        {
+            "candidate_id": run.candidate.candidate_id,
+            "fold_weights": [
+                {
+                    "source": report["source"],
+                    "neural_network_weight": metadata["selected_neural_network_weight"],
+                }
+                for report, metadata in zip(run.source_reports, run.fit_metadata)
+            ],
+        }
+        for run in runs if run.candidate.family == "ensemble"
+    ]
+
+
+def _candidate_history(
+    result: TuningResult, skipped: Sequence[Mapping[str, Any]],
+) -> list[dict[str, Any]]:
+    history: list[dict[str, Any]] = []
+    if result.control_result is not None:
+        history.append({
+            "candidate_id": result.control_result.candidate.candidate_id,
+            "allocation": "control",
+            "status": result.control_result.status,
+            "reason": result.control_result.blockers[0]
+            if result.control_result.blockers else None,
+        })
+    history.extend({
+        "candidate_id": run.candidate.candidate_id,
+        "allocation": "initial",
+        "status": run.status,
+        "reason": run.blockers[0] if run.blockers else None,
+    } for run in result.initial_results)
+    history.extend({
+        "candidate_id": run.candidate.candidate_id,
+        "allocation": "second_seed",
+        "status": run.status,
+        "reason": run.blockers[0] if run.blockers else None,
+    } for run in result.second_seed_results)
+    history.extend({
+        "candidate_id": item["candidate_id"],
+        "allocation": item["phase"],
+        "status": "skipped",
+        "reason": item["reason"],
+    } for item in skipped)
+    return history
 
 
 def _run_to_dict(run: CandidateRun | None) -> dict[str, Any] | None:

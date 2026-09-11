@@ -137,14 +137,23 @@ control and does not consume a candidate run.
 The workflow never starts a candidate after 20 new runs or after 7,200 elapsed
 seconds. A partial search cannot select or lock a candidate. Runtime failures,
 invalid plans, missing grouping evidence, deadline exhaustion, and the absence
-of eligible candidates remain bounded blockers in `tuning-result.json`.
+of eligible candidates remain bounded blockers in `tuning-result.json`. The
+private `candidate_history` records the control, every completed or failed launch,
+and every skipped slot with its bounded stop reason. A stopped search preserves
+all completed results and cannot lock a candidate.
 
-Eligibility applies the observed above-5-g error limits before ranking. Eligible
-candidates rank by source-balanced mean absolute error, pooled mean absolute
-error, within-2-g fraction, and stable candidate ID. First- and second-seed
-metrics receive equal weight. The selected configuration is refitted on all
-eligible development records with median cross-validation-derived epoch and
-tree counts and without final-test early stopping.
+Eligibility applies the observed above-5-g error limits before ranking: no more
+than 1% pooled, 1% under equal source weighting, and 2% for each source with at
+least 200 accepted records. Smaller sources remain part of pooled and
+source-balanced metrics, but do not receive the separate per-source gate.
+Ineligible results remain in the private initial results and history but are
+excluded from `promotable_ranking`. Eligible candidates rank by source-balanced
+mean absolute error, pooled mean absolute error, within-2-g fraction, and stable
+candidate ID. The report records that rationale and each ensemble's selected
+fold weights explicitly. First- and second-seed metrics receive equal weight.
+The selected configuration is refitted on all eligible development records with
+median cross-validation-derived epoch and tree counts and without final-test
+early stopping.
 
 ## Locked candidate
 
