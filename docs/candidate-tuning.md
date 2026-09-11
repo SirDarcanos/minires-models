@@ -177,6 +177,9 @@ A successful search creates `locked-candidate/` with:
   eligibility rules, and fixed training counts;
 - feature, preprocessing, dependency-environment, input, code, search-plan, and
   development-split identities;
+- the one-way identities of every development source and an explicit record that
+  fitting, preprocessing, early stopping, ensemble selection, threshold selection,
+  and candidate locking used development records only;
 - the fitted model artifact or artifacts;
 - the fitted preprocessing state; and
 - SHA-256 checksums in a create-only lock manifest.
@@ -192,14 +195,19 @@ in a later process. Loading and assessment fail closed if an artifact,
 configuration, preprocessing record, dependency contract, or checksum changes.
 The assessment boundary verifies the lock and reloads the predictor from those
 verified artifacts; it never executes a caller-supplied in-memory predictor.
-Final-test records are not loaded until lock verification succeeds.
+Final-test records are not loaded until lock verification succeeds. Assessment
+also compares their one-way anonymous-source identities with the locked development
+source inventory. Any overlap blocks scoring as
+`final_source_used_in_candidate_development`.
 
 ## Assess untouched final evidence
 
 Final records need explicit validated-scope confirmation and evidenced slicing
 conditions. At least three untouched anonymous source groups must each contain
 at least 200 accepted records. Missing coverage produces a blocked assessment;
-it does not reduce the required source or row count.
+it does not reduce the required source or row count. Unreadable or malformed final
+evidence returns the bounded `final_evidence_unavailable_or_malformed` outcome and
+still writes the create-only assessment evidence package.
 
 ```bash
 .venv-candidates/bin/python -m minires_evaluation.assessment \
@@ -239,4 +247,7 @@ is still required and no publication is performed.
 A promoted candidate is for internal advisory use with human review of every
 estimate. The result is limited to the observed anonymous source groups. It is
 not evidence of population-wide performance, a prediction interval, actual
-shop consumption, pricing accuracy, or an operational allowance.
+shop consumption, pricing accuracy, or an operational allowance. The legacy
+reference remains a numerical comparator whose historical training provenance
+is unknown; candidate source isolation does not reclassify it as clean holdout
+evidence.

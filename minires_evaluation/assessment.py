@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import argparse
-from dataclasses import asdict, dataclass
+from dataclasses import dataclass
 from hashlib import sha256
 import json
 import math
@@ -13,7 +13,9 @@ from statistics import NormalDist
 from typing import Any, Mapping, Sequence
 
 from .evaluation import EvaluationConfig
-from .ingestion import CanonicalRow, Dataset, InputError, load_records, normalize
+from .ingestion import (
+    CanonicalRow, Dataset, InputError, MalformedLocalRecord, load_records, normalize,
+)
 from .learned import _matrix, _predict
 from .legacy import LegacyProvenance, LegacyReference, load_legacy_reference
 from .private_io import write_private_json
@@ -23,7 +25,7 @@ from .tuning import (
 )
 
 
-ASSESSMENT_VERSION = "minires-locked-assessment-v1"
+ASSESSMENT_VERSION = "minires-locked-assessment-v2"
 
 
 @dataclass(frozen=True)
@@ -72,6 +74,7 @@ class AssessmentResult:
                 "not_population_wide_performance",
                 "no_prediction_interval",
                 "not_actual_shop_consumption_or_pricing_accuracy",
+                "not_operational_allowance",
             ],
         }
         if not public:
@@ -120,8 +123,15 @@ def assess_locked_candidate(
         _write_assessment(output, result)
         return result
 
-    loaded, _ = load_records(records)
-    rows = normalize(loaded, evaluation_config, contract="legacy")
+    try:
+        loaded, _ = load_records(records)
+        if any(isinstance(record, MalformedLocalRecord) for record in loaded):
+            raise InputError("malformed_local_record")
+        rows = normalize(loaded, evaluation_config, contract="legacy")
+    except (InputError, OSError, TypeError, ValueError):
+        result = _blocked(("final_evidence_unavailable_or_malformed",))
+        _write_assessment(output, result)
+        return result
     accepted = [row for row in rows if row.outcome == "included"
                 and row.metadata.get("slicing_conditions")]
     condition_review = [row for row in rows if row.outcome == "included"
@@ -158,6 +168,9 @@ def assess_locked_candidate(
     if any(row.metadata.get("miniature_family") is None for row in accepted):
         coverage_blockers.append("unresolved_final_miniature_family")
     coverage_blockers.extend(_final_grouping_blockers(accepted))
+    development_sources = set(locked.contract.get("development_source_groups", ()))
+    if development_sources.intersection(source_counts):
+        coverage_blockers.append("final_source_used_in_candidate_development")
     if condition_review:
         coverage_blockers.append("final_scope_evidence_incomplete")
     if len(accepted) != len(rows):
@@ -333,6 +346,7 @@ def _clustered_bootstrap(rows: Sequence[Mapping[str, Any]],
         "seed": config.seed,
         "confidence_level": 0.95,
         "interval_sidedness": "one_sided",
+        "source_balanced_weighting": "each_observed_source_equal_in_every_replicate",
         "pooled_mae_relative_regression_upper_95": _quantile(distributions["pooled_mae"], 0.95),
         "source_balanced_mae_relative_regression_upper_95": _quantile(
             distributions["balanced_mae"], 0.95),
@@ -478,7 +492,10 @@ def main(argv: Sequence[str] | None = None) -> int:
             return _write_cli_startup_blocker(
                 args.output_root, "candidate_assessment_runtime_unavailable"
             )
-        locked = load_locked_candidate(args.locked_candidate, runtime)
+        try:
+            locked = load_locked_candidate(args.locked_candidate, runtime)
+        except InputError as error:
+            return _write_cli_startup_blocker(args.output_root, str(error))
         legacy = load_legacy_reference(
             args.legacy_artifacts, provenance=LegacyProvenance.unknown()
         )
