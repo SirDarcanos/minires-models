@@ -3,17 +3,19 @@
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass, field
-from hashlib import sha256
 import math
 from pathlib import Path
 import platform
-import random
-import sys
 import time
 from typing import Any, Callable, Protocol, Sequence
 
 from .ingestion import CanonicalRow, fingerprint
-from .legacy import LEGACY_FEATURES, _predict_keras_model, prepare_canonical_legacy_features
+from .legacy import LEGACY_FEATURES, prepare_canonical_legacy_features
+from .model_definitions import (
+    FittedModel, ModelRuntime, TensorflowXGBoostBackend, TrainingData,
+    ValidationData, combine_ensemble_predictions, ensemble_with_weight,
+    fixed_model_specification,
+)
 
 
 BatchPredictor = Callable[[Sequence[tuple[float, ...]]], Sequence[float]]
@@ -92,6 +94,10 @@ class LearnedBaseline:
     @property
     def contract(self) -> dict[str, Any]:
         config = asdict(self.config)
+        specification = fixed_model_specification()
+        assert specification.ensemble is not None
+        neural = specification.ensemble.neural_network
+        xgboost = specification.ensemble.xgboost
         return {
             "classification": "clean_fixed_configuration_baseline",
             "version": LEARNED_BASELINE_VERSION,
@@ -107,20 +113,20 @@ class LearnedBaseline:
                     "or embedded released normalization; clean NN normalization is fitted per fold"
                 ),
             },
+            "model_specification": specification.to_dict(),
             "neural_network": {
                 "layers": [
-                    {"units": 448, "activation": "selu", "dropout": 0.0},
-                    {"units": 601, "activation": "mish", "dropout": 0.3},
-                    {"units": 544, "activation": "mish", "dropout": 0.3},
-                    {"units": 416, "activation": "selu", "dropout": 0.3},
-                    {"units": 1, "activation": "linear", "dropout": 0.0},
-                ],
-                "optimizer": "adamw", "loss": "mean_squared_error",
+                    {"units": units, "activation": activation, "dropout": dropout}
+                    for units, activation, dropout in neural.architecture_parameters["layer_specs"]
+                ] + [{"units": 1, "activation": "linear", "dropout": 0.0}],
+                "optimizer": neural.architecture_parameters["optimizer"],
+                "loss": neural.architecture_parameters["loss"],
                 "monitor": "val_mean_absolute_error",
                 "configuration": {key: value for key, value in config.items() if key.startswith("neural_network_") or key == "batch_size"},
             },
             "xgboost": {
-                "objective": "reg:squarederror", "tree_method": "hist", "eval_metric": "mae",
+                "objective": xgboost.architecture_parameters["objective"],
+                "tree_method": "hist", "eval_metric": "mae",
                 "configuration": {key: value for key, value in config.items() if key.startswith("xgboost_")},
             },
             "ensemble": {
@@ -203,8 +209,11 @@ def fit_frozen_folds(
                                     baseline.config.ensemble_neural_network_weights)
             test_nn = _predict(fitted.neural_network, test_x)
             test_xgb = _predict(fitted.xgboost, test_x)
-            ensemble = tuple(weight * nn + (1.0 - weight) * xgb
-                             for nn, xgb in zip(test_nn, test_xgb))
+            ensemble = combine_ensemble_predictions(
+                ensemble_with_weight(fixed_model_specification(), weight),
+                test_nn,
+                test_xgb,
+            )
             state = {"train_features": train_x, "train_targets": train_y,
                      "validation_features": validation_x, "validation_targets": validation_y,
                      "configuration": asdict(baseline.config), "fit_metadata": fitted.metadata,
@@ -273,96 +282,48 @@ def _valid_config(config: LearnedBaselineConfig) -> bool:
 
 
 class TensorflowXGBoostRuntime:
-    """Optional adapter for the supported pinned TensorFlow/XGBoost runtime."""
+    """Fixed-baseline adapter over the explicit model-definition module."""
 
     def __init__(self) -> None:
-        import keras
-        import numpy as np
-        import tensorflow as tf
-        import xgboost
-        if not ((3, 11) <= sys.version_info[:2] <= (3, 13)):
-            raise RuntimeError("unsupported Python")
-        # Also configure direct callers that do not use the evidence runner.
-        if not enable_synchronous_dataset_execution():
-            raise RuntimeError("synchronous_tensorflow_dataset_runtime_required")
-        self.np = np
-        self.tf = tf
-        self.xgboost_module = xgboost
-        self.dependency_versions = {
-            "keras": keras.__version__, "numpy": np.__version__,
-            "tensorflow": tf.__version__, "xgboost": xgboost.__version__,
-        }
+        self.models = ModelRuntime(TensorflowXGBoostBackend())
+        self.dependency_versions = self.models.dependency_versions
 
     def fit_fold(self, train_features, train_targets, validation_features, validation_targets,
                  config, artifact_dir):
-        np, tf = self.np, self.tf
-        from xgboost import XGBRegressor
-        random.seed(config.seed)
-        np.random.seed(config.seed)
-        tf.keras.utils.set_random_seed(config.seed)
-        try:
-            tf.config.experimental.enable_op_determinism()
-        except RuntimeError:
-            pass
-        train_x = np.asarray(train_features, dtype=np.float32)
-        train_y = np.asarray(train_targets, dtype=np.float32)
-        validation_x = np.asarray(validation_features, dtype=np.float32)
-        validation_y = np.asarray(validation_targets, dtype=np.float32)
-        normalizer = tf.keras.layers.Normalization(axis=-1)
-        normalizer.adapt(train_x)
-        regularizer = tf.keras.regularizers.l2(config.neural_network_l2)
-        model = tf.keras.Sequential([tf.keras.Input(shape=(len(LEGACY_FEATURES),)), normalizer])
-        for units, activation, dropout in ((448, "selu", 0.0), (601, "mish", 0.3),
-                                           (544, "mish", 0.3), (416, "selu", 0.3)):
-            model.add(tf.keras.layers.Dense(units, kernel_regularizer=regularizer))
-            model.add(tf.keras.layers.Activation(activation))
-            if dropout:
-                model.add(tf.keras.layers.Dropout(dropout))
-        model.add(tf.keras.layers.Dense(1))
-        model.compile(loss="mean_squared_error",
-                      optimizer=tf.keras.optimizers.AdamW(config.neural_network_learning_rate),
-                      metrics=[tf.keras.metrics.MeanAbsoluteError()])
-        callbacks = [
-            tf.keras.callbacks.EarlyStopping(
-                monitor="val_mean_absolute_error", min_delta=config.neural_network_early_stopping_min_delta,
-                patience=config.neural_network_early_stopping_patience, mode="min",
-                restore_best_weights=True, verbose=0),
-            tf.keras.callbacks.ReduceLROnPlateau(
-                monitor="val_mean_absolute_error", factor=config.neural_network_lr_reduction_factor,
-                patience=config.neural_network_lr_reduction_patience,
-                min_lr=config.neural_network_min_learning_rate, mode="min", verbose=0),
-        ]
-        history = model.fit(train_x, train_y, validation_data=(validation_x, validation_y),
-                            epochs=config.neural_network_max_epochs, batch_size=config.batch_size,
-                            callbacks=callbacks, verbose=0, shuffle=True)
-        xgb = XGBRegressor(
-            n_estimators=config.xgboost_estimators, max_depth=config.xgboost_max_depth,
-            learning_rate=config.xgboost_learning_rate, subsample=config.xgboost_subsample,
-            colsample_bytree=config.xgboost_colsample_bytree, random_state=config.seed,
-            n_jobs=config.xgboost_n_jobs, tree_method="hist", eval_metric="mae",
-            objective="reg:squarederror", early_stopping_rounds=config.xgboost_early_stopping_rounds,
+        if config != LearnedBaselineConfig():
+            raise ValueError("invalid_learned_baseline_configuration")
+        fitted = self.models.fit(
+            fixed_model_specification(),
+            TrainingData(tuple(train_features), tuple(train_targets)),
+            ValidationData(tuple(validation_features), tuple(validation_targets)),
+            seed=config.seed,
         )
-        xgb.fit(train_x, train_y, eval_set=[(validation_x, validation_y)], verbose=False)
+        neural = fitted.backend_state.get("neural_network")
+        xgboost = fitted.backend_state.get("xgboost")
+        if not isinstance(neural, FittedModel) or not isinstance(xgboost, FittedModel):
+            raise ValueError("fixed_model_fit_failed")
         if artifact_dir is not None:
             artifact_dir.mkdir(parents=True, exist_ok=False, mode=0o700)
-            model_path = artifact_dir / "neural-network.keras"
-            xgboost_path = artifact_dir / "xgboost.json"
-            model.save(model_path, include_optimizer=False)
-            xgb.save_model(xgboost_path)
-            model_path.chmod(0o600)
-            xgboost_path.chmod(0o600)
-        parameter_hash = sha256()
-        for weights in model.get_weights():
-            parameter_hash.update(np.asarray(weights).tobytes())
-        parameter_hash.update(bytes(xgb.get_booster().save_raw()))
+            artifacts = self.models.save(fitted)
+            names = {
+                "neural-model.keras": "neural-network.keras",
+                "xgboost-model.json": "xgboost.json",
+            }
+            for name, content in artifacts.items():
+                path = artifact_dir / names[name]
+                path.write_bytes(content)
+                path.chmod(0o600)
         return FittedFold(
-            neural_network=lambda rows: _predict_keras_model(model, np, rows),
-            xgboost=lambda rows: xgb.predict(np.asarray(rows, dtype=np.float32)).reshape(-1).tolist(),
+            neural_network=neural.predictor,
+            xgboost=xgboost.predictor,
             metadata={
-                "normalization_mean": normalizer.mean.numpy().reshape(-1).tolist(),
-                "normalization_variance": normalizer.variance.numpy().reshape(-1).tolist(),
-                "neural_network_epochs": len(history.epoch),
-                "xgboost_best_iteration": int(xgb.best_iteration),
-                "fitted_parameter_fingerprint": parameter_hash.hexdigest(),
+                "normalization_mean": neural.preprocessing_state["mean"],
+                "normalization_variance": neural.preprocessing_state["variance"],
+                "neural_network_epochs": neural.metadata["selected_epochs"],
+                "xgboost_best_iteration": int(xgboost.metadata["selected_trees"]) - 1,
+                "fitted_parameter_fingerprint": fingerprint({
+                    "neural_network": neural.metadata["fitted_parameter_fingerprint"],
+                    "xgboost": xgboost.metadata["fitted_parameter_fingerprint"],
+                }),
             },
         )
