@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import copy
 from dataclasses import asdict, dataclass
 from hashlib import sha256
 import json
@@ -15,6 +16,7 @@ import statistics
 import sys
 import tempfile
 import time
+from types import MappingProxyType
 from typing import Any, Callable, Mapping, Protocol, Sequence
 
 from .evaluation import EvaluationConfig
@@ -59,6 +61,25 @@ XGBOOST_DOMAIN: dict[str, tuple[Any, ...]] = {
     "early_stopping_rounds": (50,),
 }
 
+CANDIDATE_RUNTIME_CONTRACT: dict[str, dict[str, Any]] = {
+    "neural_network": {
+        "feature_dtype": "float32",
+        "output_layer": {"units": 1, "activation": "linear"},
+        "normalization": "fitted_on_fold_training_records_only",
+        "early_stopping_monitor": "val_mean_absolute_error",
+        "early_stopping_mode": "min",
+        "restore_best_weights": True,
+        "shuffle_training_records": True,
+    },
+    "xgboost": {
+        "feature_dtype": "float32",
+        "tree_method": "hist",
+        "eval_metric": "mae",
+        "random_state": "evaluation_seed",
+        "early_stopping_partition": "fold_validation_only",
+    },
+}
+
 
 @dataclass(frozen=True)
 class SearchLimits:
@@ -84,6 +105,59 @@ class Candidate:
     candidate_id: str
     family: str
     parameters: dict[str, Any]
+
+
+@dataclass(frozen=True)
+class DeclaredCandidate:
+    """One complete model configuration with a content-derived identity."""
+
+    family: str
+    parameters: Mapping[str, Any]
+
+    def __post_init__(self) -> None:
+        copied = _freeze_json_lists(copy.deepcopy(dict(self.parameters)))
+        if not isinstance(copied, dict):
+            raise TypeError("candidate parameters must be a mapping")
+        object.__setattr__(self, "parameters", MappingProxyType(copied))
+
+    @property
+    def candidate_id(self) -> str:
+        payload = {
+            "version": TUNING_VERSION,
+            "family": self.family,
+            "parameters": dict(self.parameters),
+            "features": list(LEGACY_FEATURES),
+            "transformation_version": TRANSFORMATION_VERSION,
+            "runtime_configuration": CANDIDATE_RUNTIME_CONTRACT.get(self.family),
+        }
+        encoded = json.dumps(
+            payload, sort_keys=True, separators=(",", ":"), allow_nan=False
+        ).encode()
+        return f"declared-{self.family}-{sha256(encoded).hexdigest()[:16]}"
+
+    def to_dict(self) -> dict[str, Any]:
+        preprocessing = (
+            "normalization_fitted_on_fold_training_records_only"
+            if self.family == "neural_network" else "unnormalized_float32"
+        )
+        return {
+            "version": TUNING_VERSION,
+            "candidate_id": self.candidate_id,
+            "family": self.family,
+            "parameters": json.loads(json.dumps(dict(self.parameters), allow_nan=False)),
+            "features": list(LEGACY_FEATURES),
+            "transformation_version": TRANSFORMATION_VERSION,
+            "preprocessing": preprocessing,
+            "runtime_configuration": copy.deepcopy(
+                CANDIDATE_RUNTIME_CONTRACT.get(self.family)
+            ),
+            "output_unit": "g",
+        }
+
+    def as_runtime_candidate(self) -> Candidate:
+        parameters = _freeze_json_lists(self.to_dict()["parameters"])
+        assert isinstance(parameters, dict)
+        return Candidate(self.candidate_id, self.family, parameters)
 
 
 @dataclass(frozen=True)
@@ -139,6 +213,8 @@ class CandidateRuntime(Protocol):
         self, candidate: Candidate, directory: Path, contract: Mapping[str, Any]
     ) -> Callable[[Sequence[tuple[float, ...]]], Sequence[float]]: ...
 
+    def serialize_fold(self, fitted: CandidateFoldFit) -> Mapping[str, bytes]: ...
+
 
 @dataclass(frozen=True)
 class CandidateRun:
@@ -151,6 +227,53 @@ class CandidateRun:
     source_reports: tuple[dict[str, Any], ...]
     fit_metadata: tuple[dict[str, Any], ...]
     resource_use: dict[str, Any]
+    artifact_checksums: dict[str, str] | None = None
+
+
+@dataclass(frozen=True)
+class DeclaredCandidateEvaluation:
+    status: str
+    blockers: tuple[str, ...]
+    contract: dict[str, Any]
+    seed: int
+    metrics: dict[str, float | int | None]
+    source_reports: tuple[dict[str, Any], ...]
+    fit_metadata: tuple[dict[str, Any], ...]
+    dependency_versions: dict[str, str]
+    resource_use: dict[str, Any]
+    artifact_checksums: dict[str, str]
+
+    def to_dict(self, *, public: bool = False) -> dict[str, Any]:
+        result: dict[str, Any] = {
+            "status": self.status,
+            "blockers": list(self.blockers),
+            "candidate_id": self.contract.get("candidate_id"),
+            "family": self.contract.get("family"),
+            "metrics": dict(self.metrics),
+            "resource_use": dict(self.resource_use),
+            "classification": "private_candidate_evaluation",
+        }
+        if public:
+            return result
+        result.update({
+            "candidate_contract": self.contract,
+            "seed": self.seed,
+            "dependency_versions": dict(self.dependency_versions),
+            "source_reports": list(self.source_reports),
+            "partition_audits": [
+                {
+                    "source": report["source"],
+                    "train_rows": report["train_rows"],
+                    "validation_rows": report["validation_rows"],
+                    "test_rows": report["test_rows"],
+                    "test_data_fingerprint": report["test_data_fingerprint"],
+                }
+                for report in self.source_reports
+            ],
+            "fit_metadata": list(self.fit_metadata),
+            "artifact_checksums": dict(self.artifact_checksums),
+        })
+        return result
 
 
 @dataclass(frozen=True)
@@ -349,6 +472,144 @@ def _space_filling_candidates(
     return tuple(candidates)
 
 
+def evaluate_declared_candidate(
+    records: Dataset,
+    config: EvaluationConfig,
+    *,
+    candidate: DeclaredCandidate,
+    runtime: CandidateRuntime | None = None,
+    seed: int,
+    output_root: str | Path | None = None,
+) -> DeclaredCandidateEvaluation:
+    """Evaluate one declared NN or XGBoost candidate through source holdouts."""
+    started = time.perf_counter()
+    cpu_started = time.process_time()
+    if runtime is None:
+        try:
+            runtime = TensorflowXGBoostCandidateRuntime()
+        except ImportError:
+            runtime = _BlockedCandidateRuntime("candidate_evaluation_dependencies_required")
+        except RuntimeError:
+            runtime = _BlockedCandidateRuntime("candidate_evaluation_runtime_unavailable")
+    dependencies = dict(sorted(getattr(runtime, "dependency_versions", {}).items()))
+    try:
+        contract = candidate.to_dict()
+        runtime_candidate = candidate.as_runtime_candidate()
+        _validate_declared_candidate(runtime_candidate)
+        if not isinstance(seed, int) or isinstance(seed, bool):
+            raise ValueError("invalid candidate seed")
+    except (AssertionError, TypeError, ValueError, OverflowError):
+        return DeclaredCandidateEvaluation(
+            "blocked", ("invalid_candidate_configuration",),
+            {"version": TUNING_VERSION, "candidate_id": None,
+             "family": candidate.family if isinstance(candidate.family, str) else None},
+            seed, _empty_metrics(), (), (), dependencies,
+            _resources(time.perf_counter() - started, time.process_time() - cpu_started), {},
+        )
+
+    startup_blockers = tuple(sorted(set(getattr(runtime, "startup_blockers", ()))))
+    if startup_blockers:
+        return DeclaredCandidateEvaluation(
+            "blocked", startup_blockers, contract, seed, _empty_metrics(), (), (),
+            dependencies,
+            _resources(time.perf_counter() - started, time.process_time() - cpu_started), {},
+        )
+
+    if output_root is None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory) / "private" / "declared-candidate"
+            root.mkdir(parents=True, mode=0o700)
+            return _evaluate_declared_at_root(
+                records, config, runtime_candidate, runtime, seed, contract, root,
+                dependencies, started, cpu_started, persist=False,
+            )
+
+    root = Path(output_root)
+    if "private" not in root.resolve().parts:
+        return DeclaredCandidateEvaluation(
+            "blocked", ("candidate_artifact_failed",), contract, seed, _empty_metrics(),
+            (), (), dependencies,
+            _resources(time.perf_counter() - started, time.process_time() - cpu_started), {},
+        )
+    try:
+        root.mkdir(parents=True, exist_ok=False, mode=0o700)
+    except OSError:
+        return DeclaredCandidateEvaluation(
+            "blocked", ("candidate_artifact_failed",), contract, seed, _empty_metrics(),
+            (), (), dependencies,
+            _resources(time.perf_counter() - started, time.process_time() - cpu_started), {},
+        )
+    return _evaluate_declared_at_root(
+        records, config, runtime_candidate, runtime, seed, contract, root,
+        dependencies, started, cpu_started, persist=True,
+    )
+
+
+def _evaluate_declared_at_root(
+    records: Dataset, config: EvaluationConfig, candidate: Candidate,
+    runtime: CandidateRuntime, seed: int, contract: dict[str, Any], root: Path,
+    dependencies: dict[str, str], started: float, cpu_started: float, *, persist: bool,
+) -> DeclaredCandidateEvaluation:
+    try:
+        loaded, input_fingerprint = load_records(records)
+        rows = normalize(loaded, config, contract="legacy")
+        manifest = freeze_splits(
+            rows, input_fingerprint, asdict(config), root / "partition-audit.json"
+        )
+    except (InputError, OSError, TypeError, ValueError):
+        result = DeclaredCandidateEvaluation(
+            "blocked", ("invalid_candidate_partitions",), contract, seed,
+            _empty_metrics(), (), (), dependencies,
+            _resources(time.perf_counter() - started, time.process_time() - cpu_started), {},
+        )
+        return _persist_declared_result(root, result) if persist else result
+    if manifest["status"] != "frozen_source_holdout":
+        result = DeclaredCandidateEvaluation(
+            "blocked", tuple(manifest["blockers"]), contract, seed, _empty_metrics(),
+            (), (), dependencies,
+            _resources(time.perf_counter() - started, time.process_time() - cpu_started), {},
+        )
+        return _persist_declared_result(root, result) if persist else result
+
+    by_index = {row.row_index: row for row in rows if row.outcome == "included"}
+    run = _evaluate_candidate(
+        candidate, seed, runtime, manifest, by_index, (),
+        artifact_root=(root / "fold-artifacts") if persist else None,
+    )
+    result = DeclaredCandidateEvaluation(
+        run.status, run.blockers, contract, seed, run.metrics, run.source_reports,
+        run.fit_metadata, dependencies,
+        _resources(time.perf_counter() - started, time.process_time() - cpu_started),
+        dict(run.artifact_checksums or {}),
+    )
+    return _persist_declared_result(root, result) if persist else result
+
+
+def _persist_declared_result(
+    root: Path, result: DeclaredCandidateEvaluation
+) -> DeclaredCandidateEvaluation:
+    try:
+        write_private_json(root / "candidate-report.json", result.to_dict())
+        inventory = {
+            str(path.relative_to(root)): sha256(path.read_bytes()).hexdigest()
+            for path in sorted(root.rglob("*"))
+            if path.is_file() and path.name != "manifest.json"
+        }
+        write_private_json(root / "manifest.json", {
+            "version": TUNING_VERSION,
+            "artifacts": inventory,
+            "create_only": True,
+            "publication_performed": False,
+        })
+        return result
+    except (InputError, OSError, TypeError, ValueError):
+        return DeclaredCandidateEvaluation(
+            "blocked", ("candidate_artifact_failed",), result.contract, result.seed,
+            result.metrics, result.source_reports, result.fit_metadata,
+            result.dependency_versions, result.resource_use, result.artifact_checksums,
+        )
+
+
 def tune_candidates(
     records: Dataset,
     config: EvaluationConfig,
@@ -534,17 +795,22 @@ def tune_candidates(
     return result
 
 
+class _CandidateArtifactError(Exception):
+    pass
+
+
 def _evaluate_candidate(
     candidate: Candidate, seed: int, runtime: CandidateRuntime,
     manifest: Mapping[str, Any], by_index: Mapping[int, CanonicalRow],
-    weight_grid: Sequence[float],
+    weight_grid: Sequence[float], artifact_root: Path | None = None,
 ) -> CandidateRun:
     reports: list[dict[str, Any]] = []
     metadata: list[dict[str, Any]] = []
+    artifact_checksums: dict[str, str] = {}
     started = time.perf_counter()
     cpu_started = time.process_time()
     try:
-        for fold in manifest["folds"]:
+        for fold_number, fold in enumerate(manifest["folds"]):
             train_x, train_y = _matrix([by_index[index] for index in fold["train"]])
             validation_x, validation_y = _matrix([by_index[index] for index in fold["validation"]])
             test_x, test_y = _matrix([by_index[index] for index in fold["test"]])
@@ -557,35 +823,52 @@ def _evaluate_candidate(
                 xgboost = _candidate_from_dict(fold_components["xgboost"])
                 neural_fit = runtime.fit_fold(neural, seed, train_x, train_y, validation_x, validation_y)
                 xgboost_fit = runtime.fit_fold(xgboost, seed, train_x, train_y, validation_x, validation_y)
+                neural_metadata = copy.deepcopy(neural_fit.metadata)
+                xgboost_metadata = copy.deepcopy(xgboost_fit.metadata)
+                if artifact_root is not None:
+                    artifact_checksums.update(_store_fold_artifacts(
+                        runtime, neural_fit, artifact_root, fold_number, "neural-network-"
+                    ))
+                    artifact_checksums.update(_store_fold_artifacts(
+                        runtime, xgboost_fit, artifact_root, fold_number, "xgboost-"
+                    ))
                 validation_neural = _predict(neural_fit.predictor, validation_x)
                 validation_xgboost = _predict(xgboost_fit.predictor, validation_x)
                 weight = _select_ensemble_weight(validation_y, validation_neural,
                                                  validation_xgboost, weight_grid)
+                fitted_state_fingerprint = fingerprint({
+                    "neural_network": _fingerprintable_state(neural_fit.fitted_state),
+                    "xgboost": _fingerprintable_state(xgboost_fit.fitted_state),
+                    "weight": weight,
+                })
                 test_neural = _predict(neural_fit.predictor, test_x)
                 test_xgboost = _predict(xgboost_fit.predictor, test_x)
                 predictions = tuple(weight * left + (1 - weight) * right
                                     for left, right in zip(test_neural, test_xgboost))
                 fold_metadata = {
-                    "neural_network": neural_fit.metadata,
-                    "xgboost": xgboost_fit.metadata,
+                    "neural_network": neural_metadata,
+                    "xgboost": xgboost_metadata,
                     "selected_neural_network_weight": weight,
-                    "fitted_state_fingerprint": fingerprint({
-                        "neural_network": _fingerprintable_state(neural_fit.fitted_state),
-                        "xgboost": _fingerprintable_state(xgboost_fit.fitted_state),
-                        "weight": weight,
-                    }),
+                    "fitted_state_fingerprint": fitted_state_fingerprint,
                 }
             else:
                 fitted = runtime.fit_fold(candidate, seed, train_x, train_y,
                                           validation_x, validation_y)
+                recorded_metadata = copy.deepcopy(fitted.metadata)
                 validation_predictions = _predict(fitted.predictor, validation_x)
+                fitted_state_fingerprint = fingerprint(
+                    _fingerprintable_state(fitted.fitted_state)
+                )
+                if artifact_root is not None:
+                    artifact_checksums.update(_store_fold_artifacts(
+                        runtime, fitted, artifact_root, fold_number, ""
+                    ))
                 predictions = _predict(fitted.predictor, test_x)
                 fold_metadata = {
-                    **fitted.metadata,
-                    "fitted_state_fingerprint": fingerprint(
-                        _fingerprintable_state(fitted.fitted_state)
-                    ),
+                    **recorded_metadata,
+                    "fitted_state_fingerprint": fitted_state_fingerprint,
                 }
+            source_metrics = _source_candidate_metrics(test_y, predictions)
             reports.append({
                 "source": fold["source"],
                 "test_rows": list(fold["test"]),
@@ -593,6 +876,7 @@ def _evaluate_candidate(
                 "validation_rows": list(fold["validation"]),
                 "actual": list(test_y),
                 "predictions": list(predictions),
+                **source_metrics,
                 **({
                     "validation_actual": list(validation_y),
                     "validation_predictions": list(validation_predictions),
@@ -607,17 +891,64 @@ def _evaluate_candidate(
             candidate, seed, "completed", blockers, eligible, metrics,
             tuple(reports), tuple(metadata),
             _resources(time.perf_counter() - started, time.process_time() - cpu_started),
+            artifact_checksums,
+        )
+    except _CandidateArtifactError:
+        return CandidateRun(
+            candidate, seed, "blocked", ("candidate_artifact_failed",), False,
+            _empty_metrics(), (), (),
+            _resources(time.perf_counter() - started, time.process_time() - cpu_started),
+            artifact_checksums,
         )
     except Exception:
         return CandidateRun(
             candidate, seed, "blocked", ("candidate_runtime_failed",), False,
             _empty_metrics(), (), (),
             _resources(time.perf_counter() - started, time.process_time() - cpu_started),
+            artifact_checksums,
         )
+
+
+def _store_fold_artifacts(
+    runtime: CandidateRuntime, fitted: CandidateFoldFit, root: Path,
+    fold_number: int, prefix: str,
+) -> dict[str, str]:
+    try:
+        artifacts = runtime.serialize_fold(fitted)
+        if not artifacts:
+            raise ValueError("missing fitted artifacts")
+        directory = root / f"fold-{fold_number:03d}"
+        directory.mkdir(parents=True, exist_ok=False, mode=0o700)
+        checksums: dict[str, str] = {}
+        for name, content in sorted(artifacts.items()):
+            stored_name = f"{prefix}{name}"
+            if (not name or Path(name).name != name or Path(stored_name).name != stored_name
+                    or not isinstance(content, bytes)):
+                raise ValueError("invalid fitted artifact")
+            path = directory / stored_name
+            with create_private_file(path) as stream:
+                stream.write(content)
+            checksums[str(path.relative_to(root.parent))] = sha256(content).hexdigest()
+        return checksums
+    except (AttributeError, InputError, OSError, TypeError, ValueError):
+        raise _CandidateArtifactError from None
 
 
 def _fingerprintable_state(state: Mapping[str, Any]) -> dict[str, Any]:
     return {key: value for key, value in state.items() if not key.startswith("_")}
+
+
+def _source_candidate_metrics(
+    actual: Sequence[float], predictions: Sequence[float]
+) -> dict[str, float | int]:
+    errors = [abs(float(prediction) - float(target))
+              for prediction, target in zip(predictions, actual)]
+    return {
+        "sample_count": len(errors),
+        "mae_g": math.fsum(errors) / len(errors),
+        "within_2g_fraction": sum(error <= 2.0 for error in errors) / len(errors),
+        "above_5g_fraction": sum(error > 5.0 for error in errors) / len(errors),
+    }
 
 
 def _candidate_metrics(reports: Sequence[Mapping[str, Any]]) -> dict[str, float | int | None]:
@@ -628,9 +959,9 @@ def _candidate_metrics(reports: Sequence[Mapping[str, Any]]) -> dict[str, float 
                   for prediction, actual in zip(report["predictions"], report["actual"])]
         all_errors.extend(errors)
         source_metrics.append({
-            "mae": math.fsum(errors) / len(errors),
-            "within": sum(error <= 2.0 for error in errors) / len(errors),
-            "tail": sum(error > 5.0 for error in errors) / len(errors),
+            "mae": report["mae_g"],
+            "within": report["within_2g_fraction"],
+            "tail": report["above_5g_fraction"],
         })
     count = len(all_errors)
     source_count = len(source_metrics)
@@ -875,6 +1206,49 @@ def _derive_training_counts(candidate: Candidate, runs: Sequence[CandidateRun]) 
     return result
 
 
+def _validate_declared_candidate(candidate: Candidate) -> None:
+    domain = {
+        "neural_network": NEURAL_NETWORK_DOMAIN,
+        "xgboost": XGBOOST_DOMAIN,
+    }.get(candidate.family)
+    if domain is None or set(candidate.parameters) != set(domain):
+        raise ValueError("invalid_candidate_configuration")
+    for key, value in candidate.parameters.items():
+        if not _supported_domain_value(value, domain[key]):
+            raise ValueError("invalid_candidate_configuration")
+    if candidate.family == "xgboost" and (
+        candidate.parameters["objective"] != "reg:squarederror"
+        or candidate.parameters["n_jobs"] != 1
+    ):
+        raise ValueError("invalid_candidate_configuration")
+
+
+def _supported_domain_value(value: Any, supported: Sequence[Any]) -> bool:
+    if isinstance(value, bool):
+        return False
+    if isinstance(value, float) and not math.isfinite(value):
+        return False
+    for expected in supported:
+        if isinstance(expected, tuple):
+            if (isinstance(value, tuple) and len(value) == len(expected)
+                    and all(_supported_domain_value(item, (wanted,))
+                            for item, wanted in zip(value, expected))):
+                return True
+        elif isinstance(expected, bool):
+            if isinstance(value, bool) and value == expected:
+                return True
+        elif isinstance(expected, int):
+            if isinstance(value, int) and not isinstance(value, bool) and value == expected:
+                return True
+        elif isinstance(expected, float):
+            if (isinstance(value, (int, float)) and not isinstance(value, bool)
+                    and math.isfinite(float(value)) and float(value) == expected):
+                return True
+        elif type(value) is type(expected) and value == expected:
+            return True
+    return False
+
+
 def _validate_plan(plan: SearchPlan, limits: SearchLimits, input_fingerprint: str,
                    code_fingerprint: str, dependencies: Mapping[str, str]) -> None:
     _validate_limits(limits)
@@ -1053,6 +1427,9 @@ class TensorflowXGBoostCandidateRuntime:
             raise ValueError("unsupported_candidate_family")
         return LockedFit(fitted.predictor, preprocessing, _artifacts(fitted), {"seed": seed})
 
+    def serialize_fold(self, fitted):
+        return _artifacts(fitted)
+
     def load_locked(self, candidate, directory, contract):
         np, tf = self.np, self.tf
 
@@ -1229,6 +1606,9 @@ class _BlockedCandidateRuntime:
         raise RuntimeError("candidate runtime unavailable")
 
     def load_locked(self, *args: Any, **kwargs: Any) -> Callable[..., Sequence[float]]:
+        raise RuntimeError("candidate runtime unavailable")
+
+    def serialize_fold(self, *args: Any, **kwargs: Any) -> Mapping[str, bytes]:
         raise RuntimeError("candidate runtime unavailable")
 
 

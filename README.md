@@ -120,9 +120,10 @@ leakage. See the [clean learned-baseline guide](docs/learned-baselines.md) for
 partition rules, bounded resources, reproducibility metadata, and private
 artifacts.
 
-A separate governed workflow can search neural-network, XGBoost, and ensemble
-candidates without relaxing that fixed baseline. It locks the selected
-candidate before comparing it with the legacy reference on untouched final
-evidence. See the [candidate tuning and locked assessment guide](docs/candidate-tuning.md).
+A separate governed workflow can evaluate one declared neural-network or
+XGBoost candidate, then search and lock candidates without relaxing that fixed
+baseline. A locked candidate can be compared with the legacy reference on
+untouched final evidence. See the
+[candidate tuning and locked assessment guide](docs/candidate-tuning.md).
 
 [MIT License](LICENSE)
