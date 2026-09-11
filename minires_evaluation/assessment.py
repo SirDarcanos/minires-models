@@ -92,6 +92,7 @@ def assess_locked_candidate(
     output_root: str | Path,
     runtime: CandidateRuntime,
     config: FinalAssessmentConfig = FinalAssessmentConfig(),
+    supported_slicing_configuration: Mapping[str, Any] | None = None,
 ) -> AssessmentResult:
     """Verify a lock before loading final records, then run paired assessment."""
     output = Path(output_root)
@@ -132,10 +133,30 @@ def assess_locked_candidate(
         result = _blocked(("final_evidence_unavailable_or_malformed",))
         _write_assessment(output, result)
         return result
-    accepted = [row for row in rows if row.outcome == "included"
-                and row.metadata.get("slicing_conditions")]
-    condition_review = [row for row in rows if row.outcome == "included"
-                        and not row.metadata.get("slicing_conditions")]
+    expected_conditions = (
+        dict(supported_slicing_configuration)
+        if supported_slicing_configuration is not None else None
+    )
+    accepted = [
+        row for row in rows
+        if row.outcome == "included"
+        and row.metadata.get("slicing_conditions")
+        and (
+            expected_conditions is None
+            or row.metadata.get("slicing_conditions") == expected_conditions
+        )
+    ]
+    condition_review = [
+        row for row in rows
+        if row.outcome == "included" and not row.metadata.get("slicing_conditions")
+    ]
+    configuration_review = [
+        row for row in rows
+        if row.outcome == "included"
+        and row.metadata.get("slicing_conditions")
+        and expected_conditions is not None
+        and row.metadata.get("slicing_conditions") != expected_conditions
+    ]
     source_counts: dict[str, int] = {}
     for row in accepted:
         source = row.metadata.get("anonymous_source_group")
@@ -147,11 +168,13 @@ def assess_locked_candidate(
             reasons[reason] = reasons.get(reason, 0) + 1
     if condition_review:
         reasons["final_slicing_conditions_required"] = len(condition_review)
+    if configuration_review:
+        reasons["unsupported_final_slicing_configuration"] = len(configuration_review)
     row_accounting = {
         "input_count": len(rows),
         "accepted_count": len(accepted),
         "needs_review_count": sum(row.outcome == "needs_review" for row in rows)
-                              + len(condition_review),
+                              + len(condition_review) + len(configuration_review),
         "excluded_count": sum(row.outcome == "excluded" for row in rows),
         "source_count": len(source_counts),
         "source_counts": dict(sorted(source_counts.items())),
@@ -173,6 +196,8 @@ def assess_locked_candidate(
         coverage_blockers.append("final_source_used_in_candidate_development")
     if condition_review:
         coverage_blockers.append("final_scope_evidence_incomplete")
+    if configuration_review:
+        coverage_blockers.append("unsupported_final_slicing_configuration")
     if len(accepted) != len(rows):
         coverage_blockers.append("final_row_accounting_incomplete")
     if coverage_blockers:
