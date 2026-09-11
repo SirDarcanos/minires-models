@@ -1485,7 +1485,7 @@ def _refit_and_lock(
         "transformation_version": TRANSFORMATION_VERSION,
         "feature_contract": {"ordered_features": list(LEGACY_FEATURES), "dtype": "float32"},
         "features": list(LEGACY_FEATURES),
-        "preprocessing": "locked_fit_on_all_eligible_development_records_only",
+        "preprocessing": "locked_fit_on_all_included_development_records_only",
         "preprocessing_state_file": "preprocessing-state.json",
         "eligibility_rule": _eligibility_gates(),
         "ranking_rule": list(plan.ranking_rule),
@@ -1497,7 +1497,7 @@ def _refit_and_lock(
         },
         "fixed_training_counts": fixed_counts,
         "training_count_rule": "median_across_permitted_development_folds_and_both_seeds",
-        "refit_partition": "all_eligible_development_records",
+        "refit_partition": "all_included_development_records",
         "refit_record_count": len(rows),
         "final_test_access": False,
         "classification": "internal_advisory_human_review_required",
@@ -1594,7 +1594,7 @@ def _valid_locked_contract(contract: Mapping[str, Any]) -> bool:
         contract.get("version") == TUNING_VERSION
         and contract.get("output_unit") == "g"
         and contract.get("final_test_access") is False
-        and contract.get("refit_partition") == "all_eligible_development_records"
+        and contract.get("refit_partition") == "all_included_development_records"
         and contract.get("runtime_configuration") == _locked_runtime_configuration(candidate)
         and isinstance(evidence, Mapping)
         and all(isinstance(evidence.get(key), str) and evidence.get(key) for key in (
@@ -1718,18 +1718,26 @@ def _skipped_candidates(result: TuningResult) -> list[dict[str, Any]]:
     skipped.extend(
         {"candidate_id": f"ensemble-slot-{index + 1:02d}", "phase": "initial",
          "reason": reason}
-        for index in range(result.allocation["ensemble"], 3)
+        for index in range(
+            result.allocation["ensemble"], len(result.plan.ensemble_rules)
+        )
     )
     eligible_count = sum(run.eligible for run in result.initial_results)
+    initial_candidate_count = (
+        len(result.plan.component_trials) + len(result.plan.ensemble_rules)
+    )
+    second_seed_count = int(result.plan.second_seed_rule["candidate_count"])
     skipped.extend(
         {"candidate_id": f"second-seed-slot-{index + 1:02d}", "phase": "second_seed",
          "reason": (
              "eligible_candidate_shortfall"
-             if len(result.initial_results) == 15 and index >= eligible_count else reason
+             if len(result.initial_results) == initial_candidate_count
+             and index >= eligible_count else reason
          )}
-        for index in range(result.allocation["second_seed"], 5)
+        for index in range(result.allocation["second_seed"], second_seed_count)
     )
-    return skipped[:max(0, 20 - result.run_count)]
+    maximum_runs = int(result.plan.resource_limits["maximum_candidate_runs"])
+    return skipped[:max(0, maximum_runs - result.run_count)]
 
 
 def _second_seed_comparison(result: TuningResult) -> dict[str, Any]:
@@ -2033,6 +2041,12 @@ class TensorflowXGBoostCandidateRuntime:
                 ))
             kwargs["callbacks"] = callbacks
         history = model.fit(train_x, train_y, **kwargs)
+        selected_epochs = len(history.epoch)
+        if validation_features:
+            selected_epochs = _selected_epoch_count(
+                history.history.get("val_mean_absolute_error", ()),
+                float(parameters.get("early_stopping_min_delta", 0.0)),
+            )
         parameter_hash = sha256()
         for weights in model.get_weights():
             parameter_hash.update(np.asarray(weights).tobytes())
@@ -2047,7 +2061,7 @@ class TensorflowXGBoostCandidateRuntime:
         return CandidateFoldFit(
             predictor=lambda rows: np.asarray(model(np.asarray(rows, dtype=np.float32), training=False)
                                                    ).reshape(-1).tolist(),
-            metadata={"selected_epochs": len(history.epoch)}, fitted_state=state,
+            metadata={"selected_epochs": selected_epochs}, fitted_state=state,
         )
 
     def _fit_xgboost(self, parameters, seed, train_features, train_targets,
@@ -2075,6 +2089,21 @@ class TensorflowXGBoostCandidateRuntime:
                 "_model": model,
             },
         )
+
+
+def _selected_epoch_count(
+    validation_mae: Sequence[float], minimum_improvement: float,
+) -> int:
+    if not validation_mae:
+        raise ValueError("validation history unavailable")
+    best = math.inf
+    selected = 1
+    for epoch, observed in enumerate(validation_mae, 1):
+        value = float(observed)
+        if math.isfinite(value) and value < best - minimum_improvement:
+            best = value
+            selected = epoch
+    return selected
 
 
 def _artifacts(fitted: CandidateFoldFit) -> dict[str, bytes]:

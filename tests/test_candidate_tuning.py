@@ -27,6 +27,7 @@ from minires_evaluation.tuning import (
     load_locked_candidate,
     main as tuning_main,
     tune_candidates,
+    _selected_epoch_count,
 )
 
 
@@ -799,7 +800,10 @@ class CandidateTuningTests(unittest.TestCase):
                          "locked_convex_weight")
         self.assertEqual(contract["development_evidence"]["search_plan_id"], result.plan.plan_id)
         self.assertEqual(contract["dependency_environment"]["versions"], runtime.dependency_versions)
-        self.assertEqual(contract["refit_partition"], "all_eligible_development_records")
+        self.assertEqual(contract["refit_partition"], "all_included_development_records")
+
+    def test_neural_refit_count_matches_the_epoch_restored_by_early_stopping(self):
+        self.assertEqual(_selected_epoch_count([5.0, 4.5, 4.45, 4.39], 0.1), 4)
 
     def test_partial_second_seed_stage_cannot_lock_a_candidate(self):
         result = tune_candidates(
@@ -1010,12 +1014,14 @@ class LockedAssessmentTests(unittest.TestCase):
     def test_changed_locked_artifact_blocks_assessment(self):
         (self.locked.directory / "model.bin").write_bytes(b"changed")
 
-        result = assess_locked_candidate(
-            self.final_rows(), EvaluationConfig(None, "mm3", True),
-            self.locked, self.legacy, output_root=self.root / "assessment",
-            runtime=self.runtime,
-        )
+        with patch("minires_evaluation.assessment.load_records") as final_loader:
+            result = assess_locked_candidate(
+                self.final_rows(), EvaluationConfig(None, "mm3", True),
+                self.locked, self.legacy, output_root=self.root / "assessment",
+                runtime=self.runtime,
+            )
 
+        final_loader.assert_not_called()
         self.assertEqual(result.status, "blocked")
         self.assertIn("locked_candidate_checksum_mismatch", result.blockers)
         self.assertEqual(result.row_accounting["input_count"], 0)
