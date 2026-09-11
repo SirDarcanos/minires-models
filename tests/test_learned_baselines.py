@@ -2,14 +2,16 @@ import contextlib
 import io
 import json
 from pathlib import Path
+import sys
 import tempfile
+import types
 import unittest
 from unittest.mock import patch
 
 from minires_evaluation import (
     EvaluationConfig, LearnedBaseline, LearnedBaselineConfig, evaluate_records,
 )
-from minires_evaluation.learned import FittedFold
+from minires_evaluation.learned import FittedFold, enable_synchronous_dataset_execution
 from minires_evaluation.__main__ import main
 
 
@@ -39,6 +41,19 @@ class RecordingRuntime:
 
 
 class LearnedBaselineInterfaceTests(unittest.TestCase):
+    def test_synchronous_dataset_setup_fails_closed_after_tensorflow_initialization(self):
+        tensorflow = types.ModuleType("tensorflow")
+        tensorflow.data = types.SimpleNamespace(
+            experimental=types.SimpleNamespace(
+                enable_debug_mode=lambda: (_ for _ in ()).throw(ValueError("already initialized"))
+            )
+        )
+
+        with patch.dict(sys.modules, {"tensorflow": tensorflow}):
+            enabled = enable_synchronous_dataset_execution()
+
+        self.assertFalse(enabled)
+
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)

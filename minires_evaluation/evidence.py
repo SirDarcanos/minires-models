@@ -16,7 +16,7 @@ from typing import Any, Mapping, Sequence
 
 from .evaluation import EvaluationConfig, EvaluationResult, PhysicalBaseline, evaluate_records
 from .ingestion import InputError
-from .learned import LearnedBaseline
+from .learned import LearnedBaseline, enable_synchronous_dataset_execution
 from .legacy import LegacyProvenance, load_legacy_reference
 from .private_io import write_private_json
 
@@ -243,6 +243,10 @@ def produce_evidence_package(
     if output_root.exists():
         raise InputError("private_output_directory_unavailable")
     output_root.mkdir(parents=True, mode=0o700)
+    # Configure tf.data before the preceding legacy baseline can initialize
+    # TensorFlow; enabling this only when the learned adapter is constructed is
+    # too late in a combined evidence process.
+    enable_synchronous_dataset_execution()
     original_paths = [records, *reconciliations, legacy_artifacts]
     before = _file_inventory(original_paths)
     baseline_factories = {

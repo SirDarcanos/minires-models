@@ -3,11 +3,9 @@
 __pycache__/
 /temp
 
-# Local model downloads are private working data. Keep the two historical
-# public comparison tables tracked, but never stage other data/ contents.
-/data/*
-!/data/3d_print_miniatures_base.csv
-!/data/3d_print_miniatures_data.csv
+# Local datasets and model downloads are private working data.
+# Ignore the directory itself so no data/ path can be staged.
+/data
 
 .DS_Store
 .venv/

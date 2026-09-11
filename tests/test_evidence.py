@@ -148,7 +148,10 @@ class BaselineEvidenceTests(unittest.TestCase):
             with patch(
                 "minires_evaluation.learned.TensorflowXGBoostRuntime",
                 side_effect=ImportError,
-            ):
+            ), patch(
+                "minires_evaluation.evidence.enable_synchronous_dataset_execution",
+                create=True,
+            ) as enable_synchronous:
                 evidence = produce_evidence_package(
                     records=records,
                     reconciliations=(comparison,),
@@ -159,6 +162,7 @@ class BaselineEvidenceTests(unittest.TestCase):
                     verification=[{"command": "python -m unittest", "outcome": "passed"}],
                 )
 
+            enable_synchronous.assert_called_once_with()
             self.assertEqual(
                 set(evidence["runs"]),
                 {"physical", "legacy_reference", "clean_fixed_configuration"},

@@ -111,6 +111,11 @@ class LegacyProvenance:
 BatchPredictor = Callable[[Sequence[tuple[float, ...]]], Sequence[float]]
 
 
+def _predict_keras_model(model: Any, np: Any, rows: Sequence[tuple[float, ...]]) -> list[float]:
+    matrix = np.asarray(rows, dtype=np.float32)
+    return np.asarray(model(matrix, training=False)).reshape(-1).tolist()
+
+
 @dataclass(frozen=True)
 class LegacyReference:
     """The released neural network, XGBoost model, and fixed weighted ensemble."""
@@ -263,7 +268,7 @@ def load_legacy_reference(
         return LegacyReference.blocked(("legacy_artifact_load_failed",), provenance)
 
     def neural_network(rows: Sequence[tuple[float, ...]]) -> Sequence[float]:
-        return neural_network_model.predict(np.asarray(rows, dtype=np.float32), verbose=0).reshape(-1).tolist()
+        return _predict_keras_model(neural_network_model, np, rows)
 
     def xgboost(rows: Sequence[tuple[float, ...]]) -> Sequence[float]:
         return xgboost_model.predict(np.asarray(rows, dtype=np.float32)).reshape(-1).tolist()
