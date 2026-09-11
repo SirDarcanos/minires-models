@@ -27,6 +27,7 @@ from minires_evaluation.tuning import (
     load_locked_candidate,
     main as tuning_main,
     tune_candidates,
+    _selected_epoch_count,
 )
 
 
@@ -78,6 +79,57 @@ class SeedShiftRuntime(RecordingTuningRuntime):
         )
 
 
+class SeedTailRuntime(RecordingTuningRuntime):
+    def fit_fold(self, candidate, seed, train_features, train_targets,
+                 validation_features, validation_targets):
+        fitted = super().fit_fold(candidate, seed, train_features, train_targets,
+                                  validation_features, validation_targets)
+        return replace(fitted, predictor=lambda rows: [
+            row[1] / 1000.0 + (
+                6.0 if seed == 42 and int(row[1] / 1000.0) % 100 < 2 else 0.0
+            )
+            for row in rows
+        ])
+
+
+class CrossSourceTailRuntime(RecordingTuningRuntime):
+    def fit_fold(self, candidate, seed, train_features, train_targets,
+                 validation_features, validation_targets):
+        fitted = super().fit_fold(candidate, seed, train_features, train_targets,
+                                  validation_features, validation_targets)
+        shifted_source = 0 if seed == 41 else 1
+        return replace(fitted, predictor=lambda rows: [
+            row[1] / 1000.0 + (
+                6.0
+                if (int(row[1] / 1000.0) - 1) // 200 == shifted_source
+                and (int(row[1] / 1000.0) - 1) % 200 < 4
+                else 0.0
+            )
+            for row in rows
+        ])
+
+
+class SeedDurationRuntime(RecordingTuningRuntime):
+    def fit_fold(self, candidate, seed, train_features, train_targets,
+                 validation_features, validation_targets):
+        fitted = super().fit_fold(candidate, seed, train_features, train_targets,
+                                  validation_features, validation_targets)
+        metadata = {
+            "selected_epochs": 5 if seed == 41 else 15,
+            "selected_trees": 10 if seed == 41 else 100,
+        }
+        return replace(fitted, metadata=metadata)
+
+
+class SecondSeedFailingRuntime(RecordingTuningRuntime):
+    def fit_fold(self, candidate, seed, train_features, train_targets,
+                 validation_features, validation_targets):
+        if seed == 42:
+            raise RuntimeError("private second seed failure")
+        return super().fit_fold(candidate, seed, train_features, train_targets,
+                                validation_features, validation_targets)
+
+
 class OneIneligibleCandidateRuntime(RecordingTuningRuntime):
     def __init__(self):
         super().__init__()
@@ -90,6 +142,24 @@ class OneIneligibleCandidateRuntime(RecordingTuningRuntime):
         if candidate.family == "neural_network" and self.ineligible_candidate_id is None:
             self.ineligible_candidate_id = candidate.candidate_id
         shift = 6.0 if candidate.candidate_id == self.ineligible_candidate_id else 0.0
+        return replace(
+            fitted,
+            predictor=lambda rows: [row[1] / 1000.0 + shift for row in rows],
+        )
+
+
+class MostlyIneligibleRuntime(RecordingTuningRuntime):
+    def __init__(self, eligible_ids):
+        super().__init__()
+        self.eligible_ids = set(eligible_ids)
+
+    def fit_fold(self, candidate, seed, train_features, train_targets,
+                 validation_features, validation_targets):
+        fitted = super().fit_fold(candidate, seed, train_features, train_targets,
+                                  validation_features, validation_targets)
+        shift = 0.0 if (
+            candidate.family == "control" or candidate.candidate_id in self.eligible_ids
+        ) else 6.0
         return replace(
             fitted,
             predictor=lambda rows: [row[1] / 1000.0 + shift for row in rows],
@@ -545,6 +615,19 @@ class CandidateTuningTests(unittest.TestCase):
         })
         self.assertEqual(len(result.initial_results), 15)
         self.assertEqual(len(result.second_seed_results), 5)
+        expected_finalists = [
+            run.candidate.candidate_id
+            for run in sorted(result.initial_results, key=lambda run: (
+                run.metrics["source_balanced_mae_g"],
+                run.metrics["pooled_mae_g"],
+                -run.metrics["pooled_within_2g_fraction"],
+                run.candidate.candidate_id,
+            ))[:5]
+        ]
+        self.assertEqual(
+            [run.candidate.candidate_id for run in result.second_seed_results],
+            expected_finalists,
+        )
         self.assertIsNotNone(result.locked_candidate)
         self.assertEqual(len(runtime.refit_calls), 1)
         self.assertEqual(len(runtime.refit_calls[0][1]), len(self.records))
@@ -569,14 +652,17 @@ class CandidateTuningTests(unittest.TestCase):
             for item in ensembles
         ))
         private_report = result.to_dict()
-        ranked_ids = [item["candidate_id"] for item in private_report["promotable_ranking"]]
+        initial_ranked_ids = [
+            item["candidate_id"] for item in private_report["initial_promotable_ranking"]
+        ]
         execution_ids = [item.candidate.candidate_id for item in result.initial_results]
         self.assertNotEqual(execution_ids, sorted(execution_ids))
-        self.assertEqual(ranked_ids, sorted(execution_ids))
+        self.assertEqual(initial_ranked_ids, sorted(execution_ids))
         self.assertEqual(
-            [item["rank"] for item in private_report["promotable_ranking"]],
+            [item["rank"] for item in private_report["initial_promotable_ranking"]],
             list(range(1, 16)),
         )
+        self.assertEqual(len(private_report["promotable_ranking"]), 5)
         self.assertTrue(all(
             item["rationale"] == list(result.plan.ranking_rule)
             for item in private_report["promotable_ranking"]
@@ -627,6 +713,126 @@ class CandidateTuningTests(unittest.TestCase):
             self.assertEqual(combined["seed_results"], [41, 42])
             self.assertEqual(combined["equal_seed_weight"], 0.5)
             self.assertAlmostEqual(combined["metrics"]["pooled_mae_g"], 1.0)
+
+    def test_combined_eligibility_is_recomputed_instead_of_requiring_each_seed_to_pass(self):
+        records = [
+            self.row(f"source-{source}", f"family-{source}-{row}", source * 200 + row)
+            for source in range(3) for row in range(200)
+        ]
+
+        result = tune_candidates(
+            records, self.config, runtime=SeedTailRuntime(), output_root=self.root,
+            limits=SearchLimits(seed=41), clock=lambda: 0.0,
+        )
+
+        self.assertTrue(all(not run.eligible for run in result.second_seed_results))
+        self.assertTrue(all(item["eligible"] for item in result.combined_results))
+        self.assertTrue(all(
+            0.0 < item["metrics"]["pooled_above_5g_fraction"] <= 0.01
+            for item in result.combined_results
+        ))
+        self.assertIsNotNone(result.locked_candidate)
+
+    def test_combined_per_source_gate_retains_each_seed_before_taking_the_maximum(self):
+        records = [
+            self.row(f"source-{source}", f"family-{source}-{row}", source * 200 + row + 1)
+            for source in range(3) for row in range(200)
+        ]
+
+        result = tune_candidates(
+            records, self.config, runtime=CrossSourceTailRuntime(), output_root=self.root,
+            limits=SearchLimits(seed=41), clock=lambda: 0.0,
+        )
+
+        self.assertTrue(all(run.eligible for run in result.second_seed_results))
+        self.assertTrue(all(
+            item["metrics"]["maximum_qualifying_source_above_5g_fraction"] == 0.01
+            for item in result.combined_results
+        ))
+
+    def test_repeats_every_eligible_candidate_and_records_a_best_five_shortfall(self):
+        plan = create_search_plan(
+            self.records, self.config, limits=SearchLimits(seed=41),
+            dependency_versions=RecordingTuningRuntime.dependency_versions,
+        )
+        neural = next(item for item in plan.component_trials if item.family == "neural_network")
+        xgboost = next(item for item in plan.component_trials if item.family == "xgboost")
+        runtime = MostlyIneligibleRuntime({neural.candidate_id, xgboost.candidate_id})
+
+        result = tune_candidates(
+            self.records, self.config, runtime=runtime, output_root=self.root,
+            limits=SearchLimits(seed=41), clock=lambda: 0.0, plan=plan,
+        )
+
+        self.assertEqual(result.status, "completed")
+        self.assertEqual(result.run_count, 18)
+        self.assertEqual(len(result.second_seed_results), 3)
+        self.assertEqual(result.to_dict()["second_seed_comparison"], {
+            "planned_finalists": 5,
+            "eligible_initial_candidates": 3,
+            "repeated_candidates": 3,
+            "shortfall": 2,
+            "complete": True,
+        })
+        self.assertIsNotNone(result.locked_candidate)
+
+    def test_fixed_training_counts_use_both_seeds_and_lock_the_ensemble_contract(self):
+        runtime = SeedDurationRuntime()
+
+        result = tune_candidates(
+            self.records, self.config, runtime=runtime, output_root=self.root,
+            limits=SearchLimits(seed=41), clock=lambda: 0.0,
+        )
+
+        self.assertIsNotNone(result.locked_candidate)
+        assert result.locked_candidate is not None
+        contract = result.locked_candidate.contract
+        self.assertEqual(contract["selection_seeds"], [41, 42])
+        self.assertEqual(contract["fixed_training_counts"], {
+            "neural_network_epochs": 10,
+            "xgboost_trees": 55,
+            "ensemble_neural_network_weight": 0.0,
+        })
+        self.assertEqual(contract["candidate"]["family"], "ensemble")
+        self.assertIn("neural_network", contract["candidate"]["parameters"])
+        self.assertIn("xgboost", contract["candidate"]["parameters"])
+        self.assertEqual(contract["runtime_configuration"]["combination"],
+                         "locked_convex_weight")
+        self.assertEqual(contract["development_evidence"]["search_plan_id"], result.plan.plan_id)
+        self.assertEqual(contract["dependency_environment"]["versions"], runtime.dependency_versions)
+        self.assertEqual(contract["refit_partition"], "all_included_development_records")
+
+    def test_neural_refit_count_matches_the_epoch_restored_by_early_stopping(self):
+        self.assertEqual(_selected_epoch_count([5.0, 4.5, 4.45, 4.39], 0.1), 4)
+
+    def test_partial_second_seed_stage_cannot_lock_a_candidate(self):
+        result = tune_candidates(
+            self.records, self.config, runtime=SecondSeedFailingRuntime(),
+            output_root=self.root, limits=SearchLimits(seed=41), clock=lambda: 0.0,
+        )
+
+        self.assertEqual(result.status, "blocked")
+        self.assertEqual(len(result.second_seed_results), 1)
+        self.assertFalse(result.to_dict()["second_seed_comparison"]["complete"])
+        self.assertIsNone(result.locked_candidate)
+
+    def test_no_eligible_candidate_records_the_best_development_result_without_refitting(self):
+        runtime = MostlyIneligibleRuntime(set())
+
+        result = tune_candidates(
+            self.records, self.config, runtime=runtime, output_root=self.root,
+            limits=SearchLimits(seed=41), clock=lambda: 0.0,
+        )
+
+        report = result.to_dict()
+        self.assertEqual(result.status, "completed_no_candidate")
+        self.assertEqual(result.blockers, ("no_eligible_candidate",))
+        self.assertEqual(result.run_count, 15)
+        self.assertEqual(report["second_seed_comparison"]["shortfall"], 5)
+        self.assertIsNotNone(report["best_development_result"])
+        self.assertFalse(report["best_development_result"]["eligible"])
+        self.assertEqual(runtime.refit_calls, [])
+        self.assertIsNone(result.locked_candidate)
 
     def test_startup_failure_records_its_reason_for_every_skipped_slot(self):
         result = tune_candidates(
@@ -808,15 +1014,37 @@ class LockedAssessmentTests(unittest.TestCase):
     def test_changed_locked_artifact_blocks_assessment(self):
         (self.locked.directory / "model.bin").write_bytes(b"changed")
 
-        result = assess_locked_candidate(
-            self.final_rows(), EvaluationConfig(None, "mm3", True),
-            self.locked, self.legacy, output_root=self.root / "assessment",
-            runtime=self.runtime,
-        )
+        with patch("minires_evaluation.assessment.load_records") as final_loader:
+            result = assess_locked_candidate(
+                self.final_rows(), EvaluationConfig(None, "mm3", True),
+                self.locked, self.legacy, output_root=self.root / "assessment",
+                runtime=self.runtime,
+            )
 
+        final_loader.assert_not_called()
         self.assertEqual(result.status, "blocked")
         self.assertIn("locked_candidate_checksum_mismatch", result.blockers)
         self.assertEqual(result.row_accounting["input_count"], 0)
+
+    def test_changed_contract_preprocessing_or_dependency_invalidates_the_lock(self):
+        cases = {
+            "candidate-contract.json": lambda value: {**value, "output_unit": "kg"},
+            "preprocessing-state.json": lambda value: {**value, "fit_rows": 999},
+        }
+        for name, mutate in cases.items():
+            with self.subTest(name=name):
+                target = self.locked.directory / name
+                original = target.read_bytes()
+                value = json.loads(original)
+                target.write_text(json.dumps(mutate(value)))
+                with self.assertRaisesRegex(Exception, "locked_candidate_checksum_mismatch"):
+                    load_locked_candidate(self.locked.directory, self.runtime)
+                target.write_bytes(original)
+
+        mismatched = RecordingTuningRuntime()
+        mismatched.dependency_versions = {"runtime": "synthetic-2"}
+        with self.assertRaisesRegex(Exception, "locked_candidate_dependency_mismatch"):
+            load_locked_candidate(self.locked.directory, mismatched)
 
     def test_assessment_reloads_verified_artifacts_instead_of_using_supplied_callable(self):
         substituted = replace(

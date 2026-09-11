@@ -30,7 +30,7 @@ from .private_io import create_private_file, write_private_json
 from .splits import ALLOCATION_VERSION, freeze_splits
 
 
-TUNING_VERSION = "minires-candidate-tuning-v3"
+TUNING_VERSION = "minires-candidate-tuning-v4"
 POOLED_ABOVE_5G_FRACTION_MAXIMUM = 0.01
 SOURCE_BALANCED_ABOVE_5G_FRACTION_MAXIMUM = 0.01
 PER_SOURCE_ABOVE_5G_FRACTION_MAXIMUM = 0.02
@@ -350,8 +350,11 @@ class TuningResult:
             "control_result": _run_to_dict(self.control_result),
             "initial_results": [_run_to_dict(item) for item in self.initial_results],
             "second_seed_results": [_run_to_dict(item) for item in self.second_seed_results],
+            "second_seed_comparison": _second_seed_comparison(self),
             "combined_results": list(self.combined_results),
+            "initial_promotable_ranking": _initial_promotable_ranking(self),
             "promotable_ranking": _promotable_ranking(self),
+            "best_development_result": _best_development_result(self),
             "selected_ensemble_weights": _selected_ensemble_weights(self.initial_results),
             "skipped_candidates": skipped,
             "candidate_history": _candidate_history(self, skipped),
@@ -375,7 +378,7 @@ def verify_locked_candidate_files(
     try:
         manifest = json.loads((root / "lock-manifest.json").read_text())
         contract = json.loads((root / "candidate-contract.json").read_text())
-        if manifest.get("version") != TUNING_VERSION:
+        if manifest.get("version") != TUNING_VERSION or manifest.get("create_only") is not True:
             blockers.add("locked_candidate_manifest_mismatch")
         if expected_manifest is not None and manifest != json.loads(json.dumps(expected_manifest)):
             blockers.add("locked_candidate_manifest_mismatch")
@@ -395,8 +398,16 @@ def verify_locked_candidate_files(
                     blockers.add("locked_candidate_checksum_mismatch")
         if expected_contract is not None and contract != json.loads(json.dumps(expected_contract)):
             blockers.add("locked_candidate_contract_mismatch")
-        if contract.get("dependency_versions") != dict(sorted(dependency_versions.items())):
+        expected_dependencies = dict(sorted(dependency_versions.items()))
+        if (
+            contract.get("dependency_versions") != expected_dependencies
+            or contract.get("dependency_environment", {}).get("versions")
+            != expected_dependencies
+        ):
             blockers.add("locked_candidate_dependency_mismatch")
+        preprocessing = json.loads((root / "preprocessing-state.json").read_text())
+        if not isinstance(preprocessing, dict) or not _valid_locked_contract(contract):
+            blockers.add("locked_candidate_contract_mismatch")
     except (OSError, ValueError, TypeError, json.JSONDecodeError):
         blockers.add("locked_candidate_unavailable")
     return tuple(sorted(blockers)), manifest, contract
@@ -967,31 +978,37 @@ def tune_candidates(
                 break
 
     second: list[CandidateRun] = []
-    if len(initial) == 15 and not blockers:
-        ranked_initial = sorted((item for item in initial if item.eligible), key=_rank_key)
-        if len(ranked_initial) < limits.second_seed_candidates:
-            blockers.append("insufficient_eligible_candidates")
-        else:
-            for first in ranked_initial[:limits.second_seed_candidates]:
-                now = clock()
-                if run_count >= limits.maximum_candidate_runs or now >= deadline:
-                    blockers.append("candidate_search_deadline_reached" if now >= deadline
-                                    else "candidate_run_limit_reached")
-                    break
-                repeated_result = _evaluate_candidate(
-                    first.candidate, selected_plan.second_seed, runtime, manifest, by_index,
-                    limits.ensemble_neural_network_weights,
-                )
-                second.append(repeated_result)
-                allocation["second_seed"] += 1
-                run_count += 1
-                if repeated_result.status != "completed":
-                    blockers.append("candidate_runtime_failed")
-                    break
+    ranked_initial = sorted((item for item in initial if item.eligible), key=_rank_key)
+    repetition_target = min(limits.second_seed_candidates, len(ranked_initial))
+    initial_complete = len(initial) == (
+        len(selected_plan.component_trials) + limits.ensemble_trials
+    )
+    if initial_complete and not blockers:
+        for first in ranked_initial[:repetition_target]:
+            now = clock()
+            if run_count >= limits.maximum_candidate_runs or now >= deadline:
+                blockers.append("candidate_search_deadline_reached" if now >= deadline
+                                else "candidate_run_limit_reached")
+                break
+            repeated_result = _evaluate_candidate(
+                first.candidate, selected_plan.second_seed, runtime, manifest, by_index,
+                limits.ensemble_neural_network_weights,
+            )
+            second.append(repeated_result)
+            allocation["second_seed"] += 1
+            run_count += 1
+            if repeated_result.status != "completed":
+                blockers.append("candidate_runtime_failed")
+                break
 
     combined = _combine_seed_results(initial, second)
     locked: LockedCandidate | None = None
-    complete = run_count == limits.maximum_candidate_runs and len(second) == 5 and not blockers
+    complete = (
+        initial_complete
+        and len(second) == repetition_target
+        and all(run.status == "completed" for run in second)
+        and not blockers
+    )
     if complete:
         eligible = [item for item in combined if item["eligible"]]
         if not eligible:
@@ -1003,15 +1020,19 @@ def tune_candidates(
             candidate = _resolve_final_candidate(candidate)
             try:
                 locked = _refit_and_lock(
-                    candidate, selected_plan, runtime, tuple(by_index.values()), initial, second,
-                    manifest, output / "locked-candidate",
+                    candidate, selected, selected_plan, runtime, tuple(by_index.values()),
+                    initial, second, manifest, output / "locked-candidate",
                 )
             except Exception:
                 blockers.append("candidate_refit_or_lock_failed")
     elapsed = max(0.0, clock() - started)
     resources = _resources(elapsed, time.process_time() - cpu_started)
-    status = ("completed" if locked is not None else "blocked"
-              if blockers or not complete else "completed_no_candidate")
+    status = (
+        "completed" if locked is not None
+        else "completed_no_candidate"
+        if complete and "no_eligible_candidate" in blockers
+        else "blocked"
+    )
     result = TuningResult(
         status, tuple(sorted(set(blockers))), run_count, allocation, selected_plan,
         control_result, tuple(initial), tuple(second), tuple(combined), locked, resources,
@@ -1318,6 +1339,7 @@ def _resolve_final_candidate(candidate: Candidate) -> Candidate:
     return Candidate(candidate.candidate_id, candidate.family, {
         "neural_network": selected["neural_network"],
         "xgboost": selected["xgboost"],
+        "development_components_by_fold": candidate.parameters["components_by_fold"],
         "neural_network_weight_grid": candidate.parameters["neural_network_weight_grid"],
         "component_resolution": "most_frequent_fold_validation_pair_then_stable_id",
     })
@@ -1355,23 +1377,71 @@ def _combine_seed_results(initial: Sequence[CandidateRun], second: Sequence[Cand
     combined = []
     for repeated in second:
         first = by_id[repeated.candidate.candidate_id]
-        metric_keys = first.metrics.keys()
-        metrics: dict[str, float | None] = {}
-        for key in metric_keys:
-            left = first.metrics[key]
-            right = repeated.metrics[key]
-            metrics[key] = ((float(left) + float(right)) / 2
-                            if isinstance(left, (int, float))
-                            and isinstance(right, (int, float)) else None)
+        metrics = _equal_seed_metrics(first, repeated)
+        eligible = _tail_eligible(metrics)
         combined.append({
             "candidate_id": first.candidate.candidate_id,
             "family": first.candidate.family,
-            "eligible": first.eligible and repeated.eligible,
+            "eligible": eligible,
+            "blockers": [] if eligible else ["development_serious_error_gate_failed"],
             "seed_results": [first.seed, repeated.seed],
             "equal_seed_weight": 0.5,
             "metrics": metrics,
         })
     return combined
+
+
+def _equal_seed_metrics(
+    first: CandidateRun, repeated: CandidateRun,
+) -> dict[str, float | int | None]:
+    count_keys = {"sample_count", "source_count", "qualifying_source_count"}
+    maximum_keys = {
+        "maximum_source_above_5g_fraction",
+        "maximum_qualifying_source_above_5g_fraction",
+    }
+    metrics: dict[str, float | int | None] = {}
+    for key in first.metrics:
+        left = first.metrics[key]
+        right = repeated.metrics[key]
+        if key in count_keys:
+            metrics[key] = left if left == right and isinstance(left, int) else None
+        elif key not in maximum_keys:
+            metrics[key] = (
+                (float(left) + float(right)) / 2
+                if isinstance(left, (int, float)) and isinstance(right, (int, float))
+                else None
+            )
+
+    first_sources = {report["source"]: report for report in first.source_reports}
+    second_sources = {report["source"]: report for report in repeated.source_reports}
+    if set(first_sources) != set(second_sources):
+        metrics["maximum_source_above_5g_fraction"] = None
+        metrics["maximum_qualifying_source_above_5g_fraction"] = None
+        return metrics
+    combined_sources = [
+        {
+            "sample_count": first_sources[source]["sample_count"],
+            "tail": (
+                float(first_sources[source]["above_5g_fraction"])
+                + float(second_sources[source]["above_5g_fraction"])
+            ) / 2,
+        }
+        for source in sorted(first_sources)
+        if first_sources[source]["sample_count"] == second_sources[source]["sample_count"]
+    ]
+    if len(combined_sources) != len(first_sources):
+        metrics["maximum_source_above_5g_fraction"] = None
+        metrics["maximum_qualifying_source_above_5g_fraction"] = None
+        return metrics
+    metrics["maximum_source_above_5g_fraction"] = max(
+        (source["tail"] for source in combined_sources), default=None
+    )
+    metrics["maximum_qualifying_source_above_5g_fraction"] = max(
+        (source["tail"] for source in combined_sources
+         if source["sample_count"] >= PER_SOURCE_MINIMUM_ACCEPTED_RECORDS),
+        default=None,
+    )
+    return metrics
 
 
 def _combined_rank_key(item: Mapping[str, Any]) -> tuple[Any, ...]:
@@ -1381,31 +1451,54 @@ def _combined_rank_key(item: Mapping[str, Any]) -> tuple[Any, ...]:
 
 
 def _refit_and_lock(
-    candidate: Candidate, plan: SearchPlan, runtime: CandidateRuntime,
-    rows: Sequence[CanonicalRow], initial: Sequence[CandidateRun],
-    second: Sequence[CandidateRun], development_manifest: Mapping[str, Any], directory: Path,
+    candidate: Candidate, selected_evidence: Mapping[str, Any], plan: SearchPlan,
+    runtime: CandidateRuntime, rows: Sequence[CanonicalRow],
+    initial: Sequence[CandidateRun], second: Sequence[CandidateRun],
+    development_manifest: Mapping[str, Any], directory: Path,
 ) -> LockedCandidate:
     related = [run for run in (*initial, *second)
                if run.candidate.candidate_id == candidate.candidate_id]
     fixed_counts = _derive_training_counts(candidate, related)
+    if not _valid_fixed_training_counts(candidate, fixed_counts):
+        raise InputError("invalid_locked_candidate_training_counts")
     features, targets = _matrix(rows)
     fitted = runtime.refit(candidate, plan.second_seed, features, targets, fixed_counts)
+    if not isinstance(fitted.preprocessing_state, Mapping) or not fitted.artifacts:
+        raise InputError("invalid_locked_candidate_artifact")
     directory.mkdir(parents=True, exist_ok=False, mode=0o700)
     contract = {
         "version": TUNING_VERSION,
         "candidate": asdict(candidate),
-        "input_fingerprint": plan.input_fingerprint,
+        "runtime_configuration": _locked_runtime_configuration(candidate),
+        "selection_seeds": [plan.seed, plan.second_seed],
+        "seed_weighting": "equal_weight_each_seed",
+        "selected_combined_development_evidence": copy.deepcopy(dict(selected_evidence)),
+        "development_evidence": {
+            "search_plan_id": plan.plan_id,
+            "input_fingerprint": plan.input_fingerprint,
+            "normalized_input_fingerprint": plan.normalized_input_fingerprint,
+            "source_allocation_fingerprint": plan.source_allocation_fingerprint,
+            "search_plan_fingerprint": fingerprint(plan.to_dict()),
+            "development_split_fingerprint": fingerprint(development_manifest),
+        },
         "code_fingerprint": plan.code_fingerprint,
-        "search_plan_fingerprint": fingerprint(plan.to_dict()),
-        "development_split_fingerprint": fingerprint(development_manifest),
         "transformation_version": TRANSFORMATION_VERSION,
+        "feature_contract": {"ordered_features": list(LEGACY_FEATURES), "dtype": "float32"},
         "features": list(LEGACY_FEATURES),
-        "preprocessing": "locked_fit_on_all_eligible_development_records_only",
+        "preprocessing": "locked_fit_on_all_included_development_records_only",
+        "preprocessing_state_file": "preprocessing-state.json",
         "eligibility_rule": _eligibility_gates(),
         "ranking_rule": list(plan.ranking_rule),
         "dependency_versions": dict(plan.dependency_versions),
+        "dependency_environment": {
+            "python": platform.python_version(),
+            "platform": platform.platform(),
+            "versions": dict(plan.dependency_versions),
+        },
         "fixed_training_counts": fixed_counts,
-        "refit_partition": "all_eligible_development_records",
+        "training_count_rule": "median_across_permitted_development_folds_and_both_seeds",
+        "refit_partition": "all_included_development_records",
+        "refit_record_count": len(rows),
         "final_test_access": False,
         "classification": "internal_advisory_human_review_required",
         "output_unit": "g",
@@ -1422,6 +1515,7 @@ def _refit_and_lock(
     manifest = {
         "version": TUNING_VERSION,
         "files": {path.name: sha256(path.read_bytes()).hexdigest() for path in files},
+        "create_only": True,
         "locked_before_final_assessment": True,
     }
     write_private_json(directory / "lock-manifest.json", manifest)
@@ -1446,12 +1540,77 @@ def _derive_training_counts(candidate: Candidate, runs: Sequence[CandidateRun]) 
                 weights.append(float(weight))
     result: dict[str, int | float] = {}
     if epochs:
-        result["neural_network_epochs"] = int(statistics.median(epochs))
+        result["neural_network_epochs"] = _rounded_median_count(epochs)
     if trees:
-        result["xgboost_trees"] = int(statistics.median(trees))
+        result["xgboost_trees"] = _rounded_median_count(trees)
     if weights:
         result["ensemble_neural_network_weight"] = statistics.median(weights)
     return result
+
+
+def _rounded_median_count(values: Sequence[int]) -> int:
+    return int(math.floor(float(statistics.median(values)) + 0.5))
+
+
+def _locked_runtime_configuration(candidate: Candidate) -> dict[str, Any]:
+    if candidate.family == "ensemble":
+        return {
+            "neural_network": copy.deepcopy(CANDIDATE_RUNTIME_CONTRACT["neural_network"]),
+            "xgboost": copy.deepcopy(CANDIDATE_RUNTIME_CONTRACT["xgboost"]),
+            "combination": "locked_convex_weight",
+        }
+    return copy.deepcopy(CANDIDATE_RUNTIME_CONTRACT[candidate.family])
+
+
+def _valid_fixed_training_counts(
+    candidate: Candidate, fixed_counts: Mapping[str, Any],
+) -> bool:
+    epochs = fixed_counts.get("neural_network_epochs")
+    trees = fixed_counts.get("xgboost_trees")
+    weight = fixed_counts.get("ensemble_neural_network_weight")
+    return (
+        candidate.family == "neural_network"
+        and isinstance(epochs, int) and not isinstance(epochs, bool) and epochs > 0
+        or candidate.family == "xgboost"
+        and isinstance(trees, int) and not isinstance(trees, bool) and trees > 0
+        or candidate.family == "ensemble"
+        and isinstance(epochs, int) and not isinstance(epochs, bool) and epochs > 0
+        and isinstance(trees, int) and not isinstance(trees, bool) and trees > 0
+        and isinstance(weight, (int, float)) and not isinstance(weight, bool)
+        and math.isfinite(float(weight)) and 0.0 <= float(weight) <= 1.0
+    )
+
+
+def _valid_locked_contract(contract: Mapping[str, Any]) -> bool:
+    evidence = contract.get("development_evidence")
+    feature_contract = contract.get("feature_contract")
+    fixed_counts = contract.get("fixed_training_counts")
+    seeds = contract.get("selection_seeds")
+    try:
+        candidate = _candidate_from_dict(contract["candidate"])
+    except (KeyError, TypeError, ValueError):
+        return False
+    return (
+        contract.get("version") == TUNING_VERSION
+        and contract.get("output_unit") == "g"
+        and contract.get("final_test_access") is False
+        and contract.get("refit_partition") == "all_included_development_records"
+        and contract.get("runtime_configuration") == _locked_runtime_configuration(candidate)
+        and isinstance(evidence, Mapping)
+        and all(isinstance(evidence.get(key), str) and evidence.get(key) for key in (
+            "search_plan_id", "input_fingerprint", "normalized_input_fingerprint",
+            "source_allocation_fingerprint", "search_plan_fingerprint",
+            "development_split_fingerprint",
+        ))
+        and isinstance(feature_contract, Mapping)
+        and feature_contract.get("ordered_features") == list(LEGACY_FEATURES)
+        and feature_contract.get("dtype") == "float32"
+        and isinstance(fixed_counts, Mapping)
+        and _valid_fixed_training_counts(candidate, fixed_counts)
+        and isinstance(seeds, list) and len(seeds) == 2
+        and all(isinstance(seed, int) and not isinstance(seed, bool) for seed in seeds)
+        and seeds[0] != seeds[1]
+    )
 
 
 def _validate_declared_candidate(candidate: Candidate) -> None:
@@ -1559,17 +1718,48 @@ def _skipped_candidates(result: TuningResult) -> list[dict[str, Any]]:
     skipped.extend(
         {"candidate_id": f"ensemble-slot-{index + 1:02d}", "phase": "initial",
          "reason": reason}
-        for index in range(result.allocation["ensemble"], 3)
+        for index in range(
+            result.allocation["ensemble"], len(result.plan.ensemble_rules)
+        )
     )
+    eligible_count = sum(run.eligible for run in result.initial_results)
+    initial_candidate_count = (
+        len(result.plan.component_trials) + len(result.plan.ensemble_rules)
+    )
+    second_seed_count = int(result.plan.second_seed_rule["candidate_count"])
     skipped.extend(
         {"candidate_id": f"second-seed-slot-{index + 1:02d}", "phase": "second_seed",
-         "reason": reason}
-        for index in range(result.allocation["second_seed"], 5)
+         "reason": (
+             "eligible_candidate_shortfall"
+             if len(result.initial_results) == initial_candidate_count
+             and index >= eligible_count else reason
+         )}
+        for index in range(result.allocation["second_seed"], second_seed_count)
     )
-    return skipped[:max(0, 20 - result.run_count)]
+    maximum_runs = int(result.plan.resource_limits["maximum_candidate_runs"])
+    return skipped[:max(0, maximum_runs - result.run_count)]
 
 
-def _promotable_ranking(result: TuningResult) -> list[dict[str, Any]]:
+def _second_seed_comparison(result: TuningResult) -> dict[str, Any]:
+    eligible_count = sum(
+        run.status == "completed" and run.eligible for run in result.initial_results
+    )
+    target = min(result.plan.second_seed_rule["candidate_count"], eligible_count)
+    return {
+        "planned_finalists": result.plan.second_seed_rule["candidate_count"],
+        "eligible_initial_candidates": eligible_count,
+        "repeated_candidates": len(result.second_seed_results),
+        "shortfall": max(0, result.plan.second_seed_rule["candidate_count"] - eligible_count),
+        "complete": (
+            len(result.initial_results)
+            == len(result.plan.component_trials) + len(result.plan.ensemble_rules)
+            and len(result.second_seed_results) == target
+            and all(run.status == "completed" for run in result.second_seed_results)
+        ),
+    }
+
+
+def _initial_promotable_ranking(result: TuningResult) -> list[dict[str, Any]]:
     ranked = sorted(
         (run for run in result.initial_results
          if run.status == "completed" and run.eligible),
@@ -1585,6 +1775,39 @@ def _promotable_ranking(result: TuningResult) -> list[dict[str, Any]]:
         }
         for rank, run in enumerate(ranked, 1)
     ]
+
+
+def _promotable_ranking(result: TuningResult) -> list[dict[str, Any]]:
+    ranked = sorted(
+        (item for item in result.combined_results if item["eligible"]),
+        key=_combined_rank_key,
+    )
+    return [
+        {
+            "rank": rank,
+            "candidate_id": item["candidate_id"],
+            "family": item["family"],
+            "metrics": dict(item["metrics"]),
+            "rationale": list(result.plan.ranking_rule),
+            "seed_results": list(item["seed_results"]),
+            "equal_seed_weight": item["equal_seed_weight"],
+        }
+        for rank, item in enumerate(ranked, 1)
+    ]
+
+
+def _best_development_result(result: TuningResult) -> dict[str, Any] | None:
+    completed = [run for run in result.initial_results if run.status == "completed"]
+    if not completed:
+        return None
+    best = min(completed, key=_rank_key)
+    return {
+        "candidate": asdict(best.candidate),
+        "seed": best.seed,
+        "eligible": best.eligible,
+        "metrics": dict(best.metrics),
+        "blockers": list(best.blockers),
+    }
 
 
 def _selected_ensemble_weights(runs: Sequence[CandidateRun]) -> list[dict[str, Any]]:
@@ -1818,6 +2041,12 @@ class TensorflowXGBoostCandidateRuntime:
                 ))
             kwargs["callbacks"] = callbacks
         history = model.fit(train_x, train_y, **kwargs)
+        selected_epochs = len(history.epoch)
+        if validation_features:
+            selected_epochs = _selected_epoch_count(
+                history.history.get("val_mean_absolute_error", ()),
+                float(parameters.get("early_stopping_min_delta", 0.0)),
+            )
         parameter_hash = sha256()
         for weights in model.get_weights():
             parameter_hash.update(np.asarray(weights).tobytes())
@@ -1832,7 +2061,7 @@ class TensorflowXGBoostCandidateRuntime:
         return CandidateFoldFit(
             predictor=lambda rows: np.asarray(model(np.asarray(rows, dtype=np.float32), training=False)
                                                    ).reshape(-1).tolist(),
-            metadata={"selected_epochs": len(history.epoch)}, fitted_state=state,
+            metadata={"selected_epochs": selected_epochs}, fitted_state=state,
         )
 
     def _fit_xgboost(self, parameters, seed, train_features, train_targets,
@@ -1860,6 +2089,21 @@ class TensorflowXGBoostCandidateRuntime:
                 "_model": model,
             },
         )
+
+
+def _selected_epoch_count(
+    validation_mae: Sequence[float], minimum_improvement: float,
+) -> int:
+    if not validation_mae:
+        raise ValueError("validation history unavailable")
+    best = math.inf
+    selected = 1
+    for epoch, observed in enumerate(validation_mae, 1):
+        value = float(observed)
+        if math.isfinite(value) and value < best - minimum_improvement:
+            best = value
+            selected = epoch
+    return selected
 
 
 def _artifacts(fitted: CandidateFoldFit) -> dict[str, bytes]:
