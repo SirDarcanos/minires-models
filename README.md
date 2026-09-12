@@ -63,7 +63,7 @@ historical measurements and create the current source-balanced package:
 python3 -m minires.preparation.assemble \
   --historical-records private/historical-export.jsonl \
   --exclude-historical-source "$PRIVATE_HISTORICAL_SOURCE_TO_OMIT" \
-  --new-batch-result private/issue-30/batch-result.json \
+  --new-batch-result private/issue-30/batch/result.json \
   --seed 23 \
   --private-dir private/current-dataset
 ```
