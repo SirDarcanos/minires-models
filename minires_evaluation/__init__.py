@@ -10,6 +10,7 @@ from .model_definitions import (
     fixed_model_specification,
 )
 from .preparation import PreparationResult, prepare_private_dataset
+from .partitioning import PartitionResult, partition_private_dataset
 
 __all__ = [
     "EvaluationConfig",
@@ -31,4 +32,6 @@ __all__ = [
     "load_legacy_reference",
     "PreparationResult",
     "prepare_private_dataset",
+    "PartitionResult",
+    "partition_private_dataset",
 ]

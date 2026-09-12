@@ -104,6 +104,9 @@ Weights are cached locally by `huggingface_hub` after the first download.
 Historical labeled records can be prepared as an identity-redacted private input
 with evidence-based source/family groups and a bounded reconciliation report.
 See the [local normalization reference](docs/normalization.md#prepare-the-historical-labeled-records).
+Harmonized labeled records can then be allocated into deterministic,
+source-balanced private train, validation, and test artifacts without requiring
+miniature-family evidence. See [source-balanced partitions](docs/normalization.md#generate-source-balanced-partitions).
 
 A dependency-free local volume-and-density baseline is available for
 reproducible evaluation. It estimates **sliced resin mass**, not prices or
