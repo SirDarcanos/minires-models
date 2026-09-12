@@ -13,7 +13,6 @@ import platform
 import random
 import resource
 import statistics
-import sys
 import tempfile
 import time
 from types import MappingProxyType
@@ -26,6 +25,13 @@ from .ingestion import (
 )
 from .learned import LearnedBaselineConfig, _matrix, _predict
 from .legacy import LEGACY_FEATURES
+from .model_definitions import (
+    FittedModel, ModelKind, ModelRuntime, ModelSpecification,
+    TensorflowXGBoostBackend, TrainingData,
+    ValidationData, candidate_model_specification, combine_ensemble_predictions,
+    ensemble_model_specification,
+    fixed_model_specification,
+)
 from .private_io import create_private_file, write_private_json
 from .splits import ALLOCATION_VERSION, freeze_splits
 
@@ -114,6 +120,20 @@ class Candidate:
     family: str
     parameters: dict[str, Any]
 
+    @property
+    def model_kind(self) -> ModelKind | None:
+        """Architecture kind; `family` is retained for evidence compatibility."""
+        try:
+            return ModelKind(self.family)
+        except ValueError:
+            return None
+
+    @property
+    def specification(self):
+        if self.family not in {"neural_network", "xgboost"}:
+            return None
+        return candidate_model_specification(self.family, self.parameters)
+
 
 @dataclass(frozen=True)
 class DeclaredCandidate:
@@ -127,6 +147,18 @@ class DeclaredCandidate:
         if not isinstance(copied, dict):
             raise TypeError("candidate parameters must be a mapping")
         object.__setattr__(self, "parameters", MappingProxyType(copied))
+
+    @property
+    def model_kind(self) -> ModelKind:
+        """Architecture kind, not the miniature-family grouping concept."""
+        try:
+            return ModelKind(self.family)
+        except ValueError:
+            raise ValueError("invalid_candidate_configuration") from None
+
+    @property
+    def specification(self):
+        return candidate_model_specification(self.family, self.parameters)
 
     @property
     def candidate_id(self) -> str:
@@ -148,10 +180,13 @@ class DeclaredCandidate:
             "normalization_fitted_on_fold_training_records_only"
             if self.family == "neural_network" else "unnormalized_float32"
         )
+        specification = self.specification
         return {
             "version": TUNING_VERSION,
             "candidate_id": self.candidate_id,
             "family": self.family,
+            "model_kind": self.model_kind.value,
+            "model_specification": specification.to_dict(),
             "parameters": json.loads(json.dumps(dict(self.parameters), allow_nan=False)),
             "features": list(LEGACY_FEATURES),
             "transformation_version": TRANSFORMATION_VERSION,
@@ -310,6 +345,16 @@ class LockedCandidate:
     directory: Path
     manifest: dict[str, Any]
     contract: dict[str, Any]
+
+    @property
+    def specification(self) -> ModelSpecification:
+        return _locked_model_specification(
+            self.candidate, self.contract["fixed_training_counts"]
+        )
+
+    def load_predictor(self, runtime: CandidateRuntime):
+        """Load the locked predictor without exposing its architecture to assessment."""
+        return runtime.load_locked(self.candidate, self.directory, self.contract)
 
 
 @dataclass(frozen=True)
@@ -611,6 +656,7 @@ def generate_search_plan(
             "classification": "clean_fixed_configuration_baseline",
             "candidate_id": "clean-fixed-control",
             "configuration": asdict(LearnedBaselineConfig()),
+            "model_specification": fixed_model_specification().to_dict(),
             "candidate_slot_consumed": False,
             "configuration_mutable": False,
         },
@@ -1087,19 +1133,30 @@ def _evaluate_candidate(
                 validation_xgboost = _predict(xgboost_fit.predictor, validation_x)
                 weight = _select_ensemble_weight(validation_y, validation_neural,
                                                  validation_xgboost, weight_grid)
+                ensemble_specification = ensemble_model_specification(
+                    candidate_model_specification(
+                        neural.family, neural.parameters
+                    ),
+                    candidate_model_specification(
+                        xgboost.family, xgboost.parameters
+                    ),
+                    weight,
+                )
                 fitted_state_fingerprint = fingerprint({
                     "neural_network": _fingerprintable_state(neural_fit.fitted_state),
                     "xgboost": _fingerprintable_state(xgboost_fit.fitted_state),
-                    "weight": weight,
+                    "model_specification": ensemble_specification.to_dict(),
                 })
                 test_neural = _predict(neural_fit.predictor, test_x)
                 test_xgboost = _predict(xgboost_fit.predictor, test_x)
-                predictions = tuple(weight * left + (1 - weight) * right
-                                    for left, right in zip(test_neural, test_xgboost))
+                predictions = combine_ensemble_predictions(
+                    ensemble_specification, test_neural, test_xgboost
+                )
                 fold_metadata = {
                     "neural_network": neural_metadata,
                     "xgboost": xgboost_metadata,
                     "selected_neural_network_weight": weight,
+                    "model_specification": ensemble_specification.to_dict(),
                     "fitted_state_fingerprint": fitted_state_fingerprint,
                 }
             else:
@@ -1471,9 +1528,11 @@ def _refit_and_lock(
     if not isinstance(fitted.preprocessing_state, Mapping) or not fitted.artifacts:
         raise InputError("invalid_locked_candidate_artifact")
     directory.mkdir(parents=True, exist_ok=False, mode=0o700)
+    model_specification = _locked_model_specification(candidate, fixed_counts)
     contract = {
         "version": TUNING_VERSION,
         "candidate": asdict(candidate),
+        "model_specification": model_specification.to_dict(),
         "runtime_configuration": _locked_runtime_configuration(candidate),
         "selection_seeds": [plan.seed, plan.second_seed],
         "seed_weighting": "equal_weight_each_seed",
@@ -1597,6 +1656,7 @@ def _valid_locked_contract(contract: Mapping[str, Any]) -> bool:
     evidence = contract.get("development_evidence")
     feature_contract = contract.get("feature_contract")
     fixed_counts = contract.get("fixed_training_counts")
+    model_specification = contract.get("model_specification")
     seeds = contract.get("selection_seeds")
     development_sources = contract.get("development_source_groups")
     development_usage = contract.get("development_data_usage")
@@ -1629,6 +1689,11 @@ def _valid_locked_contract(contract: Mapping[str, Any]) -> bool:
         and feature_contract.get("dtype") == "float32"
         and isinstance(fixed_counts, Mapping)
         and _valid_fixed_training_counts(candidate, fixed_counts)
+        and (
+            model_specification is None  # Backward-compatible v5 lock.
+            or model_specification
+            == _locked_model_specification(candidate, fixed_counts).to_dict()
+        )
         and isinstance(seeds, list) and len(seeds) == 2
         and all(isinstance(seed, int) and not isinstance(seed, bool) for seed in seeds)
         and seeds[0] != seeds[1]
@@ -1636,6 +1701,9 @@ def _valid_locked_contract(contract: Mapping[str, Any]) -> bool:
 
 
 def _validate_declared_candidate(candidate: Candidate) -> None:
+    # The deep model-definition module owns structural and semantic validation;
+    # this additional check limits governed search candidates to the declared domain.
+    candidate_model_specification(candidate.family, candidate.parameters)
     domain = {
         "neural_network": NEURAL_NETWORK_DOMAIN,
         "xgboost": XGBOOST_DOMAIN,
@@ -1905,212 +1973,112 @@ def _resources(elapsed: float, cpu: float) -> dict[str, Any]:
 
 
 class TensorflowXGBoostCandidateRuntime:
-    """Optional bounded adapter for the pinned candidate model families."""
+    """Candidate-workflow adapter over the explicit model-definition module."""
 
     def __init__(self) -> None:
-        if not ((3, 11) <= sys.version_info[:2] <= (3, 13)):
-            raise RuntimeError("unsupported_candidate_runtime")
-        import keras
-        import numpy as np
-        import tensorflow as tf
-        import xgboost
-        from .learned import enable_synchronous_dataset_execution
-        if not enable_synchronous_dataset_execution():
-            raise RuntimeError("synchronous_tensorflow_dataset_runtime_required")
-        self.np = np
-        self.tf = tf
-        self.xgboost = xgboost
-        self.dependency_versions = {
-            "keras": keras.__version__, "numpy": np.__version__,
-            "tensorflow": tf.__version__, "xgboost": xgboost.__version__,
-        }
+        self.models = ModelRuntime(TensorflowXGBoostBackend())
+        self.dependency_versions = self.models.dependency_versions
 
     def fit_fold(self, candidate, seed, train_features, train_targets,
                  validation_features, validation_targets):
+        training = TrainingData(tuple(train_features), tuple(train_targets))
+        validation = ValidationData(tuple(validation_features), tuple(validation_targets))
         if candidate.family == "control":
-            neural = self._fit_neural(
-                _fixed_neural_parameters(candidate.parameters), seed, train_features,
-                train_targets, validation_features, validation_targets,
+            fitted = self.models.fit(
+                fixed_model_specification(), training, validation, seed=seed
             )
-            xgboost = self._fit_xgboost(
-                _fixed_xgboost_parameters(candidate.parameters), seed, train_features,
-                train_targets, validation_features, validation_targets,
-            )
-            return CandidateFoldFit(
-                predictor=lambda rows: [0.2 * left + 0.8 * right for left, right in zip(
-                    neural.predictor(rows), xgboost.predictor(rows))],
-                metadata={"neural_network": neural.metadata, "xgboost": xgboost.metadata,
-                          "selected_neural_network_weight": 0.2},
-                fitted_state={"neural_network": neural.fitted_state,
-                              "xgboost": xgboost.fitted_state, "weight": 0.2},
-            )
-        if candidate.family == "neural_network":
-            return self._fit_neural(candidate.parameters, seed, train_features, train_targets,
-                                    validation_features, validation_targets)
-        if candidate.family == "xgboost":
-            return self._fit_xgboost(candidate.parameters, seed, train_features, train_targets,
-                                     validation_features, validation_targets)
-        raise ValueError("unsupported_candidate_family")
+            return _candidate_fold_fit(fitted)
+        specification = candidate_model_specification(candidate.family, candidate.parameters)
+        fitted = self.models.fit(specification, training, validation, seed=seed)
+        return _candidate_fold_fit(fitted)
 
     def refit(self, candidate, seed, features, targets, fixed_training_counts):
-        if candidate.family == "ensemble":
-            neural_candidate = _candidate_from_dict(candidate.parameters["neural_network"])
-            xgboost_candidate = _candidate_from_dict(candidate.parameters["xgboost"])
-            neural_parameters = dict(neural_candidate.parameters)
-            neural_parameters["maximum_epochs"] = fixed_training_counts["neural_network_epochs"]
-            xgboost_parameters = dict(xgboost_candidate.parameters)
-            xgboost_parameters["n_estimators"] = fixed_training_counts["xgboost_trees"]
-            neural = self._fit_neural(neural_parameters, seed, features, targets, (), ())
-            xgboost = self._fit_xgboost(xgboost_parameters, seed, features, targets, (), ())
-            weight = float(fixed_training_counts["ensemble_neural_network_weight"])
-            return LockedFit(
-                predictor=lambda rows: [weight * left + (1 - weight) * right for left, right in zip(
-                    neural.predictor(rows), xgboost.predictor(rows))],
-                preprocessing_state={
-                    "neural_network": neural.fitted_state.get("normalization"),
-                    "xgboost": "unnormalized_float32",
-                },
-                artifacts={**{f"neural-{key}": value for key, value in _artifacts(neural).items()},
-                           **{f"xgboost-{key}": value for key, value in _artifacts(xgboost).items()}},
-                metadata={"seed": seed, "neural_network_weight": weight},
-            )
-        parameters = dict(candidate.parameters)
-        if candidate.family == "neural_network":
-            parameters["maximum_epochs"] = fixed_training_counts["neural_network_epochs"]
-            fitted = self._fit_neural(parameters, seed, features, targets, (), ())
-            preprocessing = fitted.fitted_state.get("normalization", {})
-        elif candidate.family == "xgboost":
-            parameters["n_estimators"] = fixed_training_counts["xgboost_trees"]
-            fitted = self._fit_xgboost(parameters, seed, features, targets, (), ())
-            preprocessing = {"xgboost": "unnormalized_float32"}
-        else:
-            raise ValueError("unsupported_candidate_family")
-        return LockedFit(fitted.predictor, preprocessing, _artifacts(fitted), {"seed": seed})
+        training = TrainingData(tuple(features), tuple(targets))
+        specification = _locked_model_specification(candidate, fixed_training_counts)
+        fitted = self.models.fit(specification, training, None, seed=seed)
+        return LockedFit(
+            fitted.predictor, dict(fitted.preprocessing_state), self.models.save(fitted),
+            {"seed": seed, **dict(fitted.metadata)},
+        )
 
     def serialize_fold(self, fitted):
-        return _artifacts(fitted)
+        model = fitted.fitted_state.get("_fitted_model")
+        if not isinstance(model, FittedModel):
+            raise ValueError("model artifact unavailable")
+        return self.models.save(model)
 
     def load_locked(self, candidate, directory, contract):
-        np, tf = self.np, self.tf
-
-        def load_neural(path):
-            model = tf.keras.models.load_model(path, compile=False)
-            return lambda rows: np.asarray(
-                model(np.asarray(rows, dtype=np.float32), training=False)
-            ).reshape(-1).tolist()
-
-        def load_xgboost(path):
-            from xgboost import XGBRegressor
-            model = XGBRegressor()
-            model.load_model(path)
-            return lambda rows: model.predict(np.asarray(rows, dtype=np.float32)).reshape(-1).tolist()
-
-        if candidate.family == "neural_network":
-            return load_neural(directory / "model.keras")
-        if candidate.family == "xgboost":
-            return load_xgboost(directory / "model.json")
-        if candidate.family == "ensemble":
-            neural = load_neural(directory / "neural-model.keras")
-            xgboost = load_xgboost(directory / "xgboost-model.json")
-            weight = float(contract["fixed_training_counts"]["ensemble_neural_network_weight"])
-            return lambda rows: [weight * left + (1 - weight) * right
-                                 for left, right in zip(neural(rows), xgboost(rows))]
-        raise ValueError("unsupported_candidate_family")
-
-    def _fit_neural(self, parameters, seed, train_features, train_targets,
-                    validation_features, validation_targets):
-        np, tf = self.np, self.tf
-        random.seed(seed)
-        np.random.seed(seed)
-        tf.keras.utils.set_random_seed(seed)
-        train_x = np.asarray(train_features, dtype=np.float32)
-        train_y = np.asarray(train_targets, dtype=np.float32)
-        normalizer = tf.keras.layers.Normalization(axis=-1)
-        normalizer.adapt(train_x)
-        model = tf.keras.Sequential([tf.keras.Input(shape=(train_x.shape[1],)), normalizer])
-        regularizer = tf.keras.regularizers.l2(float(parameters["l2"]))
-        layer_specs = parameters.get("layer_specs") or tuple(
-            (units, parameters["activation"], parameters["dropout"])
-            for units in parameters["layers"]
+        specification = _locked_model_specification(
+            candidate, contract["fixed_training_counts"]
         )
-        for units, activation, dropout in layer_specs:
-            model.add(tf.keras.layers.Dense(int(units), kernel_regularizer=regularizer))
-            model.add(tf.keras.layers.Activation(activation))
-            if dropout:
-                model.add(tf.keras.layers.Dropout(float(dropout)))
-        model.add(tf.keras.layers.Dense(1))
-        optimizer_class = (tf.keras.optimizers.AdamW if parameters["optimizer"] == "adamw"
-                           else tf.keras.optimizers.Adam)
-        model.compile(optimizer=optimizer_class(float(parameters["learning_rate"])),
-                      loss=parameters["loss"], metrics=[tf.keras.metrics.MeanAbsoluteError()])
-        kwargs: dict[str, Any] = {"verbose": 0, "shuffle": True,
-                                 "epochs": int(parameters["maximum_epochs"]),
-                                 "batch_size": int(parameters["batch_size"])}
-        if validation_features:
-            validation_x = np.asarray(validation_features, dtype=np.float32)
-            validation_y = np.asarray(validation_targets, dtype=np.float32)
-            kwargs["validation_data"] = (validation_x, validation_y)
-            callbacks = [tf.keras.callbacks.EarlyStopping(
-                monitor="val_mean_absolute_error", mode="min",
-                min_delta=float(parameters.get("early_stopping_min_delta", 0.0)),
-                patience=int(parameters["early_stopping_patience"]), restore_best_weights=True)]
-            if "lr_reduction_factor" in parameters:
-                callbacks.append(tf.keras.callbacks.ReduceLROnPlateau(
-                    monitor="val_mean_absolute_error", mode="min",
-                    factor=float(parameters["lr_reduction_factor"]),
-                    patience=int(parameters["lr_reduction_patience"]),
-                    min_lr=float(parameters["minimum_learning_rate"]), verbose=0,
-                ))
-            kwargs["callbacks"] = callbacks
-        history = model.fit(train_x, train_y, **kwargs)
-        selected_epochs = len(history.epoch)
-        if validation_features:
-            selected_epochs = _selected_epoch_count(
-                history.history.get("val_mean_absolute_error", ()),
-                float(parameters.get("early_stopping_min_delta", 0.0)),
-            )
-        parameter_hash = sha256()
-        for weights in model.get_weights():
-            parameter_hash.update(np.asarray(weights).tobytes())
+        preprocessing = json.loads((directory / "preprocessing-state.json").read_text())
+        artifact_names = (
+            ("model.keras",) if specification.model_kind is ModelKind.NEURAL_NETWORK
+            else ("model.json",) if specification.model_kind is ModelKind.XGBOOST
+            else ("neural-model.keras", "xgboost-model.json")
+        )
+        artifacts = {name: (directory / name).read_bytes() for name in artifact_names}
+        return self.models.load(specification, artifacts, preprocessing)
+
+
+def _candidate_fold_fit(fitted: FittedModel) -> CandidateFoldFit:
+    if fitted.specification.model_kind is ModelKind.ENSEMBLE:
+        ensemble = fitted.specification.ensemble
+        assert ensemble is not None
+        neural = fitted.backend_state["neural_network"]
+        xgboost = fitted.backend_state["xgboost"]
+        assert isinstance(neural, FittedModel) and isinstance(xgboost, FittedModel)
         state = {
-            "normalization": {
-                "mean": normalizer.mean.numpy().reshape(-1).tolist(),
-                "variance": normalizer.variance.numpy().reshape(-1).tolist(),
-            },
-            "fitted_parameter_fingerprint": parameter_hash.hexdigest(),
-            "_model": model,
+            "neural_network": _component_fitted_state(neural),
+            "xgboost": _component_fitted_state(xgboost),
+            "weight": ensemble.neural_network_weight,
+            "_fitted_model": fitted,
         }
-        return CandidateFoldFit(
-            predictor=lambda rows: np.asarray(model(np.asarray(rows, dtype=np.float32), training=False)
-                                                   ).reshape(-1).tolist(),
-            metadata={"selected_epochs": selected_epochs}, fitted_state=state,
-        )
+        metadata = {
+            "neural_network": _component_fit_metadata(neural),
+            "xgboost": _component_fit_metadata(xgboost),
+            "selected_neural_network_weight": ensemble.neural_network_weight,
+        }
+    else:
+        state = {**_component_fitted_state(fitted), "_fitted_model": fitted}
+        metadata = _component_fit_metadata(fitted)
+    return CandidateFoldFit(fitted.predictor, metadata, state)
 
-    def _fit_xgboost(self, parameters, seed, train_features, train_targets,
-                     validation_features, validation_targets):
-        np = self.np
-        from xgboost import XGBRegressor
-        kwargs = dict(parameters)
-        early_stopping = kwargs.pop("early_stopping_rounds")
-        model = XGBRegressor(**kwargs, random_state=seed, tree_method="hist", eval_metric="mae",
-                             **({"early_stopping_rounds": early_stopping}
-                                if validation_features else {}))
-        fit_kwargs = ({"eval_set": [(np.asarray(validation_features, dtype=np.float32),
-                                      np.asarray(validation_targets, dtype=np.float32))],
-                       "verbose": False} if validation_features else {})
-        model.fit(np.asarray(train_features, dtype=np.float32),
-                  np.asarray(train_targets, dtype=np.float32), **fit_kwargs)
-        selected = int(model.best_iteration) + 1 if validation_features else int(parameters["n_estimators"])
-        return CandidateFoldFit(
-            predictor=lambda rows: model.predict(np.asarray(rows, dtype=np.float32)).reshape(-1).tolist(),
-            metadata={"selected_trees": selected},
-            fitted_state={
-                "fitted_parameter_fingerprint": sha256(
-                    bytes(model.get_booster().save_raw())
-                ).hexdigest(),
-                "_model": model,
-            },
+
+def _component_fitted_state(fitted: FittedModel) -> dict[str, Any]:
+    state = dict(fitted.preprocessing_state)
+    fingerprint_value = fitted.metadata.get("fitted_parameter_fingerprint")
+    if fingerprint_value is not None:
+        state["fitted_parameter_fingerprint"] = fingerprint_value
+    return state
+
+
+def _component_fit_metadata(fitted: FittedModel) -> dict[str, Any]:
+    return {key: value for key, value in fitted.metadata.items()
+            if key in {"selected_epochs", "selected_trees"}}
+
+
+def _locked_model_specification(
+    candidate: Candidate, fixed_training_counts: Mapping[str, int | float],
+):
+    if candidate.family == "ensemble":
+        neural_candidate = _candidate_from_dict(candidate.parameters["neural_network"])
+        xgboost_candidate = _candidate_from_dict(candidate.parameters["xgboost"])
+        neural_parameters = dict(neural_candidate.parameters)
+        neural_parameters["maximum_epochs"] = fixed_training_counts["neural_network_epochs"]
+        xgboost_parameters = dict(xgboost_candidate.parameters)
+        xgboost_parameters["n_estimators"] = fixed_training_counts["xgboost_trees"]
+        return ensemble_model_specification(
+            candidate_model_specification("neural_network", neural_parameters),
+            candidate_model_specification("xgboost", xgboost_parameters),
+            float(fixed_training_counts["ensemble_neural_network_weight"]),
         )
+    parameters = dict(candidate.parameters)
+    if candidate.family == "neural_network":
+        parameters["maximum_epochs"] = fixed_training_counts["neural_network_epochs"]
+    elif candidate.family == "xgboost":
+        parameters["n_estimators"] = fixed_training_counts["xgboost_trees"]
+    return candidate_model_specification(candidate.family, parameters)
 
 
 def _selected_epoch_count(
@@ -2126,52 +2094,6 @@ def _selected_epoch_count(
             best = value
             selected = epoch
     return selected
-
-
-def _artifacts(fitted: CandidateFoldFit) -> dict[str, bytes]:
-    model = fitted.fitted_state.get("_model")
-    if model is None:
-        raise ValueError("model artifact unavailable")
-    with tempfile.TemporaryDirectory() as directory:
-        root = Path(directory)
-        if hasattr(model, "save_model"):
-            path = root / "model.json"
-            model.save_model(path)
-        else:
-            path = root / "model.keras"
-            model.save(path, include_optimizer=False)
-        return {path.name: path.read_bytes()}
-
-
-def _fixed_neural_parameters(config: Mapping[str, Any]) -> dict[str, Any]:
-    return {
-        "layers": (448, 601, 544, 416),
-        "layer_specs": ((448, "selu", 0.0), (601, "mish", 0.3),
-                        (544, "mish", 0.3), (416, "selu", 0.3)),
-        "activation": "mish", "dropout": 0.3,
-        "optimizer": "adamw", "loss": "mean_squared_error",
-        "learning_rate": config["neural_network_learning_rate"],
-        "l2": config["neural_network_l2"], "batch_size": config["batch_size"],
-        "maximum_epochs": config["neural_network_max_epochs"],
-        "early_stopping_patience": config["neural_network_early_stopping_patience"],
-        "early_stopping_min_delta": config["neural_network_early_stopping_min_delta"],
-        "lr_reduction_factor": config["neural_network_lr_reduction_factor"],
-        "lr_reduction_patience": config["neural_network_lr_reduction_patience"],
-        "minimum_learning_rate": config["neural_network_min_learning_rate"],
-    }
-
-
-def _fixed_xgboost_parameters(config: Mapping[str, Any]) -> dict[str, Any]:
-    return {
-        "n_estimators": config["xgboost_estimators"],
-        "max_depth": config["xgboost_max_depth"],
-        "learning_rate": config["xgboost_learning_rate"],
-        "subsample": config["xgboost_subsample"],
-        "colsample_bytree": config["xgboost_colsample_bytree"],
-        "min_child_weight": 1.0, "gamma": 0.0, "reg_alpha": 0.0, "reg_lambda": 1.0,
-        "objective": "reg:squarederror", "n_jobs": config["xgboost_n_jobs"],
-        "early_stopping_rounds": config["xgboost_early_stopping_rounds"],
-    }
 
 
 class _BlockedCandidateRuntime:

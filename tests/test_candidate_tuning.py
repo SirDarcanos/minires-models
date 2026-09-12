@@ -799,6 +799,11 @@ class CandidateTuningTests(unittest.TestCase):
         self.assertIn("xgboost", contract["candidate"]["parameters"])
         self.assertEqual(contract["runtime_configuration"]["combination"],
                          "locked_convex_weight")
+        self.assertEqual(contract["model_specification"]["model_kind"], "ensemble")
+        self.assertEqual(
+            contract["model_specification"]["stable_identity"],
+            result.locked_candidate.specification.stable_identity,
+        )
         self.assertEqual(contract["development_evidence"]["search_plan_id"], result.plan.plan_id)
         self.assertEqual(contract["dependency_environment"]["versions"], runtime.dependency_versions)
         self.assertEqual(contract["refit_partition"], "all_included_development_records")

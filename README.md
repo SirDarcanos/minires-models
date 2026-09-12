@@ -123,7 +123,9 @@ artifacts.
 A separate governed workflow can evaluate one declared neural-network or
 XGBoost candidate, then search and lock candidates without relaxing that fixed
 baseline. A locked candidate can be compared with the legacy reference on
-untouched final evidence. See the
+untouched final evidence. Start with the [model-definition guide](docs/model-definitions.md)
+to locate the active architectures, fixed baseline, candidate search space, and
+locked-model contract, then see the
 [candidate tuning and locked assessment guide](docs/candidate-tuning.md).
 
 [MIT License](LICENSE)

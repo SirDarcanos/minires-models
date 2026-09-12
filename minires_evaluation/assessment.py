@@ -108,9 +108,7 @@ def assess_locked_candidate(
         _write_assessment(output, result)
         return result
     try:
-        candidate_predictor = runtime.load_locked(
-            locked.candidate, locked.directory, locked.contract
-        )
+        candidate_predictor = locked.load_predictor(runtime)
     except Exception:
         result = _blocked(("locked_candidate_load_failed",))
         _write_assessment(output, result)
