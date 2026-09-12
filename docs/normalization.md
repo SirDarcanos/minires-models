@@ -46,6 +46,47 @@ support the frozen folds; it does not claim model quality or dataset equivalence
 The input and every reconciliation input are hashed before and after preparation
 and must remain byte-for-byte unchanged.
 
+## Assemble the current four-source dataset
+
+Combine the retained historical export with the completed new-STL batch package:
+
+```bash
+.venv/bin/python -m minires.preparation.assemble \
+  --historical-records private/historical-export.jsonl \
+  --exclude-historical-source "$PRIVATE_HISTORICAL_SOURCE_TO_OMIT" \
+  --new-batch-result private/issue-30/batch-result.json \
+  --seed 23 \
+  --private-dir private/current-dataset
+```
+
+The command reuses historical measurements as authoritative inputs and performs
+only conservative schema validation; it never opens historical meshes or invokes
+geometry, PrusaSlicer, or UVtools adapters. The configured historical source must
+account for exactly the known 34 rows, and the remaining historical records must
+resolve to three anonymous source groups. Accepted batch rows form the fourth
+anonymous source group. Source evidence, paths, filenames, input checksums, and
+miniature-family guesses are removed from model rows.
+
+Canonical millimetre-based fields and the legacy inference aliases are emitted
+together. Surface-to-volume ratios are recalculated from the unrounded underlying
+surface area and volume, while authoritative sliced resin mass targets are not
+changed. Invalid historical measurements and new batch rejections are retained in
+`rejected.jsonl` but cannot enter a model partition. Exact duplicates stay together
+when the historical export supplies duplicate evidence, an exact historical path
+is repeated, or the new batch supplies checksum-backed duplicate evidence.
+
+The complete private package contains `train.jsonl`, `validation.jsonl`,
+`test.jsonl`, `rejected.jsonl`, `provenance.json`, a reconciled `manifest.json`,
+and `checksums.json`. It is staged and replaced atomically. The manifest reconciles
+historical input, the explicit 34-row exclusion, historical validation outcomes,
+new inventory outcomes, eligible rows, and all three partitions. Prediction
+features exclude source, identity, duplicate, partition, and target metadata.
+The command prints only `completed` on success.
+
+Results from this package support claims about performance on held-out STL rows
+drawn from the retained sources. They are not evidence of unseen-source or
+miniature-family-independent performance.
+
 ## Generate source-balanced partitions
 
 Allocate harmonized labeled records independently within each retained anonymous

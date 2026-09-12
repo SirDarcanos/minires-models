@@ -56,6 +56,22 @@ python3 -m minires.preparation.prepare_batch \
 
 See [STL preparation](docs/stl-preparation.md) for checkpoint invalidation, resumption, safe concurrency, and private output semantics.
 
+After the complete new-source batch is available, assemble it with the retained
+historical measurements and create the current source-balanced package:
+
+```bash
+python3 -m minires.preparation.assemble \
+  --historical-records private/historical-export.jsonl \
+  --exclude-historical-source "$PRIVATE_HISTORICAL_SOURCE_TO_OMIT" \
+  --new-batch-result private/issue-30/batch-result.json \
+  --seed 23 \
+  --private-dir private/current-dataset
+```
+
+Historical rows are validated without re-probing or re-slicing them. See
+[Normalization and private data preparation](docs/normalization.md#assemble-the-current-four-source-dataset)
+for the package contract and the held-out-row claim it supports.
+
 ## Model development
 
 Install the project and evaluation dependencies:
