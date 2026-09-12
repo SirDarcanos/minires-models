@@ -97,8 +97,8 @@ Interrupted, time-limited, failed, or blocked runs retain completed phase eviden
 and skipped-run accounting. They cannot claim an incomplete search, candidate lock,
 or assessment as complete. Missing or mismatched slicing evidence, unavailable
 pinned artifacts, insufficient source coverage, or failed promotion gates remain
-bounded blockers. Inputs, released weights, retained notebooks, and supplied final
-records are never written by this workflow.
+bounded blockers. Inputs, released weights, and supplied final records are never
+written by this workflow.
 
 To reassess an existing lock without tuning, candidate selection, or additional
 compute, use the same command in assessment-only mode:

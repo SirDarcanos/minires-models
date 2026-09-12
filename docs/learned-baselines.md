@@ -46,9 +46,9 @@ unbounded `-1` to make resource use explicit. The fixed ensemble candidate is
 `0.2 * NN + 0.8 * XGBoost`; the validation-only selection machinery remains
 bounded to that single verified candidate.
 
-Unlike the historical notebook, clean preprocessing does not cast `kb` to an
-integer, round measurements, recompute a supplied ratio, or fit and remove a
-whole-dataset volume tail. Unlike released inference, the neural normalizer is
+Unlike the historical training pipeline, clean preprocessing does not cast `kb`
+to an integer, round measurements, recompute a supplied ratio, or fit and remove
+a whole-dataset volume tail. Unlike released inference, the neural normalizer is
 newly fitted on each permitted train partition rather than loaded from released
 weights. XGBoost receives the same unnormalized float32 matrix.
 
@@ -78,8 +78,8 @@ python3.13 -m venv .venv-learned
 
 Fitted `.keras` and XGBoost files, row-level predictions, source reports, and
 partition audits stay beneath the requested `private/` directory. The
-create-only manifest checksums all fitted and report artifacts. Inputs,
-released weights, and notebooks are never modified. If the supported optional
-dependencies are unavailable, the result is
+create-only manifest checksums all fitted and report artifacts. Inputs and
+released weights are never modified. If the supported optional dependencies are
+unavailable, the result is
 `learned_baseline_dependencies_required`; preserve that blocker rather than
 claiming a smoke result.

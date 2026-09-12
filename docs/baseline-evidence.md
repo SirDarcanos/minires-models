@@ -77,7 +77,7 @@ Automated tests use synthetic fixtures only:
 Before committing, verify originals and downloads remain untouched:
 
 ```bash
-git diff -- data/ minires_models.ipynb minires_test.ipynb
+git diff -- data/
 git status --short
 git diff --cached --name-only
 ```
