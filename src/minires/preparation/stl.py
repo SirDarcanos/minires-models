@@ -50,9 +50,15 @@ _POSITIVE_FIELDS = (
     "scale",
     "surface_volume_ratio",
 )
-_WEIGHT_PATTERN = re.compile(
-    r"(?:^|\n)\s*WeightG\s*:\s*([+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?)\s*(?:\n|$)"
+_PRUSASLICER_VERSION_PATTERN = re.compile(
+    r"^PrusaSlicer-(\d+)\.(\d+)\.(\d+)(?:\s|$)"
 )
+_UVTOOLS_CORE_VERSION_PATTERN = re.compile(r"^(\d+)\.(\d+)\.(\d+)$")
+_DECIMAL_PATTERN = re.compile(
+    r"^[+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?$"
+)
+_SUPPORTED_PRUSASLICER_MINIMUM = (2, 9, 6)
+_SUPPORTED_UVTOOLS_MINIMUM = (6, 2, 0)
 
 
 @dataclass(frozen=True)
@@ -162,13 +168,40 @@ def _profile_values(profile: bytes) -> dict[str, str]:
     return values
 
 
-def _version_line(marker: str, *outputs: str) -> str | None:
+def _marked_version_line(marker: str, *outputs: str) -> str | None:
     for output in outputs:
         for line in output.splitlines():
             candidate = line.strip()[:200]
             if marker in candidate.lower() and re.search(r"\d+(?:\.\d+)+", candidate):
                 return candidate
     return None
+
+
+def _prusaslicer_version(stdout: str, stderr: str) -> tuple[str | None, bool]:
+    if stderr.strip():
+        return None, False
+    lines = stdout.splitlines()
+    if not lines:
+        return None, False
+    candidate = lines[0].strip()[:200]
+    match = _PRUSASLICER_VERSION_PATTERN.match(candidate)
+    if match is None:
+        return None, False
+    version = tuple(int(part) for part in match.groups())
+    supported = version[0] == 2 and version >= _SUPPORTED_PRUSASLICER_MINIMUM
+    return candidate, supported
+
+
+def _uvtools_version(stdout: str, stderr: str) -> tuple[str | None, bool]:
+    if stderr.strip():
+        return None, False
+    candidate = stdout.strip()[:200]
+    match = _UVTOOLS_CORE_VERSION_PATTERN.fullmatch(candidate)
+    if match is None:
+        return None, False
+    version = tuple(int(part) for part in match.groups())
+    supported = version[0] == 6 and version >= _SUPPORTED_UVTOOLS_MINIMUM
+    return candidate, supported
 
 
 def _preflight(
@@ -197,28 +230,97 @@ def _preflight(
         return "profile_contract_mismatch", versions, profile_path, digest
 
     probes = (
-        ("prusaslicer", "prusaslicer", ("prusa-slicer", "--version"), "missing_prusaslicer"),
-        ("uvtools", "uvtools", ("UVtoolsCmd", "--version"), "missing_uvtools"),
         (
-            "geometry",
-            "trimesh",
-            (sys.executable, "-m", "minires.preparation.stl_probe", "--version"),
-            "missing_geometry_dependency",
+            "prusaslicer",
+            ("prusa-slicer", "--help"),
+            "missing_prusaslicer",
+            _prusaslicer_version,
+        ),
+        (
+            "uvtools",
+            ("UVtoolsCmd", "--core-version"),
+            "missing_uvtools",
+            _uvtools_version,
         ),
     )
-    for name, marker, command, missing_reason in probes:
+    for name, command, missing_reason, parse_version in probes:
         try:
             result = runner.run(command, timeout_s=timeout_s)
         except (OSError, TimeoutError, subprocess.TimeoutExpired):
             return missing_reason, versions, profile_path, digest
         if result.returncode != 0:
             return missing_reason, versions, profile_path, digest
-        version = _version_line(marker, result.stdout, result.stderr)
+        version, supported = parse_version(result.stdout, result.stderr)
         if version is None:
             return f"{name}_version_unavailable", versions, profile_path, digest
+        if not supported:
+            return f"unsupported_{name}_version", versions, profile_path, digest
         versions[name] = version
+
+    geometry_command = (
+        sys.executable, "-m", "minires.preparation.stl_probe", "--version"
+    )
+    try:
+        geometry = runner.run(geometry_command, timeout_s=timeout_s)
+    except (OSError, TimeoutError, subprocess.TimeoutExpired):
+        return "missing_geometry_dependency", versions, profile_path, digest
+    if geometry.returncode != 0:
+        return "missing_geometry_dependency", versions, profile_path, digest
+    geometry_version = _marked_version_line(
+        "trimesh", geometry.stdout, geometry.stderr
+    )
+    if geometry_version is None:
+        return "geometry_version_unavailable", versions, profile_path, digest
+    versions["geometry"] = geometry_version
     versions["python"] = platform.python_version()
     return None, versions, profile_path, digest
+
+
+def _weight_from_properties(result: ProcessResult) -> tuple[str | None, float | None]:
+    if result.returncode not in {0, 1} or result.stderr.strip():
+        return "uvtools_failed", None
+    lines = result.stdout.splitlines()
+    header_indexes = [
+        index for index, line in enumerate(lines) if line.startswith("HeaderSettings: ")
+    ]
+    done_indexes = [index for index, line in enumerate(lines) if line.startswith("Done in ")]
+    file_type_indexes = [
+        index for index, line in enumerate(lines) if line.startswith("FileType: ")
+    ]
+    process_indexes = [
+        index for index, line in enumerate(lines)
+        if line.startswith("ManufacturingProcess: ")
+    ]
+    forbidden_diagnostics = ("usage:", "description:", "error", "exception", "failed")
+    successful_structure = (
+        bool(lines)
+        and lines[0].startswith("Opening file ")
+        and len(done_indexes) == 1
+        and len(header_indexes) == 1
+        and len(file_type_indexes) == 1
+        and len(process_indexes) == 1
+        and done_indexes[0] < header_indexes[0] < file_type_indexes[0] < process_indexes[0]
+        and not any(line.strip().lower().startswith(forbidden_diagnostics) for line in lines)
+    )
+    if not successful_structure:
+        return "uvtools_failed", None
+
+    fields: dict[str, str] = {}
+    header = lines[header_indexes[0]]
+    for property_text in header.removeprefix("HeaderSettings: ").split(", "):
+        name, separator, value = property_text.partition(": ")
+        if not separator or not name or name in fields:
+            return "uvtools_failed", None
+        fields[name] = value.strip()
+    raw_weight = fields.get("WeightG")
+    if raw_weight is None:
+        return "weight_g_missing", None
+    if _DECIMAL_PATTERN.fullmatch(raw_weight) is None:
+        return "invalid_weight_g", None
+    weight = float(raw_weight)
+    if not math.isfinite(weight) or weight <= 0:
+        return "invalid_weight_g", None
+    return None, weight
 
 
 def _measurements(output: str) -> dict[str, int | float] | None:
@@ -243,29 +345,33 @@ def _measurements(output: str) -> dict[str, int | float] | None:
     return parsed
 
 
-def _process_copy(
+@dataclass(frozen=True)
+class _ToolchainEvidence:
+    measurements: Mapping[str, int | float]
+    sliced_inventory: Mapping[str, Any]
+    weight_g: float
+
+
+def _run_toolchain(
     source_copy: Path,
     profile_path: Path,
     runner: ProcessRunner,
     timeout_s: float,
-    inventory: Mapping[str, Any],
-    versions: Mapping[str, str],
-    profile_digest: str,
-) -> StlPreparationResult:
+) -> tuple[str | None, _ToolchainEvidence | None]:
     try:
         geometry = runner.run(
             (sys.executable, "-m", "minires.preparation.stl_probe", "--probe", source_copy),
             timeout_s=timeout_s,
         )
     except (TimeoutError, subprocess.TimeoutExpired):
-        return _rejected("geometry_timeout", versions=versions, profile_digest=profile_digest)
+        return "geometry_timeout", None
     except OSError:
-        return _rejected("corrupt_geometry", versions=versions, profile_digest=profile_digest)
+        return "corrupt_geometry", None
     if geometry.returncode != 0:
-        return _rejected("corrupt_geometry", versions=versions, profile_digest=profile_digest)
+        return "corrupt_geometry", None
     measurements = _measurements(geometry.stdout)
     if measurements is None:
-        return _rejected("invalid_measurements", versions=versions, profile_digest=profile_digest)
+        return "invalid_measurements", None
 
     sliced_output = source_copy.parent / "sliced-output.pwmx"
     try:
@@ -278,17 +384,17 @@ def _process_copy(
             cwd=source_copy.parent,
         )
     except (TimeoutError, subprocess.TimeoutExpired):
-        return _rejected("slicing_timeout", versions=versions, profile_digest=profile_digest)
+        return "slicing_timeout", None
     except OSError:
-        return _rejected("slicing_failed", versions=versions, profile_digest=profile_digest)
+        return "slicing_failed", None
     if sliced.returncode != 0:
-        return _rejected("slicing_failed", versions=versions, profile_digest=profile_digest)
+        return "slicing_failed", None
     if not sliced_output.is_file():
-        return _rejected("sliced_output_absent", versions=versions, profile_digest=profile_digest)
+        return "sliced_output_absent", None
     try:
         sliced_inventory = _file_inventory(sliced_output)
     except OSError:
-        return _rejected("sliced_output_unreadable", versions=versions, profile_digest=profile_digest)
+        return "sliced_output_unreadable", None
 
     try:
         properties = runner.run(
@@ -297,18 +403,31 @@ def _process_copy(
             cwd=source_copy.parent,
         )
     except (TimeoutError, subprocess.TimeoutExpired):
-        return _rejected("uvtools_timeout", versions=versions, profile_digest=profile_digest)
+        return "uvtools_timeout", None
     except OSError:
-        return _rejected("uvtools_failed", versions=versions, profile_digest=profile_digest)
-    if properties.returncode != 0:
-        return _rejected("uvtools_failed", versions=versions, profile_digest=profile_digest)
-    match = _WEIGHT_PATTERN.search(properties.stdout)
-    if match is None:
-        return _rejected("weight_g_missing", versions=versions, profile_digest=profile_digest)
-    weight = float(match.group(1))
-    if not math.isfinite(weight) or weight <= 0:
-        return _rejected("invalid_weight_g", versions=versions, profile_digest=profile_digest)
+        return "uvtools_failed", None
+    weight_rejection, weight = _weight_from_properties(properties)
+    if weight_rejection is not None:
+        return weight_rejection, None
+    assert weight is not None
+    return None, _ToolchainEvidence(measurements, sliced_inventory, weight)
 
+
+def _process_copy(
+    source_copy: Path,
+    profile_path: Path,
+    runner: ProcessRunner,
+    timeout_s: float,
+    inventory: Mapping[str, Any],
+    versions: Mapping[str, str],
+    profile_digest: str,
+) -> StlPreparationResult:
+    rejection, evidence = _run_toolchain(source_copy, profile_path, runner, timeout_s)
+    if rejection is not None:
+        return _rejected(rejection, versions=versions, profile_digest=profile_digest)
+    assert evidence is not None
+    measurements = evidence.measurements
+    weight = evidence.weight_g
     file_size_kib = inventory["byte_count"] / 1024
     record: dict[str, Any] = {
         "file_size_kib": file_size_kib,
@@ -334,7 +453,7 @@ def _process_copy(
             "slicer_added_supports": SLICER_ADDED_SUPPORTS,
         },
         "input_inventory": dict(inventory),
-        "sliced_output_inventory": sliced_inventory,
+        "sliced_output_inventory": dict(evidence.sliced_inventory),
     }
     return StlPreparationResult(
         outcome="prepared",

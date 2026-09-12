@@ -8,6 +8,7 @@ import unittest
 from unittest.mock import patch
 
 from minires import EvaluationConfig, PhysicalBaseline, evaluate_records
+from minires.preparation.diagnose_toolchain import main as diagnose_toolchain_main
 from minires.preparation.prepare_one import main as prepare_one_main
 from minires.preparation.slicing_contract import BUNDLED_PROFILE_RESOURCE
 from minires.preparation.stl import (
@@ -55,16 +56,37 @@ class FakeRunner:
             if self.failure == "fractional_euler_number":
                 measurements["euler_number"] = 1.5
             return ProcessResult(0, json.dumps(measurements), "")
-        if command == "prusa-slicer" and "--version" in args:
+        if command == "prusa-slicer" and "--help" in args:
             if self.failure == "missing_prusaslicer":
                 raise FileNotFoundError
+            if self.failure == "prusaslicer_timeout":
+                raise TimeoutError
             if self.failure == "malformed_prusaslicer_version":
-                return ProcessResult(0, "available\n", "")
-            return ProcessResult(0, "PrusaSlicer 2.6.0\n", "")
-        if command == "UVtoolsCmd" and "--version" in args:
+                return ProcessResult(0, "PrusaSlicer available\n", "")
+            if self.failure == "unsupported_prusaslicer_version":
+                return ProcessResult(0, "PrusaSlicer-2.8.1 based on Slic3r\n", "")
+            if self.failure == "contaminated_prusaslicer_version":
+                return ProcessResult(
+                    0, "Error: fallback output\nPrusaSlicer-2.9.6 based on Slic3r\n", ""
+                )
+            return ProcessResult(
+                0,
+                "PrusaSlicer-2.9.6 based on Slic3r (with GUI support)\n"
+                "Usage: prusa-slicer [ INPUT ] [ OPTIONS ]\n",
+                "",
+            )
+        if command == "UVtoolsCmd" and "--core-version" in args:
             if self.failure == "missing_uvtools":
                 raise FileNotFoundError
-            return ProcessResult(0, "UVtoolsCmd 4.0.0\n", "")
+            if self.failure == "uvtools_version_timeout":
+                raise TimeoutError
+            if self.failure == "malformed_uvtools_version":
+                return ProcessResult(0, "UVtools core available\n", "")
+            if self.failure == "unsupported_uvtools_version":
+                return ProcessResult(0, "6.1.0\n", "")
+            if self.failure == "contaminated_uvtools_version":
+                return ProcessResult(0, "Error: fallback output\n6.2.0\n", "")
+            return ProcessResult(0, "6.2.0\n", "")
         if command == "prusa-slicer":
             if self.failure == "slicing_timeout":
                 raise TimeoutError
@@ -82,11 +104,42 @@ class FakeRunner:
                 raise TimeoutError
             if self.failure == "uvtools_failed":
                 return ProcessResult(3, "", "failed")
+            if self.failure == "uvtools_missing_file":
+                return ProcessResult(1, "Description: MSLA/DLP file analysis\nUsage: UVtoolsCmd\n", "")
+            header = (
+                "HeaderSettings: TableName: HEADER, TableLength: 80, "
+                "LayerHeight: 0.05, WeightG: 1.23456789012345, Price: 0.007\n"
+            )
             if self.failure == "weight_g_missing":
-                return ProcessResult(0, "LayerCount: 10\n", "")
+                header = (
+                    "HeaderSettings: TableName: HEADER, TableLength: 80, "
+                    "LayerHeight: 0.05, Price: 0.007\n"
+                )
+            if self.failure == "similarly_named_weight":
+                header = (
+                    "HeaderSettings: TableName: HEADER, TableLength: 80, "
+                    "LayerHeight: 0.05, DryWeightG: 1.2, Price: 0.007\n"
+                )
             if self.failure == "invalid_weight_g":
-                return ProcessResult(0, "WeightG: 0\n", "")
-            return ProcessResult(0, "WeightG: 1.23456789012345\n", "")
+                header = header.replace("1.23456789012345", "0")
+            if self.failure == "non_finite_weight_g":
+                header = header.replace("1.23456789012345", "NaN")
+            if self.failure == "invalid_weight_syntax":
+                header = header.replace("1.23456789012345", "1_2")
+            if self.failure == "malformed_properties":
+                return ProcessResult(1, header, "")
+            output = (
+                "Opening file sliced-output.pwmx:\n"
+                "Done in 0.44s\n"
+                "-------------------------\n"
+                f"{header}"
+                "FileType: Binary\n"
+                "ManufacturingProcess: mSLA\n"
+            )
+            if self.failure == "help_contaminated_properties":
+                output += "Usage: UVtoolsCmd [command] [options]\n"
+            stderr = "Error: unexpected diagnostic\n" if self.failure == "stderr_properties" else ""
+            return ProcessResult(1, output, stderr)
         raise AssertionError(args)
 
 
@@ -139,8 +192,14 @@ class StlPreparationTests(unittest.TestCase):
         self.assertEqual(result.contract["resin_density_g_per_ml"], 1.1)
         self.assertEqual(result.contract["layer_height_mm"], 0.05)
         self.assertFalse(result.contract["slicer_added_supports"])
-        self.assertEqual(result.versions["prusaslicer"], "PrusaSlicer 2.6.0")
+        self.assertEqual(
+            result.versions["prusaslicer"],
+            "PrusaSlicer-2.9.6 based on Slic3r (with GUI support)",
+        )
+        self.assertEqual(result.versions["uvtools"], "6.2.0")
         self.assertIn("python", result.versions)
+        self.assertIn((("prusa-slicer", "--help"), 120.0, None), runner.calls)
+        self.assertIn((("UVtoolsCmd", "--core-version"), 120.0, None), runner.calls)
         self.assertEqual(
             result.record["sliced_output_inventory"]["sha256"],
             sha256(b"private sliced output").hexdigest(),
@@ -190,8 +249,15 @@ class StlPreparationTests(unittest.TestCase):
             "sliced_output_absent",
             "uvtools_timeout",
             "uvtools_failed",
+            "uvtools_missing_file",
             "weight_g_missing",
+            "similarly_named_weight",
             "invalid_weight_g",
+            "non_finite_weight_g",
+            "invalid_weight_syntax",
+            "malformed_properties",
+            "help_contaminated_properties",
+            "stderr_properties",
         )
         original = self.stl.read_bytes()
         for failure in failures:
@@ -199,7 +265,16 @@ class StlPreparationTests(unittest.TestCase):
                 runner = FakeRunner(failure)
                 result = self.prepare(runner)
                 self.assertEqual(result.outcome, "rejected")
-                self.assertEqual(result.rejection, failure)
+                expected = {
+                    "uvtools_missing_file": "uvtools_failed",
+                    "similarly_named_weight": "weight_g_missing",
+                    "non_finite_weight_g": "invalid_weight_g",
+                    "invalid_weight_syntax": "invalid_weight_g",
+                    "malformed_properties": "uvtools_failed",
+                    "help_contaminated_properties": "uvtools_failed",
+                    "stderr_properties": "uvtools_failed",
+                }.get(failure, failure)
+                self.assertEqual(result.rejection, expected)
                 self.assertIsNone(result.record)
                 self.assertEqual(self.stl.read_bytes(), original)
                 if runner.generated_path is not None:
@@ -216,8 +291,21 @@ class StlPreparationTests(unittest.TestCase):
             runner=FakeRunner(),
         )
         self.assertEqual(result.rejection, "scope_confirmation_required")
-        result = self.prepare(FakeRunner("malformed_prusaslicer_version"))
-        self.assertEqual(result.rejection, "prusaslicer_version_unavailable")
+        cases = {
+            "prusaslicer_timeout": "missing_prusaslicer",
+            "malformed_prusaslicer_version": "prusaslicer_version_unavailable",
+            "unsupported_prusaslicer_version": "unsupported_prusaslicer_version",
+            "contaminated_prusaslicer_version": "prusaslicer_version_unavailable",
+            "uvtools_version_timeout": "missing_uvtools",
+            "malformed_uvtools_version": "uvtools_version_unavailable",
+            "unsupported_uvtools_version": "unsupported_uvtools_version",
+            "contaminated_uvtools_version": "uvtools_version_unavailable",
+        }
+        for failure, expected in cases.items():
+            with self.subTest(failure=failure):
+                result = self.prepare(FakeRunner(failure))
+                self.assertEqual(result.rejection, expected)
+                self.assertIsNone(result.record)
 
     def test_workspace_creation_failure_is_bounded(self):
         with patch("minires.preparation.stl.tempfile.mkdtemp", side_effect=OSError):
@@ -259,6 +347,23 @@ class StlPreparationTests(unittest.TestCase):
             self.assertNotIn(private_value, command_output)
         persisted = json.loads(output.read_text())
         self.assertEqual(persisted["record"]["sliced_resin_mass_g"], 1.23456789012345)
+
+    def test_synthetic_diagnostic_exercises_adapter_without_scope_claim(self):
+        runner = FakeRunner()
+        stdout = io.StringIO()
+        stderr = io.StringIO()
+
+        with redirect_stdout(stdout), redirect_stderr(stderr):
+            status = diagnose_toolchain_main([], runner=runner)
+
+        self.assertEqual((status, stdout.getvalue(), stderr.getvalue()), (0, "compatible\n", ""))
+        self.assertTrue(any("--probe" in call[0] for call in runner.calls))
+        self.assertTrue(any(call[0][0] == "prusa-slicer" and "--sla" in call[0]
+                            for call in runner.calls))
+        self.assertTrue(any(call[0][:2] == ("UVtoolsCmd", "print-properties")
+                            for call in runner.calls))
+        self.assertFalse(runner.generated_path.exists())
+        self.assertNotIn("scope_confirmed", stdout.getvalue() + stderr.getvalue())
 
     def test_default_runner_never_uses_shell_interpolation(self):
         completed = __import__("subprocess").CompletedProcess([], 0, "ok", "")

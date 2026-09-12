@@ -8,17 +8,29 @@ The workflow fails closed unless all of these checks pass before geometry proces
 
 - the bundled `src/minires/preparation/profiles/config-anycubic-mono.ini` has SHA-256 `06acac3fe2a3d762fb56ec2d1bde58fe9e15104556091438c81c4e90131d2d0e`;
 - the profile specifies density 1.1 g/ml, layer height 0.05 mm, and `supports_enable = 0`;
-- PrusaSlicer, UVtools, and trimesh are available.
+- PrusaSlicer 2.9.6 or a later 2.x release is detected from the first line of `prusa-slicer --help`;
+- UVtools 6.2.0 or a later 6.x release is detected from `UVtoolsCmd --core-version`;
+- trimesh is available.
 
-The private result records the Python version and the versions reported by each available tool. Geometry values and `WeightG` are serialized without workflow-level rounding. Input and generated sliced-output byte counts and SHA-256 checksums are recorded before cleanup.
+The one-file and batch preflights use these same probes and version rules. They reject a missing command, timeout, non-version response, malformed version, or version outside the supported families before STL processing. The private result records the actual version reported by each available tool. Geometry values and `WeightG` are serialized without workflow-level rounding. Input and generated sliced-output byte counts and SHA-256 checksums are recorded before cleanup.
 
-## Install and run a smoke input
+## Run the synthetic toolchain diagnostic
 
 Install the project and geometry dependency, then make `prusa-slicer` and `UVtoolsCmd` available on `PATH`:
 
 ```bash
 python3 -m pip install -e .
 python3 -m pip install -r requirements/preparation.txt
+python3 -m minires.preparation.diagnose_toolchain
+```
+
+The diagnostic generates a cube inside a temporary workspace, exercises trimesh, PrusaSlicer, and UVtools, and deletes the source and sliced output before returning. It prints only `compatible` or a bounded rejection. This verifies command interoperability; synthetic geometry is not a pre-supported miniature, does not establish validated-scope eligibility, and is not model evidence.
+
+## Prepare one validated-scope smoke input
+
+After the synthetic diagnostic passes, use an operator-confirmed private pre-supported miniature:
+
+```bash
 mkdir -p private/smoke
 python3 -m minires.preparation.prepare_one \
   --stl /private/path/to/pre-supported-input.stl \
@@ -69,7 +81,7 @@ inventory_count = accepted_count + rejected_count
 
 ## Process and cleanup boundaries
 
-Every external application receives an argument vector directly; no shell command is built. Each call has a timeout and must exit successfully. PrusaSlicer receives an explicit output path in a mode-0700 temporary workspace. Geometry and slicing operate on a private copy named `input.stl`, not the source. The entire workspace, including sliced output, is removed after success, rejection, or timeout, and the source checksum is checked again before returning.
+Every external application receives an argument vector directly; no shell command is built. Each call has a timeout. Preflight and slicing commands must exit successfully. UVtools 6.2.0 `print-properties` is allowed its observed exit status 1 only when stdout has the successful property structure and its `HeaderSettings` line contains an exact, finite, positive `WeightG` field; help, error, incomplete, and malformed output still fails closed. PrusaSlicer receives an explicit output path in a mode-0700 temporary workspace. Geometry and slicing operate on a private copy named `input.stl`, not the source. The entire workspace, including sliced output, is removed after success, rejection, or timeout, and the source checksum is checked again before returning.
 
 Named processing rejections include:
 

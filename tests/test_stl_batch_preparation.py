@@ -17,7 +17,7 @@ class ScenarioRunner:
     """Fake only the external process boundary; the real batch command does the rest."""
 
     def __init__(
-        self, *, failures=None, version="2.6.0", interrupt_digest=None,
+        self, *, failures=None, version="2.9.6", interrupt_digest=None,
         mutate_sources=None, delay=0.0,
     ):
         self.failures = failures or {}
@@ -42,11 +42,13 @@ class ScenarioRunner:
 
     def run(self, args, *, timeout_s, cwd=None):
         args = tuple(str(value) for value in args)
+        if args[:2] == ("prusa-slicer", "--help"):
+            return ProcessResult(
+                0, f"PrusaSlicer-{self.version} based on Slic3r (with GUI support)\n", ""
+            )
+        if args[:2] == ("UVtoolsCmd", "--core-version"):
+            return ProcessResult(0, "6.2.0\n", "")
         if "--version" in args:
-            if args[0] == "prusa-slicer":
-                return ProcessResult(0, f"PrusaSlicer {self.version}\n", "")
-            if args[0] == "UVtoolsCmd":
-                return ProcessResult(0, "UVtoolsCmd 4.0.0\n", "")
             return ProcessResult(0, "trimesh 4.10.1\n", "")
         digest = self._digest(args, cwd)
         phase = "probe" if "--probe" in args else "slice" if args[0] == "prusa-slicer" else "properties"
@@ -84,7 +86,17 @@ class ScenarioRunner:
             output.write_bytes(b"private sliced output")
             self.generated.append(output)
             return ProcessResult(0, "", "")
-        return ProcessResult(0, "WeightG: 1.23456789012345\n", "")
+        return ProcessResult(
+            1,
+            "Opening file sliced-output.pwmx:\n"
+            "Done in 0.44s\n"
+            "-------------------------\n"
+            "HeaderSettings: TableName: HEADER, TableLength: 80, "
+            "LayerHeight: 0.05, WeightG: 1.23456789012345, Price: 0.007\n"
+            "FileType: Binary\n"
+            "ManufacturingProcess: mSLA\n",
+            "",
+        )
 
 
 class StlBatchCommandTests(unittest.TestCase):
@@ -227,12 +239,12 @@ class StlBatchCommandTests(unittest.TestCase):
 
     def test_changed_input_and_contract_invalidate_stale_checkpoints(self):
         path = self.add_stl("a.stl", b"old")
-        self.assertEqual(self.run_command(ScenarioRunner(version="2.6.0"))[0], 0)
+        self.assertEqual(self.run_command(ScenarioRunner(version="2.9.6"))[0], 0)
         path.write_bytes(b"new")
-        changed_input = ScenarioRunner(version="2.6.0")
+        changed_input = ScenarioRunner(version="2.9.6")
         self.assertEqual(self.run_command(changed_input)[0], 0)
         self.assertTrue(changed_input.events)
-        changed_contract = ScenarioRunner(version="2.7.0")
+        changed_contract = ScenarioRunner(version="2.9.7")
         self.assertEqual(self.run_command(changed_contract)[0], 0)
         self.assertTrue(changed_contract.events)
         report = json.loads(self.output.read_text())
@@ -276,7 +288,7 @@ class StlBatchCommandTests(unittest.TestCase):
         self.assertEqual(self.run_command(sequential)[0], 0)
         self.assertEqual(sequential.max_active, 1)
         # A changed contract forces fresh work with the explicitly bounded worker count.
-        concurrent = ScenarioRunner(version="2.7.0", delay=0.05)
+        concurrent = ScenarioRunner(version="2.9.7", delay=0.05)
         self.assertEqual(self.run_command(concurrent, "--workers", "2")[0], 0)
         self.assertEqual(concurrent.max_active, 2)
         self.assertLessEqual(concurrent.max_active, 2)

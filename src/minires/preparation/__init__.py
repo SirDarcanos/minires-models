@@ -15,6 +15,7 @@ from .stl import (
     SubprocessRunner,
     prepare_stl,
 )
+from .toolchain import diagnose_toolchain
 
 __all__ = [
     "BatchPreparationError",
@@ -26,6 +27,7 @@ __all__ = [
     "StlBatchPreparationResult",
     "StlPreparationResult",
     "SubprocessRunner",
+    "diagnose_toolchain",
     "partition_private_dataset",
     "prepare_private_dataset",
     "prepare_stl",

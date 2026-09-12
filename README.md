@@ -33,6 +33,7 @@ Install the project and geometry dependency, then make `prusa-slicer` and `UVtoo
 ```bash
 python3 -m pip install -e .
 python3 -m pip install -r requirements/preparation.txt
+python3 -m minires.preparation.diagnose_toolchain
 mkdir -p private/smoke
 python3 -m minires.preparation.prepare_one \
   --stl /private/path/to/pre-supported-input.stl \
@@ -40,7 +41,7 @@ python3 -m minires.preparation.prepare_one \
   --scope-confirmed
 ```
 
-The workflow verifies the bundled profile checksum and slicing settings before processing. It writes generated sliced output only inside a private temporary workspace and prints no filename, path, checksum, measurements, or label.
+The synthetic diagnostic verifies installed-tool interoperability without claiming validated-scope eligibility. The preparation workflow then verifies the bundled profile checksum and slicing settings before processing an operator-confirmed private pre-supported miniature. Both write generated output only inside temporary workspaces and print no filename, path, checksum, measurements, or label.
 
 After that smoke check succeeds, prepare a directory with durable private checkpoints. Concurrency defaults to one worker:
 
