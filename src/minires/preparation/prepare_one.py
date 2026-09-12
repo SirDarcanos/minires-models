@@ -7,8 +7,8 @@ from pathlib import Path
 import sys
 from typing import Sequence
 
-from .private_io import PrivateArgumentParser, write_private_json
-from .stl_preparation import DEFAULT_TIMEOUT_S, prepare_stl
+from ..private_io import PrivateArgumentParser, write_private_json
+from .stl import DEFAULT_TIMEOUT_S, prepare_stl
 
 
 def build_parser() -> argparse.ArgumentParser:

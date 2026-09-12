@@ -6,7 +6,7 @@ The one-STL workflow creates either one identity-free MiniRes record or one name
 
 The workflow fails closed unless all of these checks pass before geometry processing or slicing:
 
-- the bundled `minires_evaluation/profiles/config-anycubic-mono.ini` has SHA-256 `06acac3fe2a3d762fb56ec2d1bde58fe9e15104556091438c81c4e90131d2d0e`;
+- the bundled `src/minires/preparation/profiles/config-anycubic-mono.ini` has SHA-256 `06acac3fe2a3d762fb56ec2d1bde58fe9e15104556091438c81c4e90131d2d0e`;
 - the profile specifies density 1.1 g/ml, layer height 0.05 mm, and `supports_enable = 0`;
 - PrusaSlicer, UVtools, and trimesh are available.
 
@@ -14,12 +14,13 @@ The private result records the Python version and the versions reported by each 
 
 ## Install and run a smoke input
 
-Install the geometry dependency and make `prusa-slicer` and `UVtoolsCmd` available on `PATH`:
+Install the project and geometry dependency, then make `prusa-slicer` and `UVtoolsCmd` available on `PATH`:
 
 ```bash
-python3 -m pip install -r requirements-preparation.txt
+python3 -m pip install -e .
+python3 -m pip install -r requirements/preparation.txt
 mkdir -p private/smoke
-python3 -m minires_evaluation.prepare_one \
+python3 -m minires.preparation.prepare_one \
   --stl /private/path/to/pre-supported-input.stl \
   --private-output private/smoke/result.json \
   --scope-confirmed

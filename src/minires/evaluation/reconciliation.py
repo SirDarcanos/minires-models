@@ -4,7 +4,7 @@ from collections import Counter, defaultdict
 from dataclasses import asdict
 from typing import Any, Sequence
 
-from .ingestion import CanonicalRow, fingerprint
+from ..ingestion import CanonicalRow, fingerprint
 
 EVIDENCE_FIELDS = ("record_identity", "location_evidence", "source_name_evidence")
 

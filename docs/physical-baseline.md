@@ -29,10 +29,11 @@ private Parquet, reconciliation, and the full feature contract.
 ]
 ```
 
-Run the public-safe summary:
+Install the project, then run the public-safe summary:
 
 ```bash
-python3 -m minires_evaluation \
+python3 -m pip install -e . -r requirements/evaluation.txt
+python3 -m minires \
   --records local-records.json \
   --density-g-per-ml 1.1 \
   --volume-unit mm3 \
@@ -43,7 +44,7 @@ python3 -m minires_evaluation \
 
 Without `--public` or `--output`, the CLI creates a new run directory under
 `private/`, containing typed Parquet, predictions, a row audit, reconciliation,
-and fingerprints. Install `requirements-evaluation.txt` for Parquet support.
+and fingerprints. Install `requirements/evaluation.txt` for Parquet support.
 Use `--private-dir private/my-run` to choose a new directory. Existing run
 directories and output files are never overwritten. A private JSON-only
 `--output` must also be beneath a `private/` directory.

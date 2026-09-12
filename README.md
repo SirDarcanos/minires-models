@@ -20,6 +20,7 @@ The current code supports data preparation and governed model development. A rep
 
 Start with:
 
+- [Repository structure](docs/repository-structure.md) for package interfaces and maintainer setup.
 - [Model definitions](docs/model-definitions.md) for active architecture and runtime contracts.
 - [Candidate tuning and locked assessment](docs/candidate-tuning.md) for the replacement-model workflow.
 - [Source-balanced partitions](docs/normalization.md#generate-source-balanced-partitions) for current data allocation.
@@ -27,12 +28,13 @@ Start with:
 
 ## Prepare one STL
 
-Install the geometry dependency and make `prusa-slicer` and `UVtoolsCmd` available on `PATH`:
+Install the project and geometry dependency, then make `prusa-slicer` and `UVtoolsCmd` available on `PATH`:
 
 ```bash
-python3 -m pip install -r requirements-preparation.txt
+python3 -m pip install -e .
+python3 -m pip install -r requirements/preparation.txt
 mkdir -p private/smoke
-python3 -m minires_evaluation.prepare_one \
+python3 -m minires.preparation.prepare_one \
   --stl /private/path/to/pre-supported-input.stl \
   --private-output private/smoke/result.json \
   --scope-confirmed
@@ -42,16 +44,17 @@ The workflow verifies the bundled profile checksum and slicing settings before p
 
 ## Model development
 
-Install the evaluation dependencies:
+Install the project and evaluation dependencies:
 
 ```bash
-python3 -m pip install -r requirements-evaluation.txt
+python3 -m pip install -e .
+python3 -m pip install -r requirements/evaluation.txt
 ```
 
 Optional model runtimes have separate pinned requirement files:
 
-- `requirements-learned.txt` for clean refits and candidate training;
-- `requirements-legacy.txt` for comparison with the released reference only.
+- `requirements/learned.txt` for clean refits and candidate training;
+- `requirements/legacy.txt` for comparison with the released reference only.
 
 The main references are:
 
@@ -62,7 +65,7 @@ The main references are:
 - [Candidate tuning](docs/candidate-tuning.md)
 - [Baseline evidence](docs/baseline-evidence.md)
 
-`baseline_analysis.ipynb` remains because it is a current, output-free view over the public aggregate evaluation interface. It is not a historical training notebook and is not required by the runtime.
+`notebooks/baseline_analysis.ipynb` remains because it is a current, output-free view over the public aggregate evaluation interface. It is not a historical training notebook and is not required by the runtime.
 
 ## Privacy
 
@@ -70,10 +73,13 @@ Source identities, raw paths, STL files, checksums, row-level measurements, labe
 
 ## Tests
 
+Install the project in editable mode before running tests so they resolve the installed `src/minires` package rather than source from the repository root:
+
 ```bash
+python3 -m pip install -e .
 python3 -m unittest discover -s tests
 ```
 
-Some tests require the optional dependencies listed above.
+Some tests require the optional dependencies listed above. See [Repository structure](docs/repository-structure.md) for the package layout and maintainer workflow.
 
 [MIT License](LICENSE)

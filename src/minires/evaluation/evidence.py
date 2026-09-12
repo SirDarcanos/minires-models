@@ -14,11 +14,11 @@ import resource
 import time
 from typing import Any, Mapping, Sequence
 
-from .evaluation import EvaluationConfig, EvaluationResult, PhysicalBaseline, evaluate_records
-from .ingestion import InputError
-from .learned import LearnedBaseline, enable_synchronous_dataset_execution
-from .legacy import LegacyProvenance, load_legacy_reference
-from .private_io import write_private_json
+from .baseline import EvaluationConfig, EvaluationResult, PhysicalBaseline, evaluate_records
+from ..ingestion import InputError
+from ..modeling.learned import LearnedBaseline, enable_synchronous_dataset_execution
+from ..modeling.legacy import LegacyProvenance, load_legacy_reference
+from ..private_io import write_private_json
 
 
 PUBLIC_PRIVATE_KEYS = {
@@ -306,7 +306,7 @@ def produce_evidence_package(
     evidence = {
         "classification": "private_baseline_evidence",
         "invocation": {
-            "module": "minires_evaluation.evidence",
+            "module": "minires.evaluation.evidence",
             "records": str(records),
             "reconciliations": [str(path) for path in reconciliations],
             "output_root": str(output_root),

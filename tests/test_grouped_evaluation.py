@@ -2,13 +2,13 @@ import json
 import contextlib
 import io
 
-from minires_evaluation.__main__ import main
+from minires.__main__ import main
 from pathlib import Path
 import tempfile
 import unittest
 from unittest.mock import patch
 
-from minires_evaluation import (
+from minires import (
     EvaluationConfig,
     LearnedBaseline,
     LegacyProvenance,
@@ -16,7 +16,7 @@ from minires_evaluation import (
     PhysicalBaseline,
     evaluate_records,
 )
-from minires_evaluation.ingestion import InputError
+from minires.ingestion import InputError
 
 
 class GroupedEvaluationTests(unittest.TestCase):
@@ -125,7 +125,7 @@ class GroupedEvaluationTests(unittest.TestCase):
         physical = self.evaluate()
         # Split compatibility must not invoke the optional training integration.
         with patch(
-            "minires_evaluation.learned.TensorflowXGBoostRuntime",
+            "minires.modeling.learned.TensorflowXGBoostRuntime",
             side_effect=ImportError,
         ):
             learned = evaluate_records(

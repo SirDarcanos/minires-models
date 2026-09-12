@@ -10,9 +10,9 @@ import math
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
-from .ingestion import Dataset, InputError, fingerprint, load_records, number, normalize
-from .private_io import create_private_file, write_private_json
-from .reconciliation import reconcile
+from ..ingestion import Dataset, InputError, fingerprint, load_records, number, normalize
+from ..private_io import create_private_file, write_private_json
+from ..evaluation.reconciliation import reconcile
 from .slicing_contract import (
     DENSITY_G_PER_ML,
     EBMINIMANAGER_REVISION,
@@ -210,7 +210,7 @@ def prepare_private_dataset(
         if (source := _source_alias(raw)) is not None
     })
 
-    from .evaluation import EvaluationConfig, PhysicalBaseline, evaluate_records
+    from ..evaluation import EvaluationConfig, PhysicalBaseline, evaluate_records
     config = EvaluationConfig(DENSITY_G_PER_ML, "mm3", True, seed=seed)
     canonical = normalize(prepared, config)
     original_canonical = normalize(loaded, config)

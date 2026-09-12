@@ -17,12 +17,12 @@ from .assessment import (
     FinalAssessmentConfig,
     assess_locked_candidate,
 )
-from .evaluation import EvaluationConfig
+from .baseline import EvaluationConfig
 from .evidence import review_public_summary
-from .ingestion import InputError
-from .legacy import LegacyProvenance, LegacyReference, load_legacy_reference
-from .private_io import create_private_file, write_private_json
-from .tuning import (
+from ..ingestion import InputError
+from ..modeling.legacy import LegacyProvenance, LegacyReference, load_legacy_reference
+from ..private_io import create_private_file, write_private_json
+from ..modeling.tuning import (
     CandidateRuntime,
     LockedCandidate,
     SearchLimits,

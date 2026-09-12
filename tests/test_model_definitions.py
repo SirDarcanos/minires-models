@@ -1,6 +1,6 @@
 import unittest
 
-from minires_evaluation.model_definitions import (
+from minires.modeling.definitions import (
     FittedModel,
     ModelKind,
     ModelRuntime,
@@ -10,7 +10,7 @@ from minires_evaluation.model_definitions import (
     ensemble_model_specification,
     fixed_model_specification,
 )
-from minires_evaluation.tuning import DeclaredCandidate
+from minires.modeling.tuning import DeclaredCandidate
 
 
 NEURAL_PARAMETERS = {

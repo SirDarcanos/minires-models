@@ -1,6 +1,6 @@
 # Model definitions
 
-`minires_evaluation/model_definitions.py` is the single maintainer entry point for
+`src/minires/modeling/definitions.py` is the single maintainer entry point for
 MiniRes architecture knowledge. “Model kind” there means neural network, XGBoost,
 or ensemble. It is deliberately distinct from a **miniature family**, which is
 private grouping evidence used only to prevent evaluation leakage.
@@ -15,7 +15,7 @@ private grouping evidence used only to prevent evaluation leakage.
   XGBoost estimator, and 0.2/0.8 ensemble through that same interface.
 - `candidate_model_specification()` validates one neural-network or XGBoost search
   candidate. The bounded search domains remain next to plan generation in
-  `minires_evaluation/tuning.py`; generated neural-network and XGBoost candidates
+  `src/minires/modeling/tuning.py`; generated neural-network and XGBoost candidates
   expose their specification through `Candidate.specification`. Validation-selected
   ensemble rules become concrete fold specifications when their members and weight
   are known, and a resolved `LockedCandidate` exposes its final specification.
@@ -24,7 +24,7 @@ private grouping evidence used only to prevent evaluation leakage.
   backend. `TensorflowXGBoostBackend` is the production backend and is the only
   place that constructs TensorFlow layers or an XGBoost estimator.
 - The locked-model contract is created and verified in
-  `minires_evaluation/tuning.py`. `LockedCandidate.load_predictor()` is the
+  `src/minires/modeling/tuning.py`. `LockedCandidate.load_predictor()` is the
   assessment seam: assessment asks for a verified predictor and does not inspect
   layer, estimator, or ensemble internals.
 

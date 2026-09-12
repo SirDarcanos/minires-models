@@ -12,14 +12,14 @@ import random
 from statistics import NormalDist
 from typing import Any, Mapping, Sequence
 
-from .evaluation import EvaluationConfig
-from .ingestion import (
+from .baseline import EvaluationConfig
+from ..ingestion import (
     CanonicalRow, Dataset, InputError, MalformedLocalRecord, load_records, normalize,
 )
-from .learned import _matrix, _predict
-from .legacy import LegacyProvenance, LegacyReference, load_legacy_reference
-from .private_io import write_private_json
-from .tuning import (
+from ..modeling.learned import _matrix, _predict
+from ..modeling.legacy import LegacyProvenance, LegacyReference, load_legacy_reference
+from ..private_io import write_private_json
+from ..modeling.tuning import (
     CandidateRuntime, LockedCandidate, TensorflowXGBoostCandidateRuntime,
     load_locked_candidate, verify_locked_candidate_files,
 )

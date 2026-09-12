@@ -7,10 +7,10 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-from minires_evaluation import EvaluationConfig, PhysicalBaseline, evaluate_records
-from minires_evaluation.prepare_one import main as prepare_one_main
-from minires_evaluation.slicing_contract import BUNDLED_PROFILE_PATH
-from minires_evaluation.stl_preparation import (
+from minires import EvaluationConfig, PhysicalBaseline, evaluate_records
+from minires.preparation.prepare_one import main as prepare_one_main
+from minires.preparation.slicing_contract import BUNDLED_PROFILE_RESOURCE
+from minires.preparation.stl import (
     PROFILE_SHA256,
     ProcessResult,
     SubprocessRunner,
@@ -96,7 +96,7 @@ class StlPreparationTests(unittest.TestCase):
         self.addCleanup(self.temp.cleanup)
         self.root = Path(self.temp.name)
         self.profile = self.root / "config-anycubic-mono.ini"
-        self.profile.write_bytes(BUNDLED_PROFILE_PATH.read_bytes())
+        self.profile.write_bytes(BUNDLED_PROFILE_RESOURCE.read_bytes())
         self.stl = self.root / "private-source-canary.stl"
         self.stl.write_bytes(b"solid private source canary")
 
@@ -160,7 +160,7 @@ class StlPreparationTests(unittest.TestCase):
 
     def test_pinned_profile_checksum_is_verified(self):
         self.profile.write_text("modified profile")
-        with patch("minires_evaluation.stl_preparation.BUNDLED_PROFILE_PATH", self.profile):
+        with patch("minires.preparation.stl.BUNDLED_PROFILE_RESOURCE", self.profile):
             result = prepare_stl(
                 self.stl,
                 runner=FakeRunner(),
@@ -220,7 +220,7 @@ class StlPreparationTests(unittest.TestCase):
         self.assertEqual(result.rejection, "prusaslicer_version_unavailable")
 
     def test_workspace_creation_failure_is_bounded(self):
-        with patch("minires_evaluation.stl_preparation.tempfile.mkdtemp", side_effect=OSError):
+        with patch("minires.preparation.stl.tempfile.mkdtemp", side_effect=OSError):
             result = self.prepare(FakeRunner())
         self.assertEqual(result.rejection, "workspace_failure")
         self.assertEqual(self.stl.read_bytes(), b"solid private source canary")
@@ -237,7 +237,7 @@ class StlPreparationTests(unittest.TestCase):
         output = private_dir / "result.json"
         stdout = io.StringIO()
         stderr = io.StringIO()
-        with patch("minires_evaluation.prepare_one.prepare_stl", return_value=result):
+        with patch("minires.preparation.prepare_one.prepare_stl", return_value=result):
             with redirect_stdout(stdout), redirect_stderr(stderr):
                 status = prepare_one_main([
                     "--stl", str(self.stl),
@@ -262,7 +262,7 @@ class StlPreparationTests(unittest.TestCase):
 
     def test_default_runner_never_uses_shell_interpolation(self):
         completed = __import__("subprocess").CompletedProcess([], 0, "ok", "")
-        with patch("minires_evaluation.stl_preparation.subprocess.run", return_value=completed) as run:
+        with patch("minires.preparation.stl.subprocess.run", return_value=completed) as run:
             result = SubprocessRunner().run(("tool", "$(private-canary)"), timeout_s=1)
         self.assertEqual(result.returncode, 0)
         self.assertEqual(run.call_args.args[0], ["tool", "$(private-canary)"])
@@ -275,8 +275,8 @@ class StlPreparationTests(unittest.TestCase):
         )
         profile_digest = sha256(self.profile.read_bytes()).hexdigest()
         with (
-            patch("minires_evaluation.stl_preparation.BUNDLED_PROFILE_PATH", self.profile),
-            patch("minires_evaluation.stl_preparation.PROFILE_SHA256", profile_digest),
+            patch("minires.preparation.stl.BUNDLED_PROFILE_RESOURCE", self.profile),
+            patch("minires.preparation.stl.PROFILE_SHA256", profile_digest),
         ):
             result = self.prepare(FakeRunner())
         self.assertEqual(result.rejection, "profile_contract_mismatch")

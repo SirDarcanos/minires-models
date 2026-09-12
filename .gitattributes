@@ -2,4 +2,4 @@
 * text=auto
 
 # Preserve the checksum-pinned slicer profile byte-for-byte.
-minires_evaluation/profiles/config-anycubic-mono.ini binary
+src/minires/preparation/profiles/config-anycubic-mono.ini binary

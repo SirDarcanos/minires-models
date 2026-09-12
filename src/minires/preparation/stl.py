@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from hashlib import sha256
+from importlib.resources import as_file
 import json
 import math
 from pathlib import Path
@@ -16,7 +17,7 @@ import tempfile
 from typing import Any, Mapping, Protocol, Sequence
 
 from .slicing_contract import (
-    BUNDLED_PROFILE_PATH,
+    BUNDLED_PROFILE_RESOURCE,
     DENSITY_G_PER_ML,
     LAYER_HEIGHT_MM,
     PROFILE_SHA256,
@@ -171,9 +172,9 @@ def _version_line(marker: str, *outputs: str) -> str | None:
 def _preflight(
     runner: ProcessRunner,
     timeout_s: float,
+    profile_path: Path,
 ) -> tuple[str | None, dict[str, str], Path, str | None]:
     versions: dict[str, str] = {}
-    profile_path = BUNDLED_PROFILE_PATH
     try:
         profile = profile_path.read_bytes()
     except OSError:
@@ -199,7 +200,7 @@ def _preflight(
         (
             "geometry",
             "trimesh",
-            (sys.executable, "-m", "minires_evaluation.stl_probe", "--version"),
+            (sys.executable, "-m", "minires.preparation.stl_probe", "--version"),
             "missing_geometry_dependency",
         ),
     )
@@ -251,7 +252,7 @@ def _process_copy(
 ) -> StlPreparationResult:
     try:
         geometry = runner.run(
-            (sys.executable, "-m", "minires_evaluation.stl_probe", "--probe", source_copy),
+            (sys.executable, "-m", "minires.preparation.stl_probe", "--probe", source_copy),
             timeout_s=timeout_s,
         )
     except (TimeoutError, subprocess.TimeoutExpired):
@@ -342,29 +343,15 @@ def _process_copy(
     )
 
 
-def prepare_stl(
-    source_stl: str | Path,
-    *,
-    runner: ProcessRunner | None = None,
-    timeout_s: float = DEFAULT_TIMEOUT_S,
-    scope_confirmed: bool = False,
+def _prepare_with_profile(
+    source: Path,
+    inventory: Mapping[str, Any],
+    profile_path: Path,
+    process_runner: ProcessRunner,
+    timeout_s: float,
 ) -> StlPreparationResult:
-    """Prepare one STL, returning a record or a named rejection without exposing identity."""
-    if not scope_confirmed:
-        return _rejected("scope_confirmation_required")
-    if not math.isfinite(timeout_s) or timeout_s <= 0:
-        return _rejected("invalid_timeout")
-    process_runner = runner or SubprocessRunner()
-    source = Path(source_stl)
-    try:
-        inventory = _file_inventory(source)
-    except OSError:
-        return _rejected("input_unavailable")
-    if inventory["byte_count"] == 0 or source.suffix.lower() != ".stl":
-        return _rejected("invalid_input")
-
-    rejection, versions, profile_path, profile_digest = _preflight(
-        process_runner, timeout_s
+    rejection, versions, _, profile_digest = _preflight(
+        process_runner, timeout_s, profile_path
     )
     if rejection is not None:
         return _rejected(rejection, versions=versions, profile_digest=profile_digest)
@@ -407,3 +394,33 @@ def prepare_stl(
     if not unchanged:
         return _rejected("source_checksum_changed", versions=versions, profile_digest=profile_digest)
     return result
+
+
+def prepare_stl(
+    source_stl: str | Path,
+    *,
+    runner: ProcessRunner | None = None,
+    timeout_s: float = DEFAULT_TIMEOUT_S,
+    scope_confirmed: bool = False,
+) -> StlPreparationResult:
+    """Prepare one STL, returning a record or a named rejection without exposing identity."""
+    if not scope_confirmed:
+        return _rejected("scope_confirmation_required")
+    if not math.isfinite(timeout_s) or timeout_s <= 0:
+        return _rejected("invalid_timeout")
+    process_runner = runner or SubprocessRunner()
+    source = Path(source_stl)
+    try:
+        inventory = _file_inventory(source)
+    except OSError:
+        return _rejected("input_unavailable")
+    if inventory["byte_count"] == 0 or source.suffix.lower() != ".stl":
+        return _rejected("invalid_input")
+
+    try:
+        with as_file(BUNDLED_PROFILE_RESOURCE) as profile_path:
+            return _prepare_with_profile(
+                source, inventory, profile_path, process_runner, timeout_s
+            )
+    except OSError:
+        return _rejected("profile_unavailable")
