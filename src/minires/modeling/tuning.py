@@ -901,6 +901,326 @@ def _persist_declared_result(
         )
 
 
+def develop_candidates(
+    training_records: Dataset,
+    validation_records: Dataset,
+    config: EvaluationConfig,
+    *,
+    runtime: CandidateRuntime,
+    output_root: str | Path,
+    limits: SearchLimits,
+    clock: Callable[[], float] = time.monotonic,
+) -> TuningResult:
+    """Select and lock a candidate from explicit train and validation artifacts."""
+    output = Path(output_root)
+    if "private" not in output.resolve().parts:
+        raise InputError("private_output_directory_required")
+    try:
+        output.mkdir(parents=True, exist_ok=False, mode=0o700)
+    except OSError:
+        raise InputError("private_output_directory_unavailable") from None
+
+    training_loaded, training_fingerprint = load_records(training_records)
+    validation_loaded, validation_fingerprint = load_records(validation_records)
+    training_rows = normalize(training_loaded, config, contract="legacy")
+    validation_rows = normalize(validation_loaded, config, contract="legacy")
+    combined_fingerprint = fingerprint({
+        "training": training_fingerprint,
+        "validation": validation_fingerprint,
+    })
+    identities = SearchPlanIdentities(
+        normalized_input_fingerprint=fingerprint({
+            "training": [asdict(row) for row in training_rows],
+            "validation": [asdict(row) for row in validation_rows],
+        }),
+        source_allocation_fingerprint=fingerprint({
+            "contract": "explicit_train_validation",
+            "training": training_fingerprint,
+            "validation": validation_fingerprint,
+        }),
+        code_fingerprint=code_fingerprint(),
+        configuration_fingerprint=fingerprint(asdict(config)),
+        code_configuration_fingerprint="",
+    )
+    identities = _complete_explicit_identities(identities)
+    plan = _generate_bound_search_plan(
+        limits, combined_fingerprint, runtime.dependency_versions, identities,
+    )
+    write_private_json(output / "search-plan.json", plan.to_dict())
+
+    if not _valid_explicit_partitions(training_rows, validation_rows):
+        result = TuningResult(
+            "blocked", ("invalid_or_overlapping_partition_identities",), 0,
+            {"neural_network": 0, "xgboost": 0, "ensemble": 0,
+             "second_seed": 0, "control": 0},
+            plan, None, (), (), (), None, _resources(0.0, 0.0),
+        )
+        _write_tuning_outputs(output, result)
+        return result
+
+    startup_blockers = tuple(sorted(set(getattr(runtime, "startup_blockers", ()))))
+    if startup_blockers:
+        result = TuningResult(
+            "blocked", startup_blockers, 0,
+            {"neural_network": 0, "xgboost": 0, "ensemble": 0,
+             "second_seed": 0, "control": 0},
+            plan, None, (), (), (), None, _resources(0.0, 0.0),
+        )
+        _write_tuning_outputs(output, result)
+        return result
+
+    started = clock()
+    cpu_started = time.process_time()
+    deadline = started + limits.maximum_elapsed_seconds
+    allocation = {"neural_network": 0, "xgboost": 0, "ensemble": 0,
+                  "second_seed": 0, "control": 0}
+    blockers: list[str] = []
+    run_count = 0
+    control = Candidate("clean-fixed-control", "control", asdict(LearnedBaselineConfig()))
+    control_result = _evaluate_explicit_candidate(
+        control, LearnedBaselineConfig().seed, runtime, training_rows, validation_rows,
+        limits.ensemble_neural_network_weights,
+    )
+    allocation["control"] = 1
+    if control_result.status != "completed":
+        blockers.append("control_evaluation_failed")
+
+    initial: list[CandidateRun] = []
+    for candidate in plan.component_trials if not blockers else ():
+        now = clock()
+        if run_count >= limits.maximum_candidate_runs or now >= deadline:
+            blockers.append("candidate_search_deadline_reached" if now >= deadline
+                            else "candidate_run_limit_reached")
+            break
+        run = _evaluate_explicit_candidate(
+            candidate, plan.seed, runtime, training_rows, validation_rows,
+            limits.ensemble_neural_network_weights,
+        )
+        initial.append(run)
+        allocation[candidate.family] += 1
+        run_count += 1
+        if run.status != "completed":
+            blockers.append("candidate_runtime_failed")
+            break
+
+    if len(initial) == len(plan.component_trials) and not blockers:
+        neural = sorted(
+            (run for run in initial if run.candidate.family == "neural_network"),
+            key=_rank_key,
+        )
+        xgboost = sorted(
+            (run for run in initial if run.candidate.family == "xgboost"),
+            key=_rank_key,
+        )
+        for index in range(limits.ensemble_trials):
+            now = clock()
+            if run_count >= limits.maximum_candidate_runs or now >= deadline:
+                blockers.append("candidate_search_deadline_reached" if now >= deadline
+                                else "candidate_run_limit_reached")
+                break
+            candidate = _explicit_ensemble_candidate(
+                index, neural[index].candidate, xgboost[index].candidate,
+                limits.ensemble_neural_network_weights,
+            )
+            run = _evaluate_explicit_candidate(
+                candidate, plan.seed, runtime, training_rows, validation_rows,
+                limits.ensemble_neural_network_weights,
+            )
+            initial.append(run)
+            allocation["ensemble"] += 1
+            run_count += 1
+            if run.status != "completed":
+                blockers.append("candidate_runtime_failed")
+                break
+
+    second: list[CandidateRun] = []
+    ranked_initial = sorted((run for run in initial if run.eligible), key=_rank_key)
+    repetition_target = min(limits.second_seed_candidates, len(ranked_initial))
+    initial_complete = len(initial) == len(plan.component_trials) + limits.ensemble_trials
+    if initial_complete and not blockers:
+        for first in ranked_initial[:repetition_target]:
+            now = clock()
+            if run_count >= limits.maximum_candidate_runs or now >= deadline:
+                blockers.append("candidate_search_deadline_reached" if now >= deadline
+                                else "candidate_run_limit_reached")
+                break
+            run = _evaluate_explicit_candidate(
+                first.candidate, plan.second_seed, runtime, training_rows, validation_rows,
+                limits.ensemble_neural_network_weights,
+            )
+            second.append(run)
+            allocation["second_seed"] += 1
+            run_count += 1
+            if run.status != "completed":
+                blockers.append("candidate_runtime_failed")
+                break
+
+    combined = _combine_seed_results(initial, second)
+    locked: LockedCandidate | None = None
+    complete = (
+        initial_complete and len(second) == repetition_target
+        and all(run.status == "completed" for run in second) and not blockers
+    )
+    if complete:
+        eligible = [item for item in combined if item["eligible"]]
+        if not eligible:
+            blockers.append("no_eligible_candidate")
+        else:
+            selected = min(eligible, key=_combined_rank_key)
+            candidate = next(
+                run.candidate for run in initial
+                if run.candidate.candidate_id == selected["candidate_id"]
+            )
+            try:
+                locked = _refit_and_lock_explicit(
+                    candidate, selected, plan, runtime, training_rows, validation_rows,
+                    initial, second, training_fingerprint, validation_fingerprint,
+                    output / "locked-candidate",
+                )
+            except Exception:
+                blockers.append("candidate_refit_or_lock_failed")
+    elapsed = max(0.0, clock() - started)
+    status = (
+        "completed" if locked is not None else "completed_no_candidate"
+        if complete and "no_eligible_candidate" in blockers else "blocked"
+    )
+    result = TuningResult(
+        status, tuple(sorted(set(blockers))), run_count, allocation, plan,
+        control_result, tuple(initial), tuple(second), tuple(combined), locked,
+        _resources(elapsed, time.process_time() - cpu_started),
+    )
+    _write_tuning_outputs(output, result)
+    return result
+
+
+def _complete_explicit_identities(identities: SearchPlanIdentities) -> SearchPlanIdentities:
+    """Complete the combined code/configuration identity for an explicit plan."""
+    return SearchPlanIdentities(
+        identities.normalized_input_fingerprint,
+        identities.source_allocation_fingerprint,
+        identities.code_fingerprint,
+        identities.configuration_fingerprint,
+        fingerprint({
+            "code": identities.code_fingerprint,
+            "configuration": identities.configuration_fingerprint,
+        }),
+    )
+
+
+def _valid_explicit_partitions(
+    training: Sequence[CanonicalRow], validation: Sequence[CanonicalRow],
+) -> bool:
+    if not training or not validation or any(
+        row.outcome != "included" or not row.metadata.get("record_identity")
+        for row in (*training, *validation)
+    ):
+        return False
+    training_ids = [str(row.metadata["record_identity"]) for row in training]
+    validation_ids = [str(row.metadata["record_identity"]) for row in validation]
+    linkage_fields = ("duplicate_group", "geometry_fingerprint", "location_evidence")
+    cross_partition_linkage = any(
+        {str(row.metadata[field]) for row in training if row.metadata.get(field)}
+        & {str(row.metadata[field]) for row in validation if row.metadata.get(field)}
+        for field in linkage_fields
+    )
+    return (
+        len(training_ids) == len(set(training_ids))
+        and len(validation_ids) == len(set(validation_ids))
+        and not set(training_ids) & set(validation_ids)
+        and not cross_partition_linkage
+    )
+
+
+def _explicit_ensemble_candidate(
+    index: int, neural: Candidate, xgboost: Candidate, weights: Sequence[float],
+) -> Candidate:
+    parameters = {
+        "component_rank": index + 1,
+        "selection_partition": "validation_records_only",
+        "neural_network": asdict(neural),
+        "xgboost": asdict(xgboost),
+        "neural_network_weight_grid": tuple(weights),
+    }
+    digest = sha256(json.dumps(parameters, sort_keys=True).encode()).hexdigest()[:8]
+    return Candidate(f"ens-{index + 1:02d}-{digest}", "ensemble", parameters)
+
+
+def _evaluate_explicit_candidate(
+    candidate: Candidate, seed: int, runtime: CandidateRuntime,
+    training: Sequence[CanonicalRow], validation: Sequence[CanonicalRow],
+    weight_grid: Sequence[float],
+) -> CandidateRun:
+    started = time.perf_counter()
+    cpu_started = time.process_time()
+    try:
+        train_x, train_y = _matrix(training)
+        validation_x, validation_y = _matrix(validation)
+        if candidate.family == "ensemble":
+            neural = _candidate_from_dict(candidate.parameters["neural_network"])
+            xgboost = _candidate_from_dict(candidate.parameters["xgboost"])
+            neural_fit = runtime.fit_fold(
+                neural, seed, train_x, train_y, validation_x, validation_y
+            )
+            xgboost_fit = runtime.fit_fold(
+                xgboost, seed, train_x, train_y, validation_x, validation_y
+            )
+            neural_predictions = _predict(neural_fit.predictor, validation_x)
+            xgboost_predictions = _predict(xgboost_fit.predictor, validation_x)
+            weight = _select_ensemble_weight(
+                validation_y, neural_predictions, xgboost_predictions, weight_grid
+            )
+            specification = ensemble_model_specification(
+                neural.specification, xgboost.specification, weight
+            )
+            predictions = combine_ensemble_predictions(
+                specification, neural_predictions, xgboost_predictions
+            )
+            metadata = {
+                "neural_network": copy.deepcopy(neural_fit.metadata),
+                "xgboost": copy.deepcopy(xgboost_fit.metadata),
+                "selected_neural_network_weight": weight,
+                "model_specification": specification.to_dict(),
+                "fitted_state_fingerprint": fingerprint({
+                    "neural_network": _fingerprintable_state(neural_fit.fitted_state),
+                    "xgboost": _fingerprintable_state(xgboost_fit.fitted_state),
+                }),
+            }
+        else:
+            fitted = runtime.fit_fold(
+                candidate, seed, train_x, train_y, validation_x, validation_y
+            )
+            predictions = _predict(fitted.predictor, validation_x)
+            metadata = {
+                **copy.deepcopy(fitted.metadata),
+                "fitted_state_fingerprint": fingerprint(
+                    _fingerprintable_state(fitted.fitted_state)
+                ),
+            }
+        observed = _source_candidate_metrics(validation_y, predictions)
+        report = {
+            "source": "validation_partition",
+            "train_rows": list(range(len(training))),
+            "validation_rows": list(range(len(validation))),
+            "actual": list(validation_y),
+            "predictions": list(predictions),
+            **observed,
+        }
+        metrics = _candidate_metrics((report,))
+        eligible = _tail_eligible(metrics)
+        return CandidateRun(
+            candidate, seed, "completed",
+            () if eligible else ("development_serious_error_gate_failed",),
+            eligible, metrics, (report,), (metadata,),
+            _resources(time.perf_counter() - started, time.process_time() - cpu_started),
+        )
+    except Exception:
+        return CandidateRun(
+            candidate, seed, "failed", ("candidate_runtime_failed",), False,
+            _empty_metrics(), (), (),
+            _resources(time.perf_counter() - started, time.process_time() - cpu_started),
+        )
+
+
 def tune_candidates(
     records: Dataset,
     config: EvaluationConfig,
@@ -1511,6 +1831,104 @@ def _combined_rank_key(item: Mapping[str, Any]) -> tuple[Any, ...]:
             -metrics["pooled_within_2g_fraction"], item["candidate_id"])
 
 
+def _refit_and_lock_explicit(
+    candidate: Candidate, selected_evidence: Mapping[str, Any], plan: SearchPlan,
+    runtime: CandidateRuntime, training: Sequence[CanonicalRow],
+    validation: Sequence[CanonicalRow], initial: Sequence[CandidateRun],
+    second: Sequence[CandidateRun], training_fingerprint: str,
+    validation_fingerprint: str, directory: Path,
+) -> LockedCandidate:
+    related = [run for run in (*initial, *second)
+               if run.candidate.candidate_id == candidate.candidate_id]
+    fixed_counts = _derive_training_counts(candidate, related)
+    if not _valid_fixed_training_counts(candidate, fixed_counts):
+        raise InputError("invalid_locked_candidate_training_counts")
+    features, targets = _matrix(training)
+    fitted = runtime.refit(candidate, plan.second_seed, features, targets, fixed_counts)
+    if not isinstance(fitted.preprocessing_state, Mapping) or not fitted.artifacts:
+        raise InputError("invalid_locked_candidate_artifact")
+    directory.mkdir(parents=True, exist_ok=False, mode=0o700)
+    model_specification = _locked_model_specification(candidate, fixed_counts)
+    contract = {
+        "version": TUNING_VERSION,
+        "development_contract": "explicit_train_validation",
+        "candidate": asdict(candidate),
+        "model_specification": model_specification.to_dict(),
+        "runtime_configuration": _locked_runtime_configuration(candidate),
+        "selection_seeds": [plan.seed, plan.second_seed],
+        "seed_weighting": "equal_weight_each_seed",
+        "selected_combined_development_evidence": copy.deepcopy(dict(selected_evidence)),
+        "development_evidence": {
+            "search_plan_id": plan.plan_id,
+            "training_input_fingerprint": training_fingerprint,
+            "validation_input_fingerprint": validation_fingerprint,
+            "normalized_training_fingerprint": fingerprint([asdict(row) for row in training]),
+            "normalized_validation_fingerprint": fingerprint([asdict(row) for row in validation]),
+            "partition_identity_fingerprint": plan.source_allocation_fingerprint,
+            "search_plan_fingerprint": fingerprint(plan.to_dict()),
+            "test_input_attestation": "no_test_argument_or_path_available",
+        },
+        "development_source_groups": [],
+        "development_data_usage": {
+            "fitting": "training_records_only",
+            "preprocessing": "training_records_only",
+            "early_stopping": "validation_records_only",
+            "ensemble_selection": "validation_records_only",
+            "threshold_selection": "validation_records_only",
+            "candidate_selection": "validation_records_only",
+            "candidate_locking": "training_and_validation_contract_only",
+        },
+        "code_fingerprint": plan.code_fingerprint,
+        "transformation_version": TRANSFORMATION_VERSION,
+        "feature_contract": {
+            "ordered_features": list(LEGACY_FEATURES),
+            "dtype": "float32",
+            "excluded_fields": [
+                "anonymous_source_group", "partition", "duplicate_group",
+                "geometry_fingerprint", "record_identity", "_id", "join_key",
+            ],
+        },
+        "features": list(LEGACY_FEATURES),
+        "preprocessing": "locked_fit_on_training_records_only",
+        "preprocessing_state_file": "preprocessing-state.json",
+        "eligibility_rule": _eligibility_gates(),
+        "ranking_rule": list(plan.ranking_rule),
+        "dependency_versions": dict(plan.dependency_versions),
+        "dependency_environment": {
+            "python": platform.python_version(),
+            "platform": platform.platform(),
+            "versions": dict(plan.dependency_versions),
+        },
+        "fixed_training_counts": fixed_counts,
+        "training_count_rule": "selected_from_validation_evidence_across_both_seeds",
+        "refit_partition": "training_records_only",
+        "refit_record_count": len(training),
+        "validation_record_count": len(validation),
+        "test_input_accessed": False,
+        "final_test_access": False,
+        "classification": "internal_advisory_human_review_required",
+        "output_unit": "g",
+        "runtime_metadata": fitted.metadata,
+    }
+    write_private_json(directory / "candidate-contract.json", contract)
+    write_private_json(directory / "preprocessing-state.json", fitted.preprocessing_state)
+    for name, content in sorted(fitted.artifacts.items()):
+        if not name or Path(name).name != name or not isinstance(content, bytes):
+            raise InputError("invalid_locked_candidate_artifact")
+        with create_private_file(directory / name) as stream:
+            stream.write(content)
+    files = sorted(path for path in directory.iterdir() if path.is_file())
+    manifest = {
+        "version": TUNING_VERSION,
+        "files": {path.name: sha256(path.read_bytes()).hexdigest() for path in files},
+        "create_only": True,
+        "locked_before_final_assessment": True,
+        "test_input_accessed": False,
+    }
+    write_private_json(directory / "lock-manifest.json", manifest)
+    return LockedCandidate(candidate, fitted.predictor, directory, manifest, contract)
+
+
 def _refit_and_lock(
     candidate: Candidate, selected_evidence: Mapping[str, Any], plan: SearchPlan,
     runtime: CandidateRuntime, rows: Sequence[CanonicalRow],
@@ -1664,6 +2082,44 @@ def _valid_locked_contract(contract: Mapping[str, Any]) -> bool:
         candidate = _candidate_from_dict(contract["candidate"])
     except (KeyError, TypeError, ValueError):
         return False
+    if contract.get("development_contract") == "explicit_train_validation":
+        required_usage = {
+            "fitting": "training_records_only",
+            "preprocessing": "training_records_only",
+            "early_stopping": "validation_records_only",
+            "ensemble_selection": "validation_records_only",
+            "threshold_selection": "validation_records_only",
+            "candidate_selection": "validation_records_only",
+            "candidate_locking": "training_and_validation_contract_only",
+        }
+        return (
+            contract.get("version") == TUNING_VERSION
+            and contract.get("output_unit") == "g"
+            and contract.get("final_test_access") is False
+            and contract.get("test_input_accessed") is False
+            and contract.get("refit_partition") == "training_records_only"
+            and contract.get("runtime_configuration") == _locked_runtime_configuration(candidate)
+            and isinstance(evidence, Mapping)
+            and all(isinstance(evidence.get(key), str) and evidence.get(key) for key in (
+                "search_plan_id", "training_input_fingerprint",
+                "validation_input_fingerprint", "normalized_training_fingerprint",
+                "normalized_validation_fingerprint", "partition_identity_fingerprint",
+                "search_plan_fingerprint", "test_input_attestation",
+            ))
+            and evidence.get("test_input_attestation") == "no_test_argument_or_path_available"
+            and development_sources == []
+            and development_usage == required_usage
+            and isinstance(feature_contract, Mapping)
+            and feature_contract.get("ordered_features") == list(LEGACY_FEATURES)
+            and feature_contract.get("dtype") == "float32"
+            and isinstance(fixed_counts, Mapping)
+            and _valid_fixed_training_counts(candidate, fixed_counts)
+            and model_specification
+            == _locked_model_specification(candidate, fixed_counts).to_dict()
+            and isinstance(seeds, list) and len(seeds) == 2
+            and all(isinstance(seed, int) and not isinstance(seed, bool) for seed in seeds)
+            and seeds[0] != seeds[1]
+        )
     return (
         contract.get("version") == TUNING_VERSION
         and contract.get("output_unit") == "g"
@@ -2115,8 +2571,11 @@ class _BlockedCandidateRuntime:
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="Run private bounded MiniRes candidate tuning.")
-    parser.add_argument("--records", required=True, type=Path)
+    parser = argparse.ArgumentParser(
+        description="Run private bounded MiniRes candidate development."
+    )
+    parser.add_argument("--training-records", required=True, type=Path)
+    parser.add_argument("--validation-records", required=True, type=Path)
     parser.add_argument("--output-root", required=True, type=Path)
     parser.add_argument("--volume-unit", default="mm3")
     parser.add_argument("--scope-confirmed", action="store_true")
@@ -2133,8 +2592,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             runtime = _BlockedCandidateRuntime("candidate_tuning_dependencies_required")
         except RuntimeError:
             runtime = _BlockedCandidateRuntime("candidate_tuning_runtime_unavailable")
-        result = tune_candidates(
-            args.records,
+        result = develop_candidates(
+            args.training_records, args.validation_records,
             EvaluationConfig(None, args.volume_unit,
                              True if args.scope_confirmed else None, seed=args.seed),
             runtime=runtime, output_root=args.output_root, limits=SearchLimits(seed=args.seed),

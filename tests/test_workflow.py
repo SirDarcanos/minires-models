@@ -49,7 +49,8 @@ class EndToEndWorkflowTests(unittest.TestCase):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
         self.root = Path(self.temp.name)
-        self.development = self.root / "development.json"
+        self.training = self.root / "training.json"
+        self.validation = self.root / "validation.json"
         self.final = self.root / "final.json"
         self.legacy_artifacts = self.root / "legacy"
         self.legacy_artifacts.mkdir()
@@ -58,14 +59,16 @@ class EndToEndWorkflowTests(unittest.TestCase):
             "volume_unit": "mm3",
             "slicing_conditions": {"layer_height_mm": 0.05},
         }))
-        self.development.write_text(json.dumps([
+        development = [
             self.row(source, family, index + 1)
             for index, (source, family) in enumerate((
                 ("development-a", "a1"), ("development-a", "a2"),
                 ("development-b", "b1"), ("development-b", "b2"),
                 ("development-c", "c1"), ("development-c", "c2"),
             ))
-        ]))
+        ]
+        self.training.write_text(json.dumps(development[:4]))
+        self.validation.write_text(json.dumps(development[4:]))
         predictor = lambda rows: [row[1] / 1000.0 + 0.5 for row in rows]
         self.legacy = LegacyReference.from_predictors(
             neural_network=predictor,
@@ -77,6 +80,7 @@ class EndToEndWorkflowTests(unittest.TestCase):
     @staticmethod
     def row(source, family, value):
         return {
+            "_id": f"{source}-{value}",
             "kb": value,
             "volume": value * 1000,
             "surface_area": value * 100,
@@ -101,7 +105,7 @@ class EndToEndWorkflowTests(unittest.TestCase):
         self.final.write_text(json.dumps(self.final_rows()))
         originals = {
             path: path.read_bytes()
-            for path in (self.development, self.final, self.slicing)
+            for path in (self.training, self.validation, self.final, self.slicing)
         }
         runtime = SyntheticWorkflowRuntime()
         output = self.root / "private" / "workflow-success"
@@ -115,7 +119,8 @@ class EndToEndWorkflowTests(unittest.TestCase):
             return_value=self.legacy,
         ), contextlib.redirect_stdout(stdout):
             code = workflow_main([
-                "--development-records", str(self.development),
+                "--training-records", str(self.training),
+                "--validation-records", str(self.validation),
                 "--final-records", str(self.final),
                 "--legacy-artifacts", str(self.legacy_artifacts),
                 "--slicing-configuration", str(self.slicing),
@@ -159,7 +164,8 @@ class EndToEndWorkflowTests(unittest.TestCase):
         output = self.root / "private" / "workflow-blocked"
 
         evidence = run_end_to_end_workflow(
-            development_records=self.development,
+            training_records=self.training,
+            validation_records=self.validation,
             final_records=self.final,
             legacy_artifacts=self.legacy_artifacts,
             slicing_configuration=self.slicing,
@@ -188,10 +194,11 @@ class EndToEndWorkflowTests(unittest.TestCase):
         output = self.root / "private" / "workflow-interrupted"
 
         with patch(
-            "minires.evaluation.workflow.tune_candidates", side_effect=KeyboardInterrupt
+            "minires.evaluation.workflow.develop_candidates", side_effect=KeyboardInterrupt
         ):
             evidence = run_end_to_end_workflow(
-                development_records=self.development,
+                training_records=self.training,
+                validation_records=self.validation,
                 final_records=self.final,
                 legacy_artifacts=self.legacy_artifacts,
                 slicing_configuration=self.slicing,
@@ -217,7 +224,8 @@ class EndToEndWorkflowTests(unittest.TestCase):
         runtime = SyntheticWorkflowRuntime()
         tuning_output = self.root / "private" / "workflow-for-lock"
         run_end_to_end_workflow(
-            development_records=self.development,
+            training_records=self.training,
+            validation_records=self.validation,
             final_records=self.final,
             legacy_artifacts=self.legacy_artifacts,
             slicing_configuration=self.slicing,

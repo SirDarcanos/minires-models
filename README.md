@@ -86,6 +86,23 @@ Optional model runtimes have separate pinned requirement files:
 - `requirements/learned.txt` for clean refits and candidate training;
 - `requirements/legacy.txt` for comparison with the released reference only.
 
+Run bounded development with the explicit prepared partitions. The development
+command deliberately has no test-artifact option:
+
+```bash
+python3 -m minires.modeling.tuning \
+  --training-records private/current-dataset/train.jsonl \
+  --validation-records private/current-dataset/validation.jsonl \
+  --output-root private/candidate-tuning/run-001 \
+  --volume-unit mm3 \
+  --scope-confirmed \
+  --seed 41
+```
+
+Fitting and learned preprocessing use training rows only. Validation is limited
+to early stopping and candidate/ensemble selection. See the candidate-tuning
+reference before separately assessing a lock against the test artifact.
+
 The main references are:
 
 - [Normalization and private data preparation](docs/normalization.md)
