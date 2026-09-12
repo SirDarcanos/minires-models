@@ -3,8 +3,8 @@ from pathlib import Path
 import tempfile
 import unittest
 
-from minires_evaluation.prepare import main as prepare_main
-from minires_evaluation import (
+from minires.preparation.prepare import main as prepare_main
+from minires import (
     EvaluationConfig,
     PhysicalBaseline,
     evaluate_records,

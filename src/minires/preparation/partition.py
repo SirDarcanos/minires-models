@@ -6,9 +6,9 @@ import argparse
 from pathlib import Path
 from typing import Sequence
 
-from .ingestion import InputError
+from ..ingestion import InputError
 from .partitioning import partition_private_dataset
-from .private_io import PrivateArgumentParser
+from ..private_io import PrivateArgumentParser
 
 
 def build_parser() -> argparse.ArgumentParser:

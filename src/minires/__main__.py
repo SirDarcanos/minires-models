@@ -11,8 +11,8 @@ from uuid import uuid4
 from .ingestion import InputError
 from .private_io import PrivateArgumentParser, create_private_file
 from .evaluation import EvaluationConfig, PhysicalBaseline, evaluate_records
-from .legacy import LegacyProvenance, LegacyReference, load_legacy_reference
-from .learned import LearnedBaseline
+from .modeling.legacy import LegacyProvenance, LegacyReference, load_legacy_reference
+from .modeling.learned import LearnedBaseline
 
 
 def build_parser() -> argparse.ArgumentParser:

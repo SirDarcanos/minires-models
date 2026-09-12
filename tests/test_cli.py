@@ -26,7 +26,7 @@ class CommandLineInterfaceTests(unittest.TestCase):
             command = [
                 sys.executable,
                 "-m",
-                "minires_evaluation",
+                "minires",
                 "--records",
                 str(records_path),
                 "--density-g-per-ml",
@@ -49,7 +49,7 @@ class CommandLineInterfaceTests(unittest.TestCase):
         self.assertNotIn("/private", json.dumps(summary))
 
     def test_cli_and_python_api_return_the_same_public_result(self):
-        from minires_evaluation import EvaluationConfig, PhysicalBaseline, evaluate_records
+        from minires import EvaluationConfig, PhysicalBaseline, evaluate_records
 
         with tempfile.TemporaryDirectory() as directory:
             records_path = Path(directory) / "records.json"
@@ -58,7 +58,7 @@ class CommandLineInterfaceTests(unittest.TestCase):
                 [
                     sys.executable,
                     "-m",
-                    "minires_evaluation",
+                    "minires",
                     "--records",
                     str(records_path),
                     "--density-g-per-ml",
@@ -92,7 +92,7 @@ class CommandLineInterfaceTests(unittest.TestCase):
             table.write_text("volume,weight\n1000,1.1\n")
             output = root / "private" / "run"
             completed = subprocess.run([
-                sys.executable, "-m", "minires_evaluation", "--records", str(export),
+                sys.executable, "-m", "minires", "--records", str(export),
                 "--reconcile", str(table), "--private-dir", str(output),
                 "--volume-unit", "mm3"], text=True, capture_output=True)
             self.assertEqual(completed.returncode, 0, completed.stderr)
@@ -105,7 +105,7 @@ class CommandLineInterfaceTests(unittest.TestCase):
 
     def test_errors_never_echo_input_paths_or_values(self):
         completed = subprocess.run([
-            sys.executable, "-m", "minires_evaluation", "--records", "/private/location-canary.json"],
+            sys.executable, "-m", "minires", "--records", "/private/location-canary.json"],
             text=True, capture_output=True)
         self.assertNotEqual(completed.returncode, 0)
         self.assertNotIn("location-canary", completed.stderr)
@@ -121,7 +121,7 @@ class CommandLineInterfaceTests(unittest.TestCase):
                 "euler_number": 1, "scale": 30, "weight": 2,
             }]))
             completed = subprocess.run([
-                sys.executable, "-m", "minires_evaluation", "--records", str(records),
+                sys.executable, "-m", "minires", "--records", str(records),
                 "--volume-unit", "mm3", "--scope-confirmed", "--legacy-artifacts",
                 str(canary_artifacts), "--public",
             ], text=True, capture_output=True, check=True)
@@ -136,7 +136,7 @@ class CommandLineInterfaceTests(unittest.TestCase):
         import os
         import stat
         from unittest.mock import patch
-        from minires_evaluation.__main__ import main
+        from minires.__main__ import main
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             records = root / "records.json"

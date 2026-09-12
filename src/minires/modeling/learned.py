@@ -9,9 +9,9 @@ import platform
 import time
 from typing import Any, Callable, Protocol, Sequence
 
-from .ingestion import CanonicalRow, fingerprint
+from ..ingestion import CanonicalRow, fingerprint
 from .legacy import LEGACY_FEATURES, prepare_canonical_legacy_features
-from .model_definitions import (
+from .definitions import (
     FittedModel, ModelRuntime, TensorflowXGBoostBackend, TrainingData,
     ValidationData, combine_ensemble_predictions, ensemble_with_weight,
     fixed_model_specification,

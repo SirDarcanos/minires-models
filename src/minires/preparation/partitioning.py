@@ -13,8 +13,8 @@ import tempfile
 from typing import Any, Mapping, Sequence
 
 from .artifacts import FEATURE_UNITS
-from .ingestion import Dataset, FEATURE_ALIASES, InputError, load_records, fingerprint
-from .private_io import create_private_file, write_private_json
+from ..ingestion import Dataset, FEATURE_ALIASES, InputError, load_records, fingerprint
+from ..private_io import create_private_file, write_private_json
 
 PARTITION_ALLOCATION_VERSION = "source-balanced-70-15-15-v1"
 PARTITIONS = ("train", "validation", "test")

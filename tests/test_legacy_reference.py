@@ -7,8 +7,8 @@ import types
 import unittest
 from unittest.mock import patch
 
-from minires_evaluation import EvaluationConfig, evaluate_records
-from minires_evaluation.legacy import (
+from minires import EvaluationConfig, evaluate_records
+from minires.modeling.legacy import (
     LEGACY_FEATURES,
     PINNED_ARTIFACTS,
     LegacyProvenance,
@@ -180,7 +180,7 @@ class LegacyCompatibilityTests(unittest.TestCase):
             ):
                 (root / name).write_bytes(content)
                 specs.append(PinnedArtifact(name, hashlib.sha256(content).hexdigest(), len(content)))
-            with patch("minires_evaluation.legacy.PINNED_ARTIFACTS", tuple(specs)):
+            with patch("minires.modeling.legacy.PINNED_ARTIFACTS", tuple(specs)):
                 mismatch = resolve_legacy_artifacts(root)
             self.assertIn("legacy_metadata_mismatch", mismatch.blockers)
 
@@ -189,7 +189,7 @@ class LegacyCompatibilityTests(unittest.TestCase):
             specs[-1] = PinnedArtifact(
                 "minires_meta.json", hashlib.sha256(valid_metadata).hexdigest(), len(valid_metadata)
             )
-            with patch("minires_evaluation.legacy.PINNED_ARTIFACTS", tuple(specs)), patch.dict(
+            with patch("minires.modeling.legacy.PINNED_ARTIFACTS", tuple(specs)), patch.dict(
                 "sys.modules", {"numpy": None}
             ):
                 loaded = load_legacy_reference(root)
@@ -240,7 +240,7 @@ class LegacyCompatibilityTests(unittest.TestCase):
                 "tensorflow.keras.models": tensorflow_models,
                 "xgboost": xgboost,
             }
-            with patch("minires_evaluation.legacy.PINNED_ARTIFACTS", tuple(specs)), patch.dict(
+            with patch("minires.modeling.legacy.PINNED_ARTIFACTS", tuple(specs)), patch.dict(
                 sys.modules, modules
             ):
                 loaded = load_legacy_reference(root)

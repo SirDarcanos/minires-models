@@ -4,7 +4,7 @@ from pathlib import Path
 import tempfile
 import unittest
 
-from minires_evaluation import EvaluationConfig, PhysicalBaseline, evaluate_records
+from minires import EvaluationConfig, PhysicalBaseline, evaluate_records
 
 
 class LocalIngestionTests(unittest.TestCase):

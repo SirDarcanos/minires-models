@@ -4,14 +4,14 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-from minires_evaluation import (
+from minires import (
     EvaluationConfig,
     LegacyProvenance,
     PhysicalBaseline,
     evaluate_records,
     load_legacy_reference,
 )
-from minires_evaluation.evidence import (
+from minires.evaluation.evidence import (
     assess_repeatability,
     build_public_summary_draft,
     produce_evidence_package,
@@ -34,7 +34,7 @@ class BaselineEvidenceTests(unittest.TestCase):
 
     def test_analysis_notebook_is_an_output_free_shared_interface_caller(self):
         notebook = json.loads(
-            (Path(__file__).parents[1] / "baseline_analysis.ipynb").read_text()
+            (Path(__file__).parents[1] / "notebooks" / "baseline_analysis.ipynb").read_text()
         )
         code = "\n".join(
             "".join(cell["source"])
@@ -146,10 +146,10 @@ class BaselineEvidenceTests(unittest.TestCase):
             # This tests package orchestration and bounded dependency handling,
             # not the optional third-party training runtime exercised by smoke tests.
             with patch(
-                "minires_evaluation.learned.TensorflowXGBoostRuntime",
+                "minires.modeling.learned.TensorflowXGBoostRuntime",
                 side_effect=ImportError,
             ), patch(
-                "minires_evaluation.evidence.enable_synchronous_dataset_execution",
+                "minires.evaluation.evidence.enable_synchronous_dataset_execution",
                 create=True,
             ) as enable_synchronous:
                 evidence = produce_evidence_package(

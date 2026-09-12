@@ -7,7 +7,7 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-from minires_evaluation.partition import main as partition_main
+from minires.preparation.partition import main as partition_main
 
 
 class SourceBalancedPartitionCommandTests(unittest.TestCase):
@@ -27,7 +27,7 @@ class SourceBalancedPartitionCommandTests(unittest.TestCase):
             [
                 sys.executable,
                 "-m",
-                "minires_evaluation.partition",
+                "minires.preparation.partition",
                 "--records",
                 str(records),
                 "--private-dir",
@@ -155,7 +155,7 @@ class SourceBalancedPartitionCommandTests(unittest.TestCase):
             if path.is_file()
         }
 
-        with patch("minires_evaluation.partitioning.os.replace", side_effect=PermissionError):
+        with patch("minires.preparation.partitioning.os.replace", side_effect=PermissionError):
             with self.assertRaisesRegex(SystemExit, "private_partition_replacement_failed"):
                 partition_main([
                     "--records", str(records),

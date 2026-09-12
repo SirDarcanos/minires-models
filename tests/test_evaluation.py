@@ -1,7 +1,7 @@
 import math
 import unittest
 
-from minires_evaluation import (
+from minires import (
     EvaluationConfig,
     PhysicalBaseline,
     evaluate_records,

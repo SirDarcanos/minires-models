@@ -68,8 +68,8 @@ Use Python 3.11–3.13:
 
 ```bash
 python3.13 -m venv .venv-learned
-.venv-learned/bin/pip install -r requirements-evaluation.txt -r requirements-learned.txt
-.venv-learned/bin/python -m minires_evaluation \
+.venv-learned/bin/pip install -e . -r requirements/evaluation.txt -r requirements/learned.txt
+.venv-learned/bin/python -m minires \
   --records private/evaluation-records.json \
   --volume-unit mm3 --scope-confirmed \
   --split-manifest private/splits.json \

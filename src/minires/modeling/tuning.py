@@ -18,22 +18,23 @@ import time
 from types import MappingProxyType
 from typing import Any, Callable, Mapping, Protocol, Sequence
 
-from .evaluation import EvaluationConfig
-from .ingestion import (
+from ..evaluation import EvaluationConfig
+from ..ingestion import (
     CanonicalRow, Dataset, InputError, TRANSFORMATION_VERSION, fingerprint,
     load_records, normalize,
 )
 from .learned import LearnedBaselineConfig, _matrix, _predict
 from .legacy import LEGACY_FEATURES
-from .model_definitions import (
+from .definitions import (
     FittedModel, ModelKind, ModelRuntime, ModelSpecification,
     TensorflowXGBoostBackend, TrainingData,
     ValidationData, candidate_model_specification, combine_ensemble_predictions,
     ensemble_model_specification,
     fixed_model_specification,
 )
-from .private_io import create_private_file, write_private_json
-from .splits import ALLOCATION_VERSION, freeze_splits
+from ..private_io import create_private_file, write_private_json
+from ..source_identity import code_fingerprint
+from ..evaluation.splits import ALLOCATION_VERSION, freeze_splits
 
 
 TUNING_VERSION = "minires-candidate-tuning-v5"
@@ -707,9 +708,7 @@ def _jsonable(value: Any) -> Any:
 def _search_plan_identities(
     rows: Sequence[CanonicalRow], config: EvaluationConfig,
 ) -> SearchPlanIdentities:
-    code_identity = fingerprint({
-        path.name: path.read_text() for path in sorted(Path(__file__).parent.glob("*.py"))
-    })
+    code_identity = code_fingerprint()
     configuration_identity = fingerprint(asdict(config))
     normalized_identity = fingerprint([asdict(row) for row in rows])
     allocation_identity = fingerprint({
@@ -1780,7 +1779,7 @@ def _write_tuning_outputs(output: Path, result: TuningResult) -> None:
     public = result.to_dict(public=True)
     public["publication_status"] = "draft_not_approved"
     write_private_json(output / "public-summary-draft.json", public)
-    from .evidence import review_public_summary
+    from ..evaluation.evidence import review_public_summary
     write_private_json(output / "public-summary-review.json", review_public_summary(public))
     inventory = {
         str(path.relative_to(output)): sha256(path.read_bytes()).hexdigest()

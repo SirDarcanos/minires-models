@@ -9,9 +9,10 @@ import platform
 from pathlib import Path
 from typing import Any, Sequence, cast
 
-from .ingestion import CanonicalRow, Dataset, VOLUME_FACTORS, TRANSFORMATION_VERSION, fingerprint, load_records, normalize
-from .legacy import LegacyReference
-from .learned import LearnedBaseline, LearnedRun, fit_frozen_folds
+from ..ingestion import CanonicalRow, Dataset, VOLUME_FACTORS, TRANSFORMATION_VERSION, fingerprint, load_records, normalize
+from ..modeling.legacy import LegacyReference
+from ..modeling.learned import LearnedBaseline, LearnedRun, fit_frozen_folds
+from ..source_identity import code_fingerprint
 from .reconciliation import reconcile
 
 
@@ -188,7 +189,7 @@ def evaluate_records(
         assert isinstance(baseline, PhysicalBaseline)
         _require_physical_baseline(baseline)
     if not isinstance(config.seed, int) or isinstance(config.seed, bool):
-        from .ingestion import InputError
+        from ..ingestion import InputError
         raise InputError("invalid_seed")
     loaded, input_fingerprint = load_records(records)
     canonical_rows = normalize(loaded, config, contract="legacy" if is_legacy or is_learned else "canonical")
@@ -269,7 +270,7 @@ def evaluate_records(
         transformation_version=TRANSFORMATION_VERSION,
         tolerance_g=config.tolerance_g if _is_finite_positive(config.tolerance_g) else None,
         scope_confirmed=config.scope_confirmed if isinstance(config.scope_confirmed, bool) else None,
-        code_fingerprint=fingerprint({p.name: p.read_text() for p in sorted(Path(__file__).parent.glob("*.py"))}),
+        code_fingerprint=code_fingerprint(),
     )
     reconciliations = []
     for dataset in reconcile_with:
@@ -324,7 +325,7 @@ def evaluate_records(
                             if manifest is not None else None),
     )
     if output_dir is not None:
-        from .artifacts import write_private
+        from ..preparation.artifacts import write_private
         write_private(result, output_dir)
     return result
 
@@ -337,7 +338,7 @@ def _legacy_predictions(
     if not rows:
         empty = _metrics((), (), tolerance)
         return (), {name: empty for name in ("neural_network", "xgboost", "ensemble")}, ()
-    from .legacy import prepare_canonical_legacy_features
+    from ..modeling.legacy import prepare_canonical_legacy_features
 
     try:
         matrix = tuple(prepare_canonical_legacy_features(row) for row in rows)

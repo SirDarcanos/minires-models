@@ -111,8 +111,8 @@ Use Python 3.11–3.13 for the pinned optional dependencies:
 
 ```bash
 python3.13 -m venv .venv-legacy
-.venv-legacy/bin/pip install -r requirements-legacy.txt
-.venv-legacy/bin/python -m minires_evaluation \
+.venv-legacy/bin/pip install -e . -r requirements/legacy.txt
+.venv-legacy/bin/python -m minires \
   --records data/3d_print_miniatures_data.csv \
   --volume-unit mm3 \
   --scope-confirmed \

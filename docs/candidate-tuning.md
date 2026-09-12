@@ -12,9 +12,10 @@ requirements:
 ```bash
 python3.13 -m venv .venv-candidates
 .venv-candidates/bin/pip install \
-  -r requirements-evaluation.txt \
-  -r requirements-legacy.txt \
-  -r requirements-learned.txt
+  -e . \
+  -r requirements/evaluation.txt \
+  -r requirements/legacy.txt \
+  -r requirements/learned.txt
 ```
 
 Development records must use the canonical private source and miniature-family
@@ -45,7 +46,7 @@ supported slicing conditions:
 Then choose a new output directory beneath `private/`:
 
 ```bash
-.venv-candidates/bin/python -m minires_evaluation.workflow \
+.venv-candidates/bin/python -m minires.evaluation.workflow \
   --development-records private/development-records.json \
   --final-records private/final-test-records.json \
   --legacy-artifacts private/legacy-artifacts \
@@ -104,7 +105,7 @@ To reassess an existing lock without tuning, candidate selection, or additional
 compute, use the same command in assessment-only mode:
 
 ```bash
-.venv-candidates/bin/python -m minires_evaluation.workflow \
+.venv-candidates/bin/python -m minires.evaluation.workflow \
   --assessment-only \
   --locked-candidate private/end-to-end/run-001/tuning/locked-candidate \
   --final-records private/final-test-records.json \
@@ -136,8 +137,8 @@ The declared contract is complete and serializable, and its `candidate_id` is de
 from the configuration content rather than supplied by the caller.
 
 ```python
-from minires_evaluation import EvaluationConfig
-from minires_evaluation.tuning import (
+from minires import EvaluationConfig
+from minires.modeling.tuning import (
     DeclaredCandidate,
     TensorflowXGBoostCandidateRuntime,
     evaluate_declared_candidate,
@@ -188,8 +189,8 @@ input and source-allocation identities; it does not fit, score, read prior candi
 results, or use targets to choose candidate parameters.
 
 ```python
-from minires_evaluation import EvaluationConfig
-from minires_evaluation.tuning import SearchLimits, create_search_plan
+from minires import EvaluationConfig
+from minires.modeling.tuning import SearchLimits, create_search_plan
 
 plan = create_search_plan(
     records,
@@ -221,7 +222,7 @@ allocations, unsafe worker settings, and invalid resource limits fail with
 Choose a new output directory beneath `private/` for every attempt:
 
 ```bash
-.venv-candidates/bin/python -m minires_evaluation.tuning \
+.venv-candidates/bin/python -m minires.modeling.tuning \
   --records private/development-records.json \
   --output-root private/candidate-tuning/run-001 \
   --volume-unit mm3 \
@@ -296,7 +297,7 @@ that final-test access did not occur. Final-test records, source metadata,
 fingerprints, labels, and predictions enter only through the later assessment
 command after lock verification.
 
-Use `load_locked_candidate` from `minires_evaluation.tuning` when assessment runs
+Use `load_locked_candidate` from `minires.modeling.tuning` when assessment runs
 in a later process. Loading and assessment fail closed if an artifact,
 configuration, preprocessing record, dependency contract, or checksum changes.
 The assessment boundary verifies the lock and reloads the predictor from those
@@ -316,7 +317,7 @@ evidence returns the bounded `final_evidence_unavailable_or_malformed` outcome a
 still writes the create-only assessment evidence package.
 
 ```bash
-.venv-candidates/bin/python -m minires_evaluation.assessment \
+.venv-candidates/bin/python -m minires.evaluation.assessment \
   --records private/final-test-records.json \
   --locked-candidate private/candidate-tuning/run-001/locked-candidate \
   --legacy-artifacts private/legacy-artifacts \

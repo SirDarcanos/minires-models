@@ -8,11 +8,11 @@ import json
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from .ingestion import FEATURE_ALIASES, TRANSFORMATION_VERSION, InputError
-from .private_io import create_private_file, write_private_json
+from ..ingestion import FEATURE_ALIASES, TRANSFORMATION_VERSION, InputError
+from ..private_io import create_private_file, write_private_json
 
 if TYPE_CHECKING:
-    from .evaluation import EvaluationResult
+    from ..evaluation.baseline import EvaluationResult
 
 
 FEATURE_UNITS = {name: "mm3" if name.endswith("mm3") else "mm2" if name.endswith("mm2")

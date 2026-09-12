@@ -9,15 +9,16 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-from minires_evaluation import EvaluationConfig, LegacyProvenance, LegacyReference
-from minires_evaluation.assessment import (
+from minires import EvaluationConfig, LegacyProvenance, LegacyReference
+from minires.evaluation.assessment import (
     FinalAssessmentConfig,
     assess_locked_candidate,
     evaluate_promotion_gates,
     main as assessment_main,
 )
-from minires_evaluation.ingestion import fingerprint, load_records
-from minires_evaluation.tuning import (
+from minires.ingestion import fingerprint, load_records
+from minires.source_identity import code_fingerprint
+from minires.modeling.tuning import (
     CandidateFoldFit,
     DeclaredCandidate,
     LockedFit,
@@ -463,7 +464,7 @@ class DeclaredCandidateEvaluationTests(unittest.TestCase):
     def test_missing_runtime_and_non_finite_predictions_return_bounded_blockers(self):
         candidate = self.candidate("neural_network")
         with patch(
-            "minires_evaluation.tuning.TensorflowXGBoostCandidateRuntime",
+            "minires.modeling.tuning.TensorflowXGBoostCandidateRuntime",
             side_effect=ImportError("private dependency detail"),
         ):
             missing = evaluate_declared_candidate(
@@ -906,7 +907,7 @@ class CandidateTuningTests(unittest.TestCase):
         records.write_text(json.dumps(self.records))
         output = io.StringIO()
         with patch(
-            "minires_evaluation.tuning.TensorflowXGBoostCandidateRuntime",
+            "minires.modeling.tuning.TensorflowXGBoostCandidateRuntime",
             return_value=RecordingTuningRuntime(),
         ), contextlib.redirect_stdout(output):
             code = tuning_main([
@@ -926,10 +927,7 @@ class CandidateTuningTests(unittest.TestCase):
         runtime = RecordingTuningRuntime()
         loaded, input_identity = load_records(self.records)
         del loaded
-        code_identity = fingerprint({
-            path.name: path.read_text()
-            for path in sorted((Path(__file__).parents[1] / "minires_evaluation").glob("*.py"))
-        })
+        code_identity = code_fingerprint()
         plan = generate_search_plan(
             SearchLimits(seed=41), input_fingerprint=input_identity,
             code_fingerprint=code_identity, dependency_versions=runtime.dependency_versions,
@@ -1177,7 +1175,7 @@ class LockedAssessmentTests(unittest.TestCase):
 
         cli_output = io.StringIO()
         with patch(
-            "minires_evaluation.assessment.TensorflowXGBoostCandidateRuntime",
+            "minires.evaluation.assessment.TensorflowXGBoostCandidateRuntime",
             return_value=self.runtime,
         ), contextlib.redirect_stdout(cli_output):
             code = assessment_main([
@@ -1198,7 +1196,7 @@ class LockedAssessmentTests(unittest.TestCase):
     def test_changed_locked_artifact_blocks_assessment(self):
         (self.locked.directory / "model.bin").write_bytes(b"changed")
 
-        with patch("minires_evaluation.assessment.load_records") as final_loader:
+        with patch("minires.evaluation.assessment.load_records") as final_loader:
             result = assess_locked_candidate(
                 self.final_rows(), EvaluationConfig(None, "mm3", True),
                 self.locked, self.legacy, output_root=self.root / "assessment",

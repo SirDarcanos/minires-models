@@ -7,9 +7,9 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-from minires_evaluation import EvaluationConfig, LegacyProvenance, LegacyReference
-from minires_evaluation.tuning import CandidateFoldFit, LockedFit, SearchLimits
-from minires_evaluation.workflow import main as workflow_main, run_end_to_end_workflow
+from minires import EvaluationConfig, LegacyProvenance, LegacyReference
+from minires.modeling.tuning import CandidateFoldFit, LockedFit, SearchLimits
+from minires.evaluation.workflow import main as workflow_main, run_end_to_end_workflow
 
 
 class SyntheticWorkflowRuntime:
@@ -108,10 +108,10 @@ class EndToEndWorkflowTests(unittest.TestCase):
         stdout = io.StringIO()
 
         with patch(
-            "minires_evaluation.workflow.TensorflowXGBoostCandidateRuntime",
+            "minires.evaluation.workflow.TensorflowXGBoostCandidateRuntime",
             return_value=runtime,
         ), patch(
-            "minires_evaluation.workflow.load_legacy_reference",
+            "minires.evaluation.workflow.load_legacy_reference",
             return_value=self.legacy,
         ), contextlib.redirect_stdout(stdout):
             code = workflow_main([
@@ -188,7 +188,7 @@ class EndToEndWorkflowTests(unittest.TestCase):
         output = self.root / "private" / "workflow-interrupted"
 
         with patch(
-            "minires_evaluation.workflow.tune_candidates", side_effect=KeyboardInterrupt
+            "minires.evaluation.workflow.tune_candidates", side_effect=KeyboardInterrupt
         ):
             evidence = run_end_to_end_workflow(
                 development_records=self.development,

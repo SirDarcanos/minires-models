@@ -199,7 +199,7 @@ def _preflight(
         (
             "geometry",
             "trimesh",
-            (sys.executable, "-m", "minires_evaluation.stl_probe", "--version"),
+            (sys.executable, "-m", "minires.preparation.stl_probe", "--version"),
             "missing_geometry_dependency",
         ),
     )
@@ -251,7 +251,7 @@ def _process_copy(
 ) -> StlPreparationResult:
     try:
         geometry = runner.run(
-            (sys.executable, "-m", "minires_evaluation.stl_probe", "--probe", source_copy),
+            (sys.executable, "-m", "minires.preparation.stl_probe", "--probe", source_copy),
             timeout_s=timeout_s,
         )
     except (TimeoutError, subprocess.TimeoutExpired):

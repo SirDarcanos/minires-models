@@ -8,11 +8,11 @@ import types
 import unittest
 from unittest.mock import patch
 
-from minires_evaluation import (
+from minires import (
     EvaluationConfig, LearnedBaseline, LearnedBaselineConfig, evaluate_records,
 )
-from minires_evaluation.learned import FittedFold, enable_synchronous_dataset_execution
-from minires_evaluation.__main__ import main
+from minires.modeling.learned import FittedFold, enable_synchronous_dataset_execution
+from minires.__main__ import main
 
 
 class RecordingRuntime:
@@ -126,7 +126,7 @@ class LearnedBaselineInterfaceTests(unittest.TestCase):
                             second_report["fit_audit"]["test_data_fingerprint"])
 
     def test_missing_supported_dependencies_returns_bounded_blocker(self):
-        with patch("minires_evaluation.learned.TensorflowXGBoostRuntime", side_effect=ImportError):
+        with patch("minires.modeling.learned.TensorflowXGBoostRuntime", side_effect=ImportError):
             result = self.evaluate(None)
 
         self.assertEqual(result.status, "blocked")
@@ -148,7 +148,7 @@ class LearnedBaselineInterfaceTests(unittest.TestCase):
         records = Path(self.temp.name) / "records.json"
         records.write_text(json.dumps(self.rows))
         output = io.StringIO()
-        with patch("minires_evaluation.learned.TensorflowXGBoostRuntime", side_effect=ImportError), \
+        with patch("minires.modeling.learned.TensorflowXGBoostRuntime", side_effect=ImportError), \
              contextlib.redirect_stdout(output):
             code = main(["--records", str(records), "--volume-unit", "mm3",
                          "--scope-confirmed", "--split-manifest", str(self.manifest),

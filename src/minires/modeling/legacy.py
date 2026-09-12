@@ -12,7 +12,7 @@ from typing import Any, Callable, Mapping, Sequence
 from urllib.error import URLError
 from urllib.request import urlopen
 
-from .ingestion import CanonicalRow, LEGACY_INFERENCE_FEATURES, fingerprint
+from ..ingestion import CanonicalRow, LEGACY_INFERENCE_FEATURES, fingerprint
 
 
 LEGACY_REVISION = "ef3fe89d643739fa79da2930455eb02e26cc9e2e"

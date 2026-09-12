@@ -10,7 +10,7 @@ path evidence needed for grouping. Reconcile the existing labeled CSV without
 assuming that equal measurements or record names prove row identity:
 
 ```bash
-.venv/bin/python -m minires_evaluation.prepare \
+.venv/bin/python -m minires.preparation.prepare \
   --records local-export.jsonl \
   --reconcile data/3d_print_miniatures_base.csv \
   --private-dir private/prepared-v1 \
@@ -52,7 +52,7 @@ Allocate harmonized labeled records independently within each retained anonymous
 source group:
 
 ```bash
-.venv/bin/python -m minires_evaluation.partition \
+.venv/bin/python -m minires.preparation.partition \
   --records private/harmonized-records.jsonl \
   --exclude-source "$PRIVATE_SOURCE_TO_OMIT" \
   --seed 23 \
@@ -85,8 +85,8 @@ command writes no record data or source identity to stdout.
 
 ```bash
 python3 -m venv .venv
-.venv/bin/pip install -r requirements-evaluation.txt
-.venv/bin/python -m minires_evaluation \
+.venv/bin/pip install -e . -r requirements/evaluation.txt
+.venv/bin/python -m minires \
   --records local-export.jsonl \
   --reconcile data/3d_print_miniatures_base.csv \
   --reconcile data/3d_print_miniatures_data.csv \
@@ -103,7 +103,7 @@ scope. Historical notebook assumptions are not per-record provenance.
 The same call from a notebook:
 
 ```python
-from minires_evaluation import EvaluationConfig, PhysicalBaseline, evaluate_records
+from minires import EvaluationConfig, PhysicalBaseline, evaluate_records
 
 result = evaluate_records(
     "local-export.jsonl",
@@ -256,7 +256,7 @@ claims, or uploads are introduced.
 
 ```bash
 .venv/bin/pip install mypy==1.19.1
-.venv/bin/mypy minires_evaluation --ignore-missing-imports
+.venv/bin/mypy src/minires --ignore-missing-imports
 .venv/bin/python -m unittest discover -s tests
 ```
 

@@ -6,8 +6,8 @@ import json
 from pathlib import Path
 from typing import Any, Sequence
 
-from .ingestion import CanonicalRow, InputError, TRANSFORMATION_VERSION, fingerprint
-from .private_io import write_private_json
+from ..ingestion import CanonicalRow, InputError, TRANSFORMATION_VERSION, fingerprint
+from ..private_io import write_private_json
 
 ALLOCATION_VERSION = 'source-family-holdout-v1'
 LIMITATIONS = [

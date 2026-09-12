@@ -1,6 +1,6 @@
 # Reproducible baseline evidence
 
-Issue-level evidence is assembled by `minires_evaluation.evidence`. The command runs the physical, pinned legacy-reference, and clean fixed-configuration baselines twice through `evaluate_records`. Split allocation depends only on the shared data and split controls, never on model configuration. The package keeps one manifest file per baseline because input contracts can classify rows differently; when eligible rows agree, the allocation is identical across baseline types. Both repetitions reuse that baseline's exact create-only manifest.
+Issue-level evidence is assembled by `minires.evaluation.evidence`. The command runs the physical, pinned legacy-reference, and clean fixed-configuration baselines twice through `evaluate_records`. Split allocation depends only on the shared data and split controls, never on model configuration. The package keeps one manifest file per baseline because input contracts can classify rows differently; when eligible rows agree, the allocation is identical across baseline types. Both repetitions reuse that baseline's exact create-only manifest.
 
 The runner does not tune candidates, choose replacement weights, decide release thresholds, upload artifacts, or publish its summary draft. Missing density, scope evidence, source/family evidence, dependencies, weights, or model provenance is preserved as a concrete blocker rather than replaced with an assumption.
 
@@ -22,10 +22,11 @@ Use Python 3.11–3.13 with all pinned requirements for scored legacy and learne
 ```bash
 python3.13 -m venv .venv-evidence
 .venv-evidence/bin/pip install \
-  -r requirements-evaluation.txt \
-  -r requirements-legacy.txt \
-  -r requirements-learned.txt
-.venv-evidence/bin/python -m minires_evaluation.evidence \
+  -e . \
+  -r requirements/evaluation.txt \
+  -r requirements/legacy.txt \
+  -r requirements/learned.txt
+.venv-evidence/bin/python -m minires.evaluation.evidence \
   --records private/evaluation-records.json \
   --reconcile data/3d_print_miniatures_base.csv \
   --reconcile data/3d_print_miniatures_data.csv \
@@ -40,7 +41,7 @@ python3.13 -m venv .venv-evidence
 
 Replace `ATTESTED_DENSITY` with the evidenced value. Omit the density and scope flags when they are unknown; the resulting evidence package will remain blocked honestly. The optional verification record is a private JSON array of objects with string `command` and `outcome` fields, created only after those synthetic checks have completed. Output paths are create-only, so every attempt needs a new output root. The supplied split filename becomes one manifest per baseline, such as `split-physical.json`; it should be outside the output root when manifests must be reused by a later package.
 
-For aggregate inspection, use the output-free [`baseline_analysis.ipynb`](../baseline_analysis.ipynb). Execute a copy under `private/` and never commit notebook output. The notebook calls `evaluate_records` directly and displays only `to_dict(public=True)` data.
+For aggregate inspection, use the output-free [`notebooks/baseline_analysis.ipynb`](../notebooks/baseline_analysis.ipynb). Execute a copy under `private/` and never commit notebook output. The notebook calls `evaluate_records` directly and displays only `to_dict(public=True)` data.
 
 ## Evidence contents
 
@@ -70,7 +71,7 @@ Conclude with the observed baseline evidence, unresolved limitations, and measur
 Automated tests use synthetic fixtures only:
 
 ```bash
-.venv/bin/mypy minires_evaluation --ignore-missing-imports
+.venv/bin/mypy src/minires --ignore-missing-imports
 .venv/bin/python -m unittest discover -s tests
 ```
 
