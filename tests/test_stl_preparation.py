@@ -65,6 +65,10 @@ class FakeRunner:
                 return ProcessResult(0, "PrusaSlicer available\n", "")
             if self.failure == "unsupported_prusaslicer_version":
                 return ProcessResult(0, "PrusaSlicer-2.8.1 based on Slic3r\n", "")
+            if self.failure == "contaminated_prusaslicer_version":
+                return ProcessResult(
+                    0, "Error: fallback output\nPrusaSlicer-2.9.6 based on Slic3r\n", ""
+                )
             return ProcessResult(
                 0,
                 "PrusaSlicer-2.9.6 based on Slic3r (with GUI support)\n"
@@ -80,6 +84,8 @@ class FakeRunner:
                 return ProcessResult(0, "UVtools core available\n", "")
             if self.failure == "unsupported_uvtools_version":
                 return ProcessResult(0, "6.1.0\n", "")
+            if self.failure == "contaminated_uvtools_version":
+                return ProcessResult(0, "Error: fallback output\n6.2.0\n", "")
             return ProcessResult(0, "6.2.0\n", "")
         if command == "prusa-slicer":
             if self.failure == "slicing_timeout":
@@ -118,6 +124,8 @@ class FakeRunner:
                 header = header.replace("1.23456789012345", "0")
             if self.failure == "non_finite_weight_g":
                 header = header.replace("1.23456789012345", "NaN")
+            if self.failure == "invalid_weight_syntax":
+                header = header.replace("1.23456789012345", "1_2")
             if self.failure == "malformed_properties":
                 return ProcessResult(1, header, "")
             output = (
@@ -128,7 +136,10 @@ class FakeRunner:
                 "FileType: Binary\n"
                 "ManufacturingProcess: mSLA\n"
             )
-            return ProcessResult(1, output, "")
+            if self.failure == "help_contaminated_properties":
+                output += "Usage: UVtoolsCmd [command] [options]\n"
+            stderr = "Error: unexpected diagnostic\n" if self.failure == "stderr_properties" else ""
+            return ProcessResult(1, output, stderr)
         raise AssertionError(args)
 
 
@@ -243,7 +254,10 @@ class StlPreparationTests(unittest.TestCase):
             "similarly_named_weight",
             "invalid_weight_g",
             "non_finite_weight_g",
+            "invalid_weight_syntax",
             "malformed_properties",
+            "help_contaminated_properties",
+            "stderr_properties",
         )
         original = self.stl.read_bytes()
         for failure in failures:
@@ -255,7 +269,10 @@ class StlPreparationTests(unittest.TestCase):
                     "uvtools_missing_file": "uvtools_failed",
                     "similarly_named_weight": "weight_g_missing",
                     "non_finite_weight_g": "invalid_weight_g",
+                    "invalid_weight_syntax": "invalid_weight_g",
                     "malformed_properties": "uvtools_failed",
+                    "help_contaminated_properties": "uvtools_failed",
+                    "stderr_properties": "uvtools_failed",
                 }.get(failure, failure)
                 self.assertEqual(result.rejection, expected)
                 self.assertIsNone(result.record)
@@ -278,9 +295,11 @@ class StlPreparationTests(unittest.TestCase):
             "prusaslicer_timeout": "missing_prusaslicer",
             "malformed_prusaslicer_version": "prusaslicer_version_unavailable",
             "unsupported_prusaslicer_version": "unsupported_prusaslicer_version",
+            "contaminated_prusaslicer_version": "prusaslicer_version_unavailable",
             "uvtools_version_timeout": "missing_uvtools",
             "malformed_uvtools_version": "uvtools_version_unavailable",
             "unsupported_uvtools_version": "unsupported_uvtools_version",
+            "contaminated_uvtools_version": "uvtools_version_unavailable",
         }
         for failure, expected in cases.items():
             with self.subTest(failure=failure):
