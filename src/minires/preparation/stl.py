@@ -19,6 +19,7 @@ from typing import Any, Mapping, Protocol, Sequence
 from .slicing_contract import (
     BUNDLED_PROFILE_RESOURCE,
     DENSITY_G_PER_ML,
+    EBMINIMANAGER_REVISION,
     LAYER_HEIGHT_MM,
     PROFILE_SHA256,
     SLICER_ADDED_SUPPORTS,
@@ -115,6 +116,7 @@ class StlPreparationResult:
 
 def _contract(profile_digest: str | None = None) -> dict[str, Any]:
     return {
+        "ebminimanager_revision": EBMINIMANAGER_REVISION,
         "profile": "bundled/config-anycubic-mono.ini",
         "profile_sha256": profile_digest or PROFILE_SHA256,
         "resin_density_g_per_ml": DENSITY_G_PER_ML,
@@ -343,20 +345,15 @@ def _process_copy(
     )
 
 
-def _prepare_with_profile(
+def _prepare_with_verified_profile(
     source: Path,
     inventory: Mapping[str, Any],
     profile_path: Path,
     process_runner: ProcessRunner,
     timeout_s: float,
+    versions: Mapping[str, str],
+    profile_digest: str,
 ) -> StlPreparationResult:
-    rejection, versions, _, profile_digest = _preflight(
-        process_runner, timeout_s, profile_path
-    )
-    if rejection is not None:
-        return _rejected(rejection, versions=versions, profile_digest=profile_digest)
-    assert profile_digest is not None
-
     try:
         workspace = Path(tempfile.mkdtemp(prefix="minires-stl-"))
     except OSError:
@@ -394,6 +391,55 @@ def _prepare_with_profile(
     if not unchanged:
         return _rejected("source_checksum_changed", versions=versions, profile_digest=profile_digest)
     return result
+
+
+def _prepare_with_profile(
+    source: Path,
+    inventory: Mapping[str, Any],
+    profile_path: Path,
+    process_runner: ProcessRunner,
+    timeout_s: float,
+) -> StlPreparationResult:
+    rejection, versions, _, profile_digest = _preflight(
+        process_runner, timeout_s, profile_path
+    )
+    if rejection is not None:
+        return _rejected(rejection, versions=versions, profile_digest=profile_digest)
+    assert profile_digest is not None
+    return _prepare_with_verified_profile(
+        source, inventory, profile_path, process_runner, timeout_s, versions, profile_digest
+    )
+
+
+def _prepare_stl_after_preflight(
+    source: Path,
+    *,
+    expected_sha256: str,
+    profile: bytes,
+    runner: ProcessRunner,
+    timeout_s: float,
+    versions: Mapping[str, str],
+    profile_digest: str,
+) -> StlPreparationResult:
+    """Use batch preflight evidence while retaining one-STL processing safeguards."""
+    try:
+        inventory = _file_inventory(source)
+    except OSError:
+        return _rejected("source_checksum_changed", versions=versions,
+                         profile_digest=profile_digest)
+    if inventory["sha256"] != expected_sha256:
+        return _rejected("source_checksum_changed", versions=versions,
+                         profile_digest=profile_digest)
+    try:
+        with tempfile.TemporaryDirectory(prefix="minires-profile-") as directory:
+            profile_path = Path(directory) / "profile.ini"
+            profile_path.write_bytes(profile)
+            return _prepare_with_verified_profile(
+                source, inventory, profile_path, runner, timeout_s, versions, profile_digest
+            )
+    except OSError:
+        return _rejected("workspace_failure", versions=versions,
+                         profile_digest=profile_digest)
 
 
 def prepare_stl(

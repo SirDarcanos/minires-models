@@ -24,9 +24,9 @@ Start with:
 - [Model definitions](docs/model-definitions.md) for active architecture and runtime contracts.
 - [Candidate tuning and locked assessment](docs/candidate-tuning.md) for the replacement-model workflow.
 - [Source-balanced partitions](docs/normalization.md#generate-source-balanced-partitions) for current data allocation.
-- [One-STL preparation](docs/stl-preparation.md) for generating a new compatible record.
+- [STL preparation](docs/stl-preparation.md) for one-file smoke checks and resumable batches.
 
-## Prepare one STL
+## Prepare STL files
 
 Install the project and geometry dependency, then make `prusa-slicer` and `UVtoolsCmd` available on `PATH`:
 
@@ -41,6 +41,19 @@ python3 -m minires.preparation.prepare_one \
 ```
 
 The workflow verifies the bundled profile checksum and slicing settings before processing. It writes generated sliced output only inside a private temporary workspace and prints no filename, path, checksum, measurements, or label.
+
+After that smoke check succeeds, prepare a directory with durable private checkpoints. Concurrency defaults to one worker:
+
+```bash
+mkdir -p private/stl-batch
+python3 -m minires.preparation.prepare_batch \
+  --input-directory /private/path/to/pre-supported-stls \
+  --private-output private/stl-batch/result.json \
+  --private-checkpoints private/stl-batch/checkpoints \
+  --scope-confirmed
+```
+
+See [STL preparation](docs/stl-preparation.md) for checkpoint invalidation, resumption, safe concurrency, and private output semantics.
 
 ## Model development
 
