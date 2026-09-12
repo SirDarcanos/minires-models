@@ -13,14 +13,18 @@ from typing import Any, Mapping, Sequence
 from .ingestion import Dataset, InputError, fingerprint, load_records, number, normalize
 from .private_io import create_private_file, write_private_json
 from .reconciliation import reconcile
+from .slicing_contract import (
+    DENSITY_G_PER_ML,
+    EBMINIMANAGER_REVISION,
+    LAYER_HEIGHT_MM,
+    PROFILE_RELATIVE_PATH,
+    PROFILE_SHA256,
+    SLICER_ADDED_SUPPORTS,
+)
 
 PREPARATION_VERSION = "private-evaluation-preparation-v1"
 GROUPING_VERSION = "private-path-grouping-v1"
-EBMINIMANAGER_REVISION = "1a841195813136ee3b380ab1d192727f385f7a55"
-PROFILE_PATH = "prediction/config-anycubic-mono.ini"
-PROFILE_SHA256 = "06acac3fe2a3d762fb56ec2d1bde58fe9e15104556091438c81c4e90131d2d0e"
-DENSITY_G_PER_ML = 1.1
-LAYER_HEIGHT_MM = 0.05
+PROFILE_PATH = PROFILE_RELATIVE_PATH.as_posix()
 
 _SAFE_NUMERIC_FIELDS = (
     "kb", "volume", "surface_area", "bbox_x", "bbox_y", "bbox_z",
@@ -151,7 +155,7 @@ def _provenance() -> dict[str, Any]:
         "profile_sha256": PROFILE_SHA256,
         "resin_density_g_per_ml": DENSITY_G_PER_ML,
         "layer_height_mm": LAYER_HEIGHT_MM,
-        "slicer_added_supports": False,
+        "slicer_added_supports": SLICER_ADDED_SUPPORTS,
         "pre_supported_scope_attested": True,
         "label_source": "UVtoolsCmd print-properties WeightG",
         "attestation": "maintainer_confirmed_all_historical_records_were_pre_supported",

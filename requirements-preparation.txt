@@ -1,0 +1,2 @@
+# Geometry probe used by the one-STL preparation workflow.
+trimesh==4.10.1

@@ -4,10 +4,9 @@ The released MiniRes artifacts may be evaluated through the same
 `evaluate_records` seam as the physical baseline. Their results are **legacy
 reference only** unless separate evidence proves that the artifact was not
 trained on the evaluated anonymous source group. The bundled datasets and the
-historical notebooks are not clean holdouts.
+historical development data was not a clean holdout.
 
-This workflow does not modify the notebooks, source tables, or released
-weights. It does not fit a model, search hyperparameters, publish replacement
+This workflow does not modify source tables or released weights. It does not fit a model, search hyperparameters, publish replacement
 weights, infer uncertainty, or reuse a historical export threshold as a release
 gate.
 
@@ -59,10 +58,10 @@ normalization. The ensemble is:
 
 All outputs are interpreted as grams of sliced resin mass.
 
-### Training notebook contract
+### Historical training contract
 
-The training notebook does more preprocessing than the released inference
-wrapper: it casts `kb` to integer, rounds `volume` upward to 0.1 mm³, computes
+The historical training pipeline did more preprocessing than the released
+inference wrapper: it casts `kb` to integer, rounds `volume` upward to 0.1 mm³, computes
 `surface_volume_ratio` from that volume, and rounds selected measurements and
 ratios to one decimal. The retained engineered CSV does not reproduce every one
 of those operations exactly, while the release wrapper passes its values
@@ -70,14 +69,14 @@ through. This is a recorded training/inference mismatch; the compatibility
 adapter follows released inference behavior rather than assuming notebook
 parity.
 
-The training notebook also removes a fitted whole-dataset upper volume tail
-before a row-level split. The separate test notebook uses a different upper
-quantile. Neither behavior is applied here. They prevent a clean holdout claim
+The historical training pipeline also removed a fitted whole-dataset upper
+volume tail before a row-level split. Its separate test workflow used a different
+upper quantile. Neither behavior is applied here. They prevent a clean holdout claim
 and should not be copied into a future baseline.
 
 ### Diagnostics corrections
 
-Historical notebook functions label mean squared error as “RMSE.” The shared
+Historical diagnostic functions label mean squared error as “RMSE.” The shared
 evaluator reports the square root as `rmse_g`. It reports tolerance performance
 both as a fraction in `[0, 1]` and a percentage in `[0, 100]`. Historical save
 helpers compare NN percentage to `90`, but XGBoost and ensemble percentages to
@@ -98,10 +97,10 @@ The pinned Keras artifact reports Keras 3.12.0 and contains:
 - dense 416 + SELU + dropout 0.3;
 - one linear output.
 
-The notebook records seed 34, batch size 256, MSE loss, MAE monitoring, up to 100
-final-fit epochs, and early stopping. The pinned XGBoost JSON reports XGBoost
+The historical configuration records seed 34, batch size 256, MSE loss, MAE
+monitoring, up to 100 final-fit epochs, and early stopping. The pinned XGBoost JSON reports XGBoost
 3.1.2, squared-error regression, seven named features, and best iteration 896.
-The notebook configuration is 900 estimators, depth 9, learning rate 0.01,
+The historical XGBoost configuration is 900 estimators, depth 9, learning rate 0.01,
 subsample 0.7, column sample 0.9, histogram trees, MAE evaluation, seed 34, and
 50-round early stopping. These values are a reproducibility record for a later
 clean refit, not an invitation to tune against legacy evaluation data.

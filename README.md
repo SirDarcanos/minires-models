@@ -1,134 +1,79 @@
-# MiniRes: Resin Usage Predictor for 3D Printed Miniatures
+# MiniRes model development
 
-MiniRes is a small Python library + pretrained ensemble model that predicts **resin usage in grams** for pre-supported 3D printed miniatures.
+MiniRes is a private-data preparation, training, and evaluation workspace for an estimator of **sliced resin mass** for pre-supported miniatures.
 
-It takes tabular features exported from your slicing & analysis pipeline (UVtools, PrusaSlicer, trimesh, etc.) and returns a single float per part: the estimated resin usage in grams.
+This repository is developing and validating the next MiniRes model. It does not treat the previously released ensemble as the current model. The released artifacts remain available only as a checksum-pinned comparison baseline while replacement candidates are trained and assessed on held-out evidence.
 
-Under the hood, MiniRes is an ensemble model with:
+## What this repository provides
 
-- A **Keras neural network** +
-- An **XGBoost regressor**
+- A one-STL preparation workflow that inventories geometry, slices with a bundled checksum-pinned profile, and extracts UVtools `WeightG` without exposing the input identity.
+- Deterministic private dataset preparation and source-balanced train, validation, and held-out test partitions.
+- Explicit neural-network, XGBoost, and ensemble model specifications.
+- Bounded candidate search, candidate locking, and final assessment workflows.
+- Reproducible physical, clean-refit, and legacy comparison baselines.
 
-The model weights are hosted on Hugging Face and downloaded/cached automatically.
+MiniRes estimates sliced resin mass under validated slicing conditions. It does not estimate prices or actual shop resin consumption.
 
-Hugging Face model repo:  
-https://huggingface.co/nicolamustone/minires
+## Repository status
 
-The repositoriy above includes a helper for creating a suitable CSV of data from STL files.
+The current code supports data preparation and governed model development. A replacement production model has not been declared by this repository yet. Candidate selection and final assessment must complete before a model is presented as the current MiniRes estimator.
 
-## How it works (high level)
+Start with:
 
-The original dataset was built via this pipeline:
-* Input: STL files from multiple miniature artists (multipart heroes, monsters, display pieces, etc.).
-* Slicing: each STL is sliced in batch with PrusaSlicer using a consistent profile (CLI) with resin density of 1.1/g.
-* Resin stats: UVtools inspects the .ctb/.sl1 files and exports resin stats, including resin usage in grams. This is the label.
-* Geometry features: trimesh extracts mesh-level features: volume, surface area, implied mass, Euler characteristic, bounding box sizes, etc.
-* Feature engineering: simple interaction & ratio features are added: volume × mass, surface/volume, surface/mass, bounding-box/volume, and similar.
-* MiniRes is trained on this tabular data to predict UVtools’ “grams used” based only on these engineered features.
+- [Model definitions](docs/model-definitions.md) for active architecture and runtime contracts.
+- [Candidate tuning and locked assessment](docs/candidate-tuning.md) for the replacement-model workflow.
+- [Source-balanced partitions](docs/normalization.md#generate-source-balanced-partitions) for current data allocation.
+- [One-STL preparation](docs/stl-preparation.md) for generating a new compatible record.
 
-## Installation
+## Prepare one STL
 
-Install the required dependencies:
+Install the geometry dependency and make `prusa-slicer` and `UVtoolsCmd` available on `PATH`:
 
 ```bash
-pip install tensorflow xgboost pandas numpy huggingface_hub
+python3 -m pip install -r requirements-preparation.txt
+mkdir -p private/smoke
+python3 -m minires_evaluation.prepare_one \
+  --stl /private/path/to/pre-supported-input.stl \
+  --private-output private/smoke/result.json \
+  --scope-confirmed
 ```
 
-Then add `minires.py` to your project (or install this repo as a package if you set it up that way).
+The workflow verifies the bundled profile checksum and slicing settings before processing. It writes generated sliced output only inside a private temporary workspace and prints no filename, path, checksum, measurements, or label.
 
-## Basic usage
+## Model development
 
-```python
-import pandas as pd
-from minires import minires
+Install the evaluation dependencies:
 
-# Load your data
-df = pd.read_csv("my_miniatures_features.csv")
-
-# Create the model (downloads weights from Hugging Face on first run)
-model = minires(verbose=1)
-
-# Predict resin usage (grams)
-y_pred = model.predict(df)
-
-print(y_pred[:10])
+```bash
+python3 -m pip install -r requirements-evaluation.txt
 ```
 
-`verbose=1` prints the ensemble weights and Keras progress. You can pass the full dataframe; the model will select the features it needs.
+Optional model runtimes have separate pinned requirement files:
 
-## Required features
+- `requirements-learned.txt` for clean refits and candidate training;
+- `requirements-legacy.txt` for comparison with the released reference only.
 
-The model expects a fixed set of feature columns (the same ones used in training).
+The main references are:
 
-You can inspect them at runtime:
-```python
-model = minires()
-print(model.features)
+- [Normalization and private data preparation](docs/normalization.md)
+- [Physical baseline](docs/physical-baseline.md)
+- [Clean learned baselines](docs/learned-baselines.md)
+- [Model definitions](docs/model-definitions.md)
+- [Candidate tuning](docs/candidate-tuning.md)
+- [Baseline evidence](docs/baseline-evidence.md)
+
+`baseline_analysis.ipynb` remains because it is a current, output-free view over the public aggregate evaluation interface. It is not a historical training notebook and is not required by the runtime.
+
+## Privacy
+
+Source identities, raw paths, STL files, checksums, row-level measurements, labels, predictions, and mappings stay in ignored private storage. Published output must not identify specific artists. Anonymous source groups are evaluation metadata, not model inputs.
+
+## Tests
+
+```bash
+python3 -m unittest discover -s tests
 ```
 
-Your dataframe must contain at least these columns. Extra columns are ignored. If any required columns are missing, `minires` will raise an error listing them.
-
-Example single-row usage:
-```python
-import pandas as pd
-from minires import minires
-
-model = minires()
-
-row = {
-    "kb": 123.4,
-    "volume": 56.7,
-    "surface_area": 1234.5,
-    "bbox_area": 789.1
-    "euler_number": -1,
-    "scale": 76.76
-    "surface_volume_ratio": 0.8,
-}
-
-df_single = pd.DataFrame([row])
-pred = model.predict(df_single)[0]
-
-print("Predicted grams:", pred)
-```
-
-## Notes
-
-The model approximates UVtools resin usage based on geometry/feature data.
-
-Make sure you compute the same features as listed in `model.features`.
-
-Weights are cached locally by `huggingface_hub` after the first download.
-
-## Evaluation workflows
-
-Historical labeled records can be prepared as an identity-redacted private input
-with evidence-based source/family groups and a bounded reconciliation report.
-See the [local normalization reference](docs/normalization.md#prepare-the-historical-labeled-records).
-Harmonized labeled records can then be allocated into deterministic,
-source-balanced private train, validation, and test artifacts without requiring
-miniature-family evidence. See [source-balanced partitions](docs/normalization.md#generate-source-balanced-partitions).
-
-A dependency-free local volume-and-density baseline is available for
-reproducible evaluation. It estimates **sliced resin mass**, not prices or
-actual shop consumption. See [the physical baseline guide](docs/physical-baseline.md).
-
-The released neural network, XGBoost model, and fixed ensemble can also be run
-as a checksum-pinned **legacy reference** through the same diagnostics. Legacy
-results are not clean holdout evidence by default. See the
-[pinned legacy reference guide](docs/legacy-reference.md) for the exact feature,
-preprocessing, artifact, dependency, and provenance contracts.
-
-The same frozen folds can refit those fixed configurations without holdout
-leakage. See the [clean learned-baseline guide](docs/learned-baselines.md) for
-partition rules, bounded resources, reproducibility metadata, and private
-artifacts.
-
-A separate governed workflow can evaluate one declared neural-network or
-XGBoost candidate, then search and lock candidates without relaxing that fixed
-baseline. A locked candidate can be compared with the legacy reference on
-untouched final evidence. Start with the [model-definition guide](docs/model-definitions.md)
-to locate the active architectures, fixed baseline, candidate search space, and
-locked-model contract, then see the
-[candidate tuning and locked assessment guide](docs/candidate-tuning.md).
+Some tests require the optional dependencies listed above.
 
 [MIT License](LICENSE)
