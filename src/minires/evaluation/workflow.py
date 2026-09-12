@@ -28,8 +28,8 @@ from ..modeling.tuning import (
     SearchLimits,
     TensorflowXGBoostCandidateRuntime,
     TuningResult,
+    develop_candidates,
     load_locked_candidate,
-    tune_candidates,
 )
 
 
@@ -188,7 +188,8 @@ def run_end_to_end_workflow(
     evaluation_config: EvaluationConfig,
     bootstrap_seed: int,
     runtime: CandidateRuntime,
-    development_records: Path | None = None,
+    training_records: Path | None = None,
+    validation_records: Path | None = None,
     locked_candidate: Path | None = None,
     limits: SearchLimits | None = None,
     legacy_reference: LegacyReference | None = None,
@@ -216,8 +217,10 @@ def run_end_to_end_workflow(
         "legacy_artifacts": Path(legacy_artifacts),
         "slicing_configuration": Path(slicing_configuration),
     }
-    if development_records is not None:
-        fixed_inputs["development_records"] = Path(development_records)
+    if training_records is not None:
+        fixed_inputs["training_records"] = Path(training_records)
+    if validation_records is not None:
+        fixed_inputs["validation_records"] = Path(validation_records)
     if locked_candidate is not None:
         fixed_inputs["locked_candidate"] = Path(locked_candidate)
     before = _input_snapshot(fixed_inputs)
@@ -237,11 +240,11 @@ def run_end_to_end_workflow(
         if slicing_contract.get("volume_unit") != evaluation_config.volume_unit:
             raise InputError("slicing_configuration_volume_unit_mismatch")
         if mode == "tune_and_assess":
-            if development_records is None or limits is None:
+            if training_records is None or validation_records is None or limits is None:
                 raise InputError("development_workflow_arguments_required")
             tuning_started = True
-            tuning = tune_candidates(
-                Path(development_records), evaluation_config,
+            tuning = develop_candidates(
+                Path(training_records), Path(validation_records), evaluation_config,
                 runtime=runtime, output_root=output / "tuning", limits=limits,
             )
             blockers.extend(tuning.blockers)
@@ -330,18 +333,20 @@ def run_end_to_end_workflow(
     completed_artifacts["public-summary-review.json"] = sha256(review_bytes).hexdigest()
 
     if tuning is not None:
+        development_evidence = (
+            tuning.locked_candidate.contract.get("development_evidence", {})
+            if tuning.locked_candidate is not None else {}
+        )
         identities = {
             "code": tuning.plan.code_fingerprint,
             "configuration": tuning.plan.configuration_fingerprint,
             "code_configuration": tuning.plan.code_configuration_fingerprint,
             "raw_input": tuning.plan.input_fingerprint,
             "normalized_input": tuning.plan.normalized_input_fingerprint,
-            "source_allocation": tuning.plan.source_allocation_fingerprint,
-            "development_split": (
-                tuning.locked_candidate.contract["development_evidence"][
-                    "development_split_fingerprint"
-                ] if tuning.locked_candidate is not None else None
-            ),
+            "partition_contract": tuning.plan.source_allocation_fingerprint,
+            "training_input": development_evidence.get("training_input_fingerprint"),
+            "validation_input": development_evidence.get("validation_input_fingerprint"),
+            "development_split": development_evidence.get("development_split_fingerprint"),
         }
     elif locked is not None:
         development_evidence = locked.contract.get("development_evidence", {})
@@ -351,7 +356,12 @@ def run_end_to_end_workflow(
             "code_configuration": None,
             "raw_input": development_evidence.get("input_fingerprint"),
             "normalized_input": development_evidence.get("normalized_input_fingerprint"),
-            "source_allocation": development_evidence.get("source_allocation_fingerprint"),
+            "partition_contract": development_evidence.get(
+                "partition_identity_fingerprint",
+                development_evidence.get("source_allocation_fingerprint"),
+            ),
+            "training_input": development_evidence.get("training_input_fingerprint"),
+            "validation_input": development_evidence.get("validation_input_fingerprint"),
             "development_split": development_evidence.get("development_split_fingerprint"),
         }
     else:
@@ -364,7 +374,8 @@ def run_end_to_end_workflow(
         "blockers": sorted(set(blockers)),
         "mode": mode,
         "invocation": {
-            "development_records": str(development_records) if development_records else None,
+            "training_records": str(training_records) if training_records else None,
+            "validation_records": str(validation_records) if validation_records else None,
             "final_records": str(final_records),
             "legacy_artifacts": str(legacy_artifacts),
             "locked_candidate": str(locked_candidate) if locked_candidate else None,
@@ -460,8 +471,9 @@ def build_parser() -> argparse.ArgumentParser:
         description="Run auditable MiniRes tuning and final assessment privately."
     )
     mode = parser.add_mutually_exclusive_group(required=True)
-    mode.add_argument("--development-records", type=Path)
+    mode.add_argument("--training-records", type=Path)
     mode.add_argument("--assessment-only", action="store_true")
+    parser.add_argument("--validation-records", type=Path)
     parser.add_argument("--locked-candidate", type=Path)
     parser.add_argument("--final-records", required=True, type=Path)
     parser.add_argument("--legacy-artifacts", required=True, type=Path)
@@ -486,6 +498,10 @@ def main(argv: Sequence[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     if args.assessment_only and args.locked_candidate is None:
         raise SystemExit("locked_candidate_required_for_assessment_only")
+    if args.assessment_only and args.validation_records is not None:
+        raise SystemExit("validation_records_only_valid_for_development")
+    if not args.assessment_only and args.validation_records is None:
+        raise SystemExit("validation_records_required_for_development")
     if not args.assessment_only and args.locked_candidate is not None:
         raise SystemExit("locked_candidate_only_valid_for_assessment_only")
     try:
@@ -504,7 +520,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             second_seed_candidates=args.second_seed_candidates,
         )
         evidence = run_end_to_end_workflow(
-            development_records=args.development_records,
+            training_records=args.training_records,
+            validation_records=args.validation_records,
             final_records=args.final_records,
             legacy_artifacts=args.legacy_artifacts,
             locked_candidate=args.locked_candidate,

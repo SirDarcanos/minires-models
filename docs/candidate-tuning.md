@@ -18,10 +18,13 @@ python3.13 -m venv .venv-candidates
   -r requirements/learned.txt
 ```
 
-Development records must use the canonical private source and miniature-family
-evidence described in [the normalization reference](normalization.md). Source,
-family, duplicate, location, and record identity evidence is used only for
-partitioning; it never enters a model feature matrix.
+Model development consumes the explicit `train.jsonl` and `validation.jsonl`
+artifacts produced by the expanded-dataset workflow. Every row needs a unique
+private `_id`; an identity or evidenced duplicate/linkage that crosses the two
+artifacts blocks development. Anonymous source groups, partition fields,
+miniature families, duplicate/linkage values, and join keys never enter the model
+feature matrix. This mixed-source path does not require miniature-family evidence
+or leave-one-source-out folds.
 
 ## Run the complete command-level workflow
 
@@ -47,8 +50,9 @@ Then choose a new output directory beneath `private/`:
 
 ```bash
 .venv-candidates/bin/python -m minires.evaluation.workflow \
-  --development-records private/development-records.json \
-  --final-records private/final-test-records.json \
+  --training-records private/issue-31/train.jsonl \
+  --validation-records private/issue-31/validation.jsonl \
+  --final-records private/issue-31/test.jsonl \
   --legacy-artifacts private/legacy-artifacts \
   --slicing-configuration private/slicing-configuration.json \
   --output-root private/end-to-end/run-001 \
@@ -72,11 +76,14 @@ Changing the 6/6/3 plus best-five allocation, exceeding 20 candidate runs, or
 requesting more than 7,200 seconds is rejected rather than treated as permission
 to expand the experiment.
 
-Development evidence is used for fitting, preprocessing, early stopping,
-ensemble selection, threshold selection, ranking, training-duration selection,
-and candidate locking. Final evidence is not read until the lock has been created
-and checksum-verified. The final stage only performs paired assessment; it cannot
-change candidate weights, training duration, ranking, or the compute budget.
+Training rows alone are used for fitting, learned preprocessing, and the locked
+refit. Validation rows are available only to early stopping, candidate and
+ensemble ranking, threshold decisions, training-duration selection, and candidate
+locking. The development seam accepts no test argument or path. The encompassing
+workflow passes only the two development artifacts into that seam and does not
+read final evidence until the lock has been created and checksum-verified. The
+final stage only performs paired assessment; it cannot change candidate weights,
+training duration, ranking, or the compute budget.
 
 The create-only package contains:
 
@@ -223,7 +230,8 @@ Choose a new output directory beneath `private/` for every attempt:
 
 ```bash
 .venv-candidates/bin/python -m minires.modeling.tuning \
-  --records private/development-records.json \
+  --training-records private/issue-31/train.jsonl \
+  --validation-records private/issue-31/validation.jsonl \
   --output-root private/candidate-tuning/run-001 \
   --volume-unit mm3 \
   --scope-confirmed \
@@ -231,15 +239,16 @@ Choose a new output directory beneath `private/` for every attempt:
 ```
 
 The workflow creates `search-plan.json` before fitting. The fixed-seed plan
-contains six dense neural-network trials and six XGBoost trials and predeclares
-three deterministic equal-rank ensemble rules. Within each outer source holdout,
-it applies those rules to component rankings from that fold's permitted validation
-predictions only. It then repeats the five highest-ranked eligible candidates with
-the second seed.
-One complete
-cross-validated candidate evaluation is one run, including an ensemble whose
-components must be refitted. The fixed learned configuration is evaluated as a
-control and does not consume a candidate run.
+contains six neural-network trials and six XGBoost trials and predeclares three
+deterministic equal-rank ensemble rules. Every component fits once on the explicit
+training artifact and is scored on the explicit validation artifact. Ensemble
+pairing, convex-weight selection, candidate ranking, and the best-five second-seed
+repetition use those validation predictions only. One complete explicit-partition
+candidate evaluation is one run, including an ensemble whose components must be
+refitted. The fixed learned configuration is evaluated as a control and does not
+consume a candidate run. Historical source-holdout evaluation remains available
+through `evaluate_declared_candidate`; it is not reinterpreted as evidence under
+this mixed-source contract.
 
 The workflow never starts a candidate after 20 new runs or after 7,200 elapsed
 seconds. If fewer than five initial candidates are eligible, it repeats every
@@ -266,13 +275,12 @@ combined metrics. The report records both rankings, the finalist shortfall, and
 each ensemble's selected fold weights explicitly.
 
 A complete repetition stage selects the best combined eligible result by the
-same deterministic rule. Epoch and tree counts are fixed from the median values
-selected across every permitted development fold and both seeds. The chosen
-component or resolved ensemble is refitted on all included development records,
-without validation data or final-test early stopping. A resolved ensemble keeps
-its component contracts and fixes its convex weight from the same two-seed fold
-evidence. If no initial candidate qualifies, the run records the best initial
-development result, performs no repetitions or refit, and ends as
+same deterministic rule. Epoch and tree counts are fixed from the validation
+outcomes across both seeds. The chosen component or resolved ensemble is refitted
+on training rows only, without validation data or final-test early stopping. A
+resolved ensemble keeps its component contracts and fixes its convex weight from
+the same two-seed validation evidence. If no initial candidate qualifies, the run
+records the best initial development result, performs no repetitions or refit, and ends as
 `completed_no_candidate` without expanding the budget.
 
 ## Locked candidate
@@ -283,10 +291,10 @@ A successful search creates `locked-candidate/` with:
 - the two seeds, equal-weight combined evidence, deterministic ranking and
   eligibility rules, and fixed training counts;
 - feature, preprocessing, dependency-environment, input, code, search-plan, and
-  development-split identities;
-- the one-way identities of every development source and an explicit record that
-  fitting, preprocessing, early stopping, ensemble selection, threshold selection,
-  and candidate locking used development records only;
+  explicit training/validation artifact identities;
+- an explicit usage record that fitting and preprocessing used training rows only,
+  selection decisions used validation rows only, and no test argument or path was
+  available to development;
 - the fitted model artifact or artifacts;
 - the fitted preprocessing state; and
 - SHA-256 checksums in a create-only lock manifest.

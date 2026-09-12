@@ -23,7 +23,9 @@ from minires.modeling.tuning import (
     DeclaredCandidate,
     LockedFit,
     SearchLimits,
+    build_parser as tuning_parser,
     create_search_plan,
+    develop_candidates,
     evaluate_declared_candidate,
     generate_search_plan,
     load_locked_candidate,
@@ -576,6 +578,110 @@ class DeclaredCandidateEvaluationTests(unittest.TestCase):
         self.assertNotEqual(before["test_data_fingerprint"], after["test_data_fingerprint"])
 
 
+class ValidationSensitiveRuntime(RecordingTuningRuntime):
+    def fit_fold(self, candidate, seed, train_features, train_targets,
+                 validation_features, validation_targets):
+        self.fit_calls.append((candidate.candidate_id, seed, tuple(train_features),
+                               tuple(validation_features)))
+        shift = 5.0 if candidate.family == "xgboost" else 0.0
+        return CandidateFoldFit(
+            predictor=lambda rows: [row[1] / 1000.0 + shift for row in rows],
+            metadata={"selected_epochs": 4, "selected_trees": 20},
+            fitted_state={"training_features": tuple(train_features)},
+        )
+
+
+class ExplicitPartitionDevelopmentTests(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.root = Path(self.temp.name) / "private"
+        self.config = EvaluationConfig(None, "mm3", True, seed=17)
+        self.training = [self.row(f"train-{index}", index + 1) for index in range(6)]
+        self.validation = [self.row(f"validation-{index}", index + 20) for index in range(4)]
+
+    @staticmethod
+    def row(identity, value):
+        return {
+            "_id": identity,
+            "kb": value, "volume": value * 1000, "surface_area": value * 100,
+            "bbox_area": value * 1100, "euler_number": value, "scale": value,
+            "surface_volume_ratio": 0.1, "weight": value,
+            "anonymous_source_group": "private-source", "partition": "poison",
+            "duplicate_group": f"private-link-{identity}", "join_key": "private-join",
+        }
+
+    def test_training_and_validation_artifacts_are_separate_and_validation_selects(self):
+        first_runtime = ValidationSensitiveRuntime()
+        first = develop_candidates(
+            self.training, self.validation, self.config, runtime=first_runtime,
+            output_root=self.root / "first", limits=SearchLimits(seed=41),
+            clock=lambda: 0.0,
+        )
+        changed_validation = [dict(row, weight=row["weight"] + 5) for row in self.validation]
+        second_runtime = ValidationSensitiveRuntime()
+        second = develop_candidates(
+            self.training, changed_validation, self.config, runtime=second_runtime,
+            output_root=self.root / "second", limits=SearchLimits(seed=41),
+            clock=lambda: 0.0,
+        )
+
+        self.assertEqual(first.status, "completed")
+        self.assertEqual(second.status, "completed")
+        self.assertNotEqual(
+            first.locked_candidate.contract["fixed_training_counts"].get(
+                "ensemble_neural_network_weight"
+            ),
+            second.locked_candidate.contract["fixed_training_counts"].get(
+                "ensemble_neural_network_weight"
+            ),
+        )
+        expected_training = tuple(
+            (value, value * 1000, value * 100, value * 1100, value, value, 0.1)
+            for value in range(1, 7)
+        )
+        expected_validation = tuple(
+            (value, value * 1000, value * 100, value * 1100, value, value, 0.1)
+            for value in range(20, 24)
+        )
+        for runtime in (first_runtime, second_runtime):
+            self.assertTrue(runtime.fit_calls)
+            self.assertTrue(all(call[2] == expected_training for call in runtime.fit_calls))
+            self.assertTrue(all(call[3] == expected_validation for call in runtime.fit_calls))
+            self.assertTrue(all(len(features) == 7 for call in runtime.fit_calls
+                                for partition in call[2:4] for features in partition))
+            self.assertEqual(len(runtime.refit_calls), 1)
+            self.assertEqual(len(runtime.refit_calls[0][1]), len(self.training))
+        contract = first.locked_candidate.contract
+        self.assertEqual(contract["development_contract"], "explicit_train_validation")
+        self.assertEqual(contract["refit_partition"], "training_records_only")
+        self.assertFalse(contract["test_input_accessed"])
+        self.assertEqual(
+            contract["development_data_usage"]["preprocessing"], "training_records_only"
+        )
+        self.assertEqual(
+            contract["development_data_usage"]["candidate_selection"],
+            "validation_records_only",
+        )
+        self.assertIn("training_input_fingerprint", contract["development_evidence"])
+        self.assertIn("validation_input_fingerprint", contract["development_evidence"])
+        self.assertNotIn("private-source", json.dumps(first.to_dict()))
+
+    def test_invalid_or_overlapping_partition_identities_block_before_fitting(self):
+        runtime = ValidationSensitiveRuntime()
+        overlapping = [dict(self.validation[0], _id=self.training[0]["_id"])]
+
+        result = develop_candidates(
+            self.training, overlapping, self.config, runtime=runtime,
+            output_root=self.root / "overlap", limits=SearchLimits(seed=41),
+        )
+
+        self.assertEqual(result.status, "blocked")
+        self.assertEqual(result.blockers, ("invalid_or_overlapping_partition_identities",))
+        self.assertEqual(runtime.fit_calls, [])
+        self.assertEqual(runtime.refit_calls, [])
+
+
 class CandidateTuningTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
@@ -902,16 +1008,24 @@ class CandidateTuningTests(unittest.TestCase):
         ))
         self.assertIsNone(result.locked_candidate)
 
-    def test_cli_creates_private_result_and_emits_only_bounded_status(self):
-        records = Path(self.temp.name) / "records.json"
-        records.write_text(json.dumps(self.records))
+    def test_cli_creates_private_result_from_explicit_partitions_without_a_test_argument(self):
+        training = Path(self.temp.name) / "training.json"
+        validation = Path(self.temp.name) / "validation.json"
+        training.write_text(json.dumps([
+            dict(row, _id=f"training-{index}") for index, row in enumerate(self.records[:4])
+        ]))
+        validation.write_text(json.dumps([
+            dict(row, _id=f"validation-{index}") for index, row in enumerate(self.records[4:])
+        ]))
         output = io.StringIO()
         with patch(
             "minires.modeling.tuning.TensorflowXGBoostCandidateRuntime",
             return_value=RecordingTuningRuntime(),
         ), contextlib.redirect_stdout(output):
             code = tuning_main([
-                "--records", str(records), "--output-root", str(self.root),
+                "--training-records", str(training),
+                "--validation-records", str(validation),
+                "--output-root", str(self.root),
                 "--volume-unit", "mm3", "--scope-confirmed", "--seed", "41",
             ])
 
@@ -919,9 +1033,14 @@ class CandidateTuningTests(unittest.TestCase):
         self.assertEqual(code, 0)
         self.assertEqual(status["status"], "completed")
         self.assertEqual(status["run_count"], 20)
-        self.assertNotIn(str(records), output.getvalue())
+        self.assertNotIn(str(training), output.getvalue())
+        self.assertNotIn(str(validation), output.getvalue())
         self.assertNotIn("source_reports", output.getvalue())
         self.assertTrue((self.root / "tuning-result.json").exists())
+        help_text = tuning_parser().format_help()
+        self.assertIn("--training-records", help_text)
+        self.assertIn("--validation-records", help_text)
+        self.assertNotIn("--test-records", help_text)
 
     def test_invalid_unbounded_worker_plan_is_rejected_before_runtime_fitting(self):
         runtime = RecordingTuningRuntime()
