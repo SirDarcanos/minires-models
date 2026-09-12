@@ -5,6 +5,9 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from unittest.mock import patch
+
+from minires_evaluation.partition import main as partition_main
 
 
 class SourceBalancedPartitionCommandTests(unittest.TestCase):
@@ -131,7 +134,43 @@ class SourceBalancedPartitionCommandTests(unittest.TestCase):
         self.assertEqual(second["source-a-record-0"], second["source-a-record-1"])
         self.assertFalse(any("miniature_family" in row for row in rows))
 
-    def test_failed_intentional_rerun_leaves_previous_complete_set_intact(self):
+    def test_valid_id_is_used_when_record_identity_is_unusable(self):
+        rows = self.records()
+        rows[0]["record_identity"] = None
+        rows[1]["record_identity"] = {"invalid": "identity"}
+        records = self.write_records(rows)
+
+        self.run_command(records)
+
+        membership = self.memberships()
+        self.assertIn("source-a-record-0", membership)
+        self.assertIn("source-a-record-1", membership)
+
+    def test_failed_install_leaves_previous_complete_set_intact(self):
+        records = self.write_records(self.records())
+        self.run_command(records)
+        before = {
+            path.name: path.read_bytes()
+            for path in self.output.iterdir()
+            if path.is_file()
+        }
+
+        with patch("minires_evaluation.partitioning.os.replace", side_effect=PermissionError):
+            with self.assertRaisesRegex(SystemExit, "private_partition_replacement_failed"):
+                partition_main([
+                    "--records", str(records),
+                    "--private-dir", str(self.output),
+                    "--seed", "24",
+                    "--exclude-source", "omit-canary",
+                ])
+
+        self.assertEqual(before, {
+            path.name: path.read_bytes()
+            for path in self.output.iterdir()
+            if path.is_file()
+        })
+
+    def test_invalid_input_rerun_leaves_previous_complete_set_intact(self):
         records = self.write_records(self.records())
         self.run_command(records)
         before = {

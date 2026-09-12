@@ -4,15 +4,11 @@ from __future__ import annotations
 
 import argparse
 from pathlib import Path
-from typing import Never, Sequence
+from typing import Sequence
 
 from .ingestion import InputError
 from .preparation import prepare_private_dataset
-
-
-class PrivateArgumentParser(argparse.ArgumentParser):
-    def error(self, message: str) -> Never:
-        self.exit(2, "Invalid command arguments; use --help.\n")
+from .private_io import PrivateArgumentParser
 
 
 def build_parser() -> argparse.ArgumentParser:

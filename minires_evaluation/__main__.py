@@ -5,19 +5,14 @@ from __future__ import annotations
 import argparse
 import json
 from pathlib import Path
-from typing import Never, Sequence
+from typing import Sequence
 from uuid import uuid4
 
 from .ingestion import InputError
-from .private_io import create_private_file
+from .private_io import PrivateArgumentParser, create_private_file
 from .evaluation import EvaluationConfig, PhysicalBaseline, evaluate_records
 from .legacy import LegacyProvenance, LegacyReference, load_legacy_reference
 from .learned import LearnedBaseline
-
-
-class PrivateArgumentParser(argparse.ArgumentParser):
-    def error(self, message: str) -> Never:
-        self.exit(2, "Invalid command arguments; use --help.\n")
 
 
 def build_parser() -> argparse.ArgumentParser:

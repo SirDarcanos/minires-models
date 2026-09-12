@@ -36,11 +36,13 @@ class PartitionResult:
 
 
 def _stable_identity(record: Mapping[str, Any]) -> str | None:
-    value = record.get("record_identity", record.get("_id"))
-    if value is None or isinstance(value, (dict, list, bool)):
-        return None
-    text = str(value)
-    return text if text else None
+    for value in (record.get("record_identity"), record.get("_id")):
+        if value is None or isinstance(value, (dict, list, bool)):
+            continue
+        text = str(value)
+        if text:
+            return text
+    return None
 
 
 def _source(record: Mapping[str, Any]) -> str | None:
@@ -106,24 +108,37 @@ def _write_dataset(path: Path, rows: Sequence[Mapping[str, Any]]) -> None:
             stream.write(serialized.encode("utf-8"))
 
 
-def _replace_directory(staged: Path, destination: Path) -> None:
-    if destination.exists() and (not destination.is_dir() or destination.is_symlink()):
+def _install_directory(staged: Path, destination: Path) -> None:
+    """Atomically switch a stable path to a complete staged directory."""
+    if destination.exists() and not destination.is_symlink():
         raise InputError("private_output_directory_unavailable")
-    backup = destination.with_name(destination.name + ".previous")
-    if backup.exists():
-        raise InputError("private_output_directory_unavailable")
-    moved_previous = False
+    old_target: Path | None = None
+    if destination.is_symlink():
+        try:
+            target = Path(os.readlink(destination))
+        except OSError:
+            raise InputError("private_output_directory_unavailable") from None
+        old_target = target if target.is_absolute() else destination.parent / target
+        expected_prefix = "." + destination.name + "-"
+        if (
+            old_target.parent.resolve() != destination.parent.resolve()
+            or not old_target.name.startswith(expected_prefix)
+            or not old_target.is_dir()
+        ):
+            raise InputError("private_output_directory_unavailable")
+
+    temporary_link = staged.with_name(staged.name + ".link")
     try:
-        if destination.exists():
-            os.replace(destination, backup)
-            moved_previous = True
-        os.replace(staged, destination)
+        os.symlink(staged.name, temporary_link, target_is_directory=True)
+        os.replace(temporary_link, destination)
     except OSError:
-        if moved_previous and not destination.exists():
-            os.replace(backup, destination)
+        temporary_link.unlink(missing_ok=True)
         raise InputError("private_partition_replacement_failed") from None
-    if moved_previous:
-        shutil.rmtree(backup)
+
+    # The new complete set is already current. Stale-set cleanup is best effort
+    # and must not turn a committed replacement into a reported failure.
+    if old_target is not None:
+        shutil.rmtree(old_target, ignore_errors=True)
 
 
 def partition_private_dataset(
@@ -233,7 +248,7 @@ def partition_private_dataset(
             ],
         }
         write_private_json(staged / "manifest.json", manifest)
-        _replace_directory(staged, output)
+        _install_directory(staged, output)
     except InputError:
         if staged.exists():
             shutil.rmtree(staged)
