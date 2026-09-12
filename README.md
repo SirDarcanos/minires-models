@@ -102,7 +102,7 @@ Weights are cached locally by `huggingface_hub` after the first download.
 ## Evaluation workflows
 
 A single private pre-supported STL can be checked, probed, sliced under the pinned
-EBMiniManager profile, and converted into a compatible identity-free record. The
+bundled checksum-pinned slicing profile, and converted into a compatible identity-free record. The
 workflow preflights every external dependency and returns bounded rejection codes.
 See [the one-STL preparation guide](docs/stl-preparation.md).
 

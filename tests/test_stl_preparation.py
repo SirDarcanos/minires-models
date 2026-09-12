@@ -9,20 +9,13 @@ from unittest.mock import patch
 
 from minires_evaluation import EvaluationConfig, PhysicalBaseline, evaluate_records
 from minires_evaluation.prepare_one import main as prepare_one_main
+from minires_evaluation.slicing_contract import BUNDLED_PROFILE_PATH
 from minires_evaluation.stl_preparation import (
-    EBMINIMANAGER_REVISION,
-    PROFILE_RELATIVE_PATH,
     PROFILE_SHA256,
     ProcessResult,
     SubprocessRunner,
     prepare_stl,
 )
-
-
-PROFILE = """material_density = 1.1
-layer_height = 0.05
-supports_enable = 0
-"""
 
 
 class FakeRunner:
@@ -36,8 +29,6 @@ class FakeRunner:
         args = tuple(str(value) for value in args)
         self.calls.append((args, timeout_s, cwd))
         command = args[0]
-        if command == "git":
-            return ProcessResult(0, EBMINIMANAGER_REVISION + "\n", "")
         if any(value.endswith(".stl_probe") for value in args):
             if "--version" in args:
                 if self.failure == "missing_geometry_dependency":
@@ -104,22 +95,17 @@ class StlPreparationTests(unittest.TestCase):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
         self.root = Path(self.temp.name)
-        self.checkout = self.root / "checkout"
-        profile = self.checkout / PROFILE_RELATIVE_PATH
-        profile.parent.mkdir(parents=True)
-        profile.write_text(PROFILE)
+        self.profile = self.root / "config-anycubic-mono.ini"
+        self.profile.write_bytes(BUNDLED_PROFILE_PATH.read_bytes())
         self.stl = self.root / "private-source-canary.stl"
         self.stl.write_bytes(b"solid private source canary")
 
     def prepare(self, runner):
-        profile_digest = sha256((self.checkout / PROFILE_RELATIVE_PATH).read_bytes()).hexdigest()
-        with patch("minires_evaluation.stl_preparation.PROFILE_SHA256", profile_digest):
-            return prepare_stl(
-                self.stl,
-                ebminimanager_dir=self.checkout,
-                runner=runner,
-                scope_confirmed=True,
-            )
+        return prepare_stl(
+            self.stl,
+            runner=runner,
+            scope_confirmed=True,
+        )
 
     def test_success_produces_full_precision_legacy_record_and_cleans_workspace(self):
         runner = FakeRunner()
@@ -149,7 +135,7 @@ class StlPreparationTests(unittest.TestCase):
                 0.37000000000000005,
             ),
         )
-        self.assertEqual(result.contract["ebminimanager_revision"], EBMINIMANAGER_REVISION)
+        self.assertEqual(result.contract["profile_sha256"], PROFILE_SHA256)
         self.assertEqual(result.contract["resin_density_g_per_ml"], 1.1)
         self.assertEqual(result.contract["layer_height_mm"], 0.05)
         self.assertFalse(result.contract["slicer_added_supports"])
@@ -164,6 +150,7 @@ class StlPreparationTests(unittest.TestCase):
         self.assertFalse(runner.generated_path.parent.exists())
         self.assertTrue(all(call[1] > 0 for call in runner.calls))
         self.assertTrue(all(isinstance(call[0], tuple) for call in runner.calls))
+        self.assertFalse(any(call[0][0] == "git" for call in runner.calls))
         evaluated = evaluate_records(
             [result.record],
             EvaluationConfig(1.1, "mm3", True),
@@ -172,12 +159,13 @@ class StlPreparationTests(unittest.TestCase):
         self.assertEqual(evaluated.data_quality.accepted_count, 1)
 
     def test_pinned_profile_checksum_is_verified(self):
-        result = prepare_stl(
-            self.stl,
-            ebminimanager_dir=self.checkout,
-            runner=FakeRunner(),
-            scope_confirmed=True,
-        )
+        self.profile.write_text("modified profile")
+        with patch("minires_evaluation.stl_preparation.BUNDLED_PROFILE_PATH", self.profile):
+            result = prepare_stl(
+                self.stl,
+                runner=FakeRunner(),
+                scope_confirmed=True,
+            )
         self.assertEqual(result.outcome, "rejected")
         self.assertEqual(result.rejection, "profile_checksum_mismatch")
         self.assertEqual(PROFILE_SHA256, "06acac3fe2a3d762fb56ec2d1bde58fe9e15104556091438c81c4e90131d2d0e")
@@ -225,7 +213,6 @@ class StlPreparationTests(unittest.TestCase):
     def test_scope_confirmation_and_version_output_fail_closed(self):
         result = prepare_stl(
             self.stl,
-            ebminimanager_dir=self.checkout,
             runner=FakeRunner(),
         )
         self.assertEqual(result.rejection, "scope_confirmation_required")
@@ -254,7 +241,6 @@ class StlPreparationTests(unittest.TestCase):
             with redirect_stdout(stdout), redirect_stderr(stderr):
                 status = prepare_one_main([
                     "--stl", str(self.stl),
-                    "--ebminimanager-dir", str(self.checkout),
                     "--private-output", str(output),
                     "--scope-confirmed",
                 ])
@@ -283,22 +269,17 @@ class StlPreparationTests(unittest.TestCase):
         self.assertFalse(run.call_args.kwargs["shell"])
         self.assertEqual(run.call_args.kwargs["timeout"], 1)
 
-    def test_profile_contract_and_revision_fail_closed(self):
-        runner = FakeRunner()
-        profile = self.checkout / PROFILE_RELATIVE_PATH
-        profile.write_text("material_density = 1.0\nlayer_height = 0.05\nsupports_enable = 0\n")
-        result = self.prepare(runner)
-        self.assertEqual(result.rejection, "profile_contract_mismatch")
-
-        profile.write_text(PROFILE)
-        runner = FakeRunner()
-        original_run = runner.run
-        runner.run = lambda args, **kwargs: (
-            ProcessResult(0, "wrong-revision\n", "")
-            if args[0] == "git" else original_run(args, **kwargs)
+    def test_profile_contract_fails_closed(self):
+        self.profile.write_text(
+            "material_density = 1.0\nlayer_height = 0.05\nsupports_enable = 0\n"
         )
-        result = self.prepare(runner)
-        self.assertEqual(result.rejection, "ebminimanager_revision_mismatch")
+        profile_digest = sha256(self.profile.read_bytes()).hexdigest()
+        with (
+            patch("minires_evaluation.stl_preparation.BUNDLED_PROFILE_PATH", self.profile),
+            patch("minires_evaluation.stl_preparation.PROFILE_SHA256", profile_digest),
+        ):
+            result = self.prepare(FakeRunner())
+        self.assertEqual(result.rejection, "profile_contract_mismatch")
 
 
 if __name__ == "__main__":

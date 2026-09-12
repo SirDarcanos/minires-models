@@ -16,10 +16,9 @@ import tempfile
 from typing import Any, Mapping, Protocol, Sequence
 
 from .slicing_contract import (
+    BUNDLED_PROFILE_PATH,
     DENSITY_G_PER_ML,
-    EBMINIMANAGER_REVISION,
     LAYER_HEIGHT_MM,
-    PROFILE_RELATIVE_PATH,
     PROFILE_SHA256,
     SLICER_ADDED_SUPPORTS,
 )
@@ -115,8 +114,7 @@ class StlPreparationResult:
 
 def _contract(profile_digest: str | None = None) -> dict[str, Any]:
     return {
-        "ebminimanager_revision": EBMINIMANAGER_REVISION,
-        "profile_relative_path": PROFILE_RELATIVE_PATH.as_posix(),
+        "profile": "bundled/config-anycubic-mono.ini",
         "profile_sha256": profile_digest or PROFILE_SHA256,
         "resin_density_g_per_ml": DENSITY_G_PER_ML,
         "layer_height_mm": LAYER_HEIGHT_MM,
@@ -171,24 +169,11 @@ def _version_line(marker: str, *outputs: str) -> str | None:
 
 
 def _preflight(
-    checkout: Path,
     runner: ProcessRunner,
     timeout_s: float,
 ) -> tuple[str | None, dict[str, str], Path, str | None]:
     versions: dict[str, str] = {}
-    try:
-        revision = runner.run(
-            ("git", "-C", checkout, "rev-parse", "HEAD"),
-            timeout_s=timeout_s,
-        )
-    except (OSError, TimeoutError, subprocess.TimeoutExpired):
-        return "ebminimanager_revision_unavailable", versions, checkout / PROFILE_RELATIVE_PATH, None
-    if revision.returncode != 0:
-        return "ebminimanager_revision_unavailable", versions, checkout / PROFILE_RELATIVE_PATH, None
-    if revision.stdout.strip() != EBMINIMANAGER_REVISION:
-        return "ebminimanager_revision_mismatch", versions, checkout / PROFILE_RELATIVE_PATH, None
-
-    profile_path = checkout / PROFILE_RELATIVE_PATH
+    profile_path = BUNDLED_PROFILE_PATH
     try:
         profile = profile_path.read_bytes()
     except OSError:
@@ -229,7 +214,6 @@ def _preflight(
         if version is None:
             return f"{name}_version_unavailable", versions, profile_path, digest
         versions[name] = version
-    versions["ebminimanager"] = EBMINIMANAGER_REVISION
     versions["python"] = platform.python_version()
     return None, versions, profile_path, digest
 
@@ -361,7 +345,6 @@ def _process_copy(
 def prepare_stl(
     source_stl: str | Path,
     *,
-    ebminimanager_dir: str | Path,
     runner: ProcessRunner | None = None,
     timeout_s: float = DEFAULT_TIMEOUT_S,
     scope_confirmed: bool = False,
@@ -381,7 +364,7 @@ def prepare_stl(
         return _rejected("invalid_input")
 
     rejection, versions, profile_path, profile_digest = _preflight(
-        Path(ebminimanager_dir), process_runner, timeout_s
+        process_runner, timeout_s
     )
     if rejection is not None:
         return _rejected(rejection, versions=versions, profile_digest=profile_digest)

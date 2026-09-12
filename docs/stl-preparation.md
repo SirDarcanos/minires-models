@@ -6,8 +6,7 @@ The one-STL workflow creates either one identity-free MiniRes record or one name
 
 The workflow fails closed unless all of these checks pass before geometry processing or slicing:
 
-- the EBMiniManager checkout is exactly revision `1a841195813136ee3b380ab1d192727f385f7a55`;
-- `prediction/config-anycubic-mono.ini` has SHA-256 `06acac3fe2a3d762fb56ec2d1bde58fe9e15104556091438c81c4e90131d2d0e`;
+- the bundled `minires_evaluation/profiles/config-anycubic-mono.ini` has SHA-256 `06acac3fe2a3d762fb56ec2d1bde58fe9e15104556091438c81c4e90131d2d0e`;
 - the profile specifies density 1.1 g/ml, layer height 0.05 mm, and `supports_enable = 0`;
 - PrusaSlicer, UVtools, and trimesh are available.
 
@@ -19,11 +18,9 @@ Install the geometry dependency and make `prusa-slicer` and `UVtoolsCmd` availab
 
 ```bash
 python3 -m pip install -r requirements-preparation.txt
-git -C /path/to/EBMiniManager checkout 1a841195813136ee3b380ab1d192727f385f7a55
 mkdir -p private/smoke
 python3 -m minires_evaluation.prepare_one \
   --stl /private/path/to/pre-supported-input.stl \
-  --ebminimanager-dir /path/to/EBMiniManager \
   --private-output private/smoke/result.json \
   --scope-confirmed
 ```

@@ -17,12 +17,6 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--stl", required=True, type=Path, help="Private source STL")
     parser.add_argument(
-        "--ebminimanager-dir",
-        required=True,
-        type=Path,
-        help="Checkout of the pinned EBMiniManager revision",
-    )
-    parser.add_argument(
         "--private-output",
         required=True,
         type=Path,
@@ -44,7 +38,6 @@ def main(argv: Sequence[str] | None = None) -> int:
         return 2
     result = prepare_stl(
         args.stl,
-        ebminimanager_dir=args.ebminimanager_dir,
         timeout_s=args.timeout_seconds,
         scope_confirmed=args.scope_confirmed,
     )
