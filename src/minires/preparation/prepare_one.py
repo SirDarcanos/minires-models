@@ -7,7 +7,7 @@ from pathlib import Path
 import sys
 from typing import Sequence
 
-from ..private_io import PrivateArgumentParser, write_private_json
+from ..private_io import PrivateArgumentParser, is_private_path, write_private_json
 from .stl import DEFAULT_TIMEOUT_S, prepare_stl
 
 
@@ -33,7 +33,7 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main(argv: Sequence[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
-    if "private" not in args.private_output.resolve().parts:
+    if not is_private_path(args.private_output):
         print("private_output_required", file=sys.stderr)
         return 2
     result = prepare_stl(
