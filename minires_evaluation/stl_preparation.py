@@ -15,11 +15,15 @@ import sys
 import tempfile
 from typing import Any, Mapping, Protocol, Sequence
 
-EBMINIMANAGER_REVISION = "1a841195813136ee3b380ab1d192727f385f7a55"
-PROFILE_RELATIVE_PATH = Path("prediction/config-anycubic-mono.ini")
-PROFILE_SHA256 = "06acac3fe2a3d762fb56ec2d1bde58fe9e15104556091438c81c4e90131d2d0e"
-DENSITY_G_PER_ML = 1.1
-LAYER_HEIGHT_MM = 0.05
+from .slicing_contract import (
+    DENSITY_G_PER_ML,
+    EBMINIMANAGER_REVISION,
+    LAYER_HEIGHT_MM,
+    PROFILE_RELATIVE_PATH,
+    PROFILE_SHA256,
+    SLICER_ADDED_SUPPORTS,
+)
+
 DEFAULT_TIMEOUT_S = 120.0
 
 _MEASUREMENT_FIELDS = (
@@ -116,7 +120,7 @@ def _contract(profile_digest: str | None = None) -> dict[str, Any]:
         "profile_sha256": profile_digest or PROFILE_SHA256,
         "resin_density_g_per_ml": DENSITY_G_PER_ML,
         "layer_height_mm": LAYER_HEIGHT_MM,
-        "slicer_added_supports": False,
+        "slicer_added_supports": SLICER_ADDED_SUPPORTS,
         "label_source": "UVtools print-properties WeightG",
     }
 
@@ -157,12 +161,13 @@ def _profile_values(profile: bytes) -> dict[str, str]:
     return values
 
 
-def _version_line(*outputs: str) -> str:
+def _version_line(marker: str, *outputs: str) -> str | None:
     for output in outputs:
         for line in output.splitlines():
-            if line.strip():
-                return line.strip()[:200]
-    return "available_version_unreported"
+            candidate = line.strip()[:200]
+            if marker in candidate.lower() and re.search(r"\d+(?:\.\d+)+", candidate):
+                return candidate
+    return None
 
 
 def _preflight(
@@ -204,22 +209,26 @@ def _preflight(
         return "profile_contract_mismatch", versions, profile_path, digest
 
     probes = (
-        ("prusaslicer", ("prusa-slicer", "--version"), "missing_prusaslicer"),
-        ("uvtools", ("UVtoolsCmd", "--version"), "missing_uvtools"),
+        ("prusaslicer", "prusaslicer", ("prusa-slicer", "--version"), "missing_prusaslicer"),
+        ("uvtools", "uvtools", ("UVtoolsCmd", "--version"), "missing_uvtools"),
         (
             "geometry",
+            "trimesh",
             (sys.executable, "-m", "minires_evaluation.stl_probe", "--version"),
             "missing_geometry_dependency",
         ),
     )
-    for name, command, missing_reason in probes:
+    for name, marker, command, missing_reason in probes:
         try:
             result = runner.run(command, timeout_s=timeout_s)
         except (OSError, TimeoutError, subprocess.TimeoutExpired):
             return missing_reason, versions, profile_path, digest
         if result.returncode != 0:
             return missing_reason, versions, profile_path, digest
-        versions[name] = _version_line(result.stdout, result.stderr)
+        version = _version_line(marker, result.stdout, result.stderr)
+        if version is None:
+            return f"{name}_version_unavailable", versions, profile_path, digest
+        versions[name] = version
     versions["ebminimanager"] = EBMINIMANAGER_REVISION
     versions["python"] = platform.python_version()
     return None, versions, profile_path, digest
@@ -240,6 +249,8 @@ def _measurements(output: str) -> dict[str, int | float] | None:
         if not math.isfinite(float(value)):
             return None
         if field in _POSITIVE_FIELDS and value <= 0:
+            return None
+        if field == "euler_number" and not float(value).is_integer():
             return None
         parsed[field] = value
     return parsed
@@ -314,7 +325,7 @@ def _process_copy(
     file_size_kib = inventory["byte_count"] / 1024
     record: dict[str, Any] = {
         "file_size_kib": file_size_kib,
-        "mesh_volume_mm3": measurements["volume"],
+        "volume_mm3": measurements["volume"],
         "surface_area_mm2": measurements["surface_area"],
         "bounding_box_x_mm": measurements["bbox_x"],
         "bounding_box_y_mm": measurements["bbox_y"],
@@ -333,7 +344,7 @@ def _process_copy(
         "scope_confirmed": True,
         "slicing_conditions": {
             "layer_height_mm": LAYER_HEIGHT_MM,
-            "slicer_added_supports": False,
+            "slicer_added_supports": SLICER_ADDED_SUPPORTS,
         },
         "input_inventory": dict(inventory),
         "sliced_output_inventory": sliced_inventory,
@@ -353,8 +364,11 @@ def prepare_stl(
     ebminimanager_dir: str | Path,
     runner: ProcessRunner | None = None,
     timeout_s: float = DEFAULT_TIMEOUT_S,
+    scope_confirmed: bool = False,
 ) -> StlPreparationResult:
     """Prepare one STL, returning a record or a named rejection without exposing identity."""
+    if not scope_confirmed:
+        return _rejected("scope_confirmation_required")
     if not math.isfinite(timeout_s) or timeout_s <= 0:
         return _rejected("invalid_timeout")
     process_runner = runner or SubprocessRunner()
@@ -373,7 +387,10 @@ def prepare_stl(
         return _rejected(rejection, versions=versions, profile_digest=profile_digest)
     assert profile_digest is not None
 
-    workspace = Path(tempfile.mkdtemp(prefix="minires-stl-"))
+    try:
+        workspace = Path(tempfile.mkdtemp(prefix="minires-stl-"))
+    except OSError:
+        return _rejected("workspace_failure", versions=versions, profile_digest=profile_digest)
     result: StlPreparationResult
     try:
         source_copy = workspace / "input.stl"

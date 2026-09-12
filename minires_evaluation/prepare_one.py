@@ -29,6 +29,11 @@ def build_parser() -> argparse.ArgumentParser:
         help="New result JSON path beneath private/",
     )
     parser.add_argument("--timeout-seconds", type=float, default=DEFAULT_TIMEOUT_S)
+    parser.add_argument(
+        "--scope-confirmed",
+        action="store_true",
+        help="Confirm that the input is a pre-supported miniature in the validated scope",
+    )
     return parser
 
 
@@ -41,6 +46,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         args.stl,
         ebminimanager_dir=args.ebminimanager_dir,
         timeout_s=args.timeout_seconds,
+        scope_confirmed=args.scope_confirmed,
     )
     try:
         write_private_json(args.private_output, result.to_dict())

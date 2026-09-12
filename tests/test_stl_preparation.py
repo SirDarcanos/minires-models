@@ -7,6 +7,7 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
+from minires_evaluation import EvaluationConfig, PhysicalBaseline, evaluate_records
 from minires_evaluation.prepare_one import main as prepare_one_main
 from minires_evaluation.stl_preparation import (
     EBMINIMANAGER_REVISION,
@@ -25,8 +26,9 @@ supports_enable = 0
 
 
 class FakeRunner:
-    def __init__(self, failure=None):
+    def __init__(self, failure=None, source=None):
         self.failure = failure
+        self.source = source
         self.calls = []
         self.generated_path = None
 
@@ -41,6 +43,8 @@ class FakeRunner:
                 if self.failure == "missing_geometry_dependency":
                     return ProcessResult(1, "", "dependency unavailable")
                 return ProcessResult(0, "trimesh 4.10.1\n", "")
+            if self.failure == "geometry_timeout":
+                raise TimeoutError
             if self.failure == "corrupt_geometry":
                 return ProcessResult(2, "", "corrupt")
             measurements = {
@@ -57,10 +61,14 @@ class FakeRunner:
             }
             if self.failure == "invalid_measurements":
                 measurements["volume"] = 0
+            if self.failure == "fractional_euler_number":
+                measurements["euler_number"] = 1.5
             return ProcessResult(0, json.dumps(measurements), "")
         if command == "prusa-slicer" and "--version" in args:
             if self.failure == "missing_prusaslicer":
                 raise FileNotFoundError
+            if self.failure == "malformed_prusaslicer_version":
+                return ProcessResult(0, "available\n", "")
             return ProcessResult(0, "PrusaSlicer 2.6.0\n", "")
         if command == "UVtoolsCmd" and "--version" in args:
             if self.failure == "missing_uvtools":
@@ -73,10 +81,14 @@ class FakeRunner:
             self.generated_path = output
             if self.failure != "sliced_output_absent":
                 output.write_bytes(b"private sliced output")
+            if self.failure == "source_checksum_changed":
+                self.source.write_bytes(b"changed")
             if self.failure == "slicing_failed":
                 return ProcessResult(7, "", "failed")
             return ProcessResult(0, "", "")
         if command == "UVtoolsCmd":
+            if self.failure == "uvtools_timeout":
+                raise TimeoutError
             if self.failure == "uvtools_failed":
                 return ProcessResult(3, "", "failed")
             if self.failure == "weight_g_missing":
@@ -106,6 +118,7 @@ class StlPreparationTests(unittest.TestCase):
                 self.stl,
                 ebminimanager_dir=self.checkout,
                 runner=runner,
+                scope_confirmed=True,
             )
 
     def test_success_produces_full_precision_legacy_record_and_cleans_workspace(self):
@@ -118,7 +131,7 @@ class StlPreparationTests(unittest.TestCase):
         self.assertIsNone(result.rejection)
         self.assertEqual(result.record["sliced_resin_mass_g"], 1.23456789012345)
         self.assertEqual(result.record["volume"], 1234.567890123456)
-        self.assertEqual(result.record["mesh_volume_mm3"], 1234.567890123456)
+        self.assertEqual(result.record["volume_mm3"], 1234.567890123456)
         self.assertEqual(result.record["bounding_box_volume_mm3"], 6181.806)
         self.assertEqual(result.record["surface_to_volume_ratio_per_mm"], 0.37000000000000005)
         self.assertEqual(
@@ -151,12 +164,19 @@ class StlPreparationTests(unittest.TestCase):
         self.assertFalse(runner.generated_path.parent.exists())
         self.assertTrue(all(call[1] > 0 for call in runner.calls))
         self.assertTrue(all(isinstance(call[0], tuple) for call in runner.calls))
+        evaluated = evaluate_records(
+            [result.record],
+            EvaluationConfig(1.1, "mm3", True),
+            PhysicalBaseline(),
+        )
+        self.assertEqual(evaluated.data_quality.accepted_count, 1)
 
     def test_pinned_profile_checksum_is_verified(self):
         result = prepare_stl(
             self.stl,
             ebminimanager_dir=self.checkout,
             runner=FakeRunner(),
+            scope_confirmed=True,
         )
         self.assertEqual(result.outcome, "rejected")
         self.assertEqual(result.rejection, "profile_checksum_mismatch")
@@ -174,11 +194,13 @@ class StlPreparationTests(unittest.TestCase):
 
     def test_each_processing_failure_has_a_distinct_bounded_rejection(self):
         failures = (
+            "geometry_timeout",
             "corrupt_geometry",
             "invalid_measurements",
             "slicing_failed",
             "slicing_timeout",
             "sliced_output_absent",
+            "uvtools_timeout",
             "uvtools_failed",
             "weight_g_missing",
             "invalid_weight_g",
@@ -195,6 +217,32 @@ class StlPreparationTests(unittest.TestCase):
                 if runner.generated_path is not None:
                     self.assertFalse(runner.generated_path.parent.exists())
 
+    def test_fractional_euler_number_is_not_a_compatible_record(self):
+        result = self.prepare(FakeRunner("fractional_euler_number"))
+        self.assertEqual(result.rejection, "invalid_measurements")
+        self.assertIsNone(result.record)
+
+    def test_scope_confirmation_and_version_output_fail_closed(self):
+        result = prepare_stl(
+            self.stl,
+            ebminimanager_dir=self.checkout,
+            runner=FakeRunner(),
+        )
+        self.assertEqual(result.rejection, "scope_confirmation_required")
+        result = self.prepare(FakeRunner("malformed_prusaslicer_version"))
+        self.assertEqual(result.rejection, "prusaslicer_version_unavailable")
+
+    def test_workspace_creation_failure_is_bounded(self):
+        with patch("minires_evaluation.stl_preparation.tempfile.mkdtemp", side_effect=OSError):
+            result = self.prepare(FakeRunner())
+        self.assertEqual(result.rejection, "workspace_failure")
+        self.assertEqual(self.stl.read_bytes(), b"solid private source canary")
+
+    def test_detects_source_change_without_returning_a_record(self):
+        result = self.prepare(FakeRunner("source_checksum_changed", self.stl))
+        self.assertEqual(result.rejection, "source_checksum_changed")
+        self.assertIsNone(result.record)
+
     def test_command_output_is_bounded_and_identity_free(self):
         result = self.prepare(FakeRunner())
         private_dir = self.root / "private"
@@ -208,6 +256,7 @@ class StlPreparationTests(unittest.TestCase):
                     "--stl", str(self.stl),
                     "--ebminimanager-dir", str(self.checkout),
                     "--private-output", str(output),
+                    "--scope-confirmed",
                 ])
 
         self.assertEqual(status, 0)

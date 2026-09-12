@@ -24,10 +24,13 @@ mkdir -p private/smoke
 python3 -m minires_evaluation.prepare_one \
   --stl /private/path/to/pre-supported-input.stl \
   --ebminimanager-dir /path/to/EBMiniManager \
-  --private-output private/smoke/result.json
+  --private-output private/smoke/result.json \
+  --scope-confirmed
 ```
 
 Use one representative input as the smoke invocation before arranging any larger private batch. Every invocation completes the full environment preflight before it copies or processes the STL.
+
+`--scope-confirmed` is the operator's explicit attestation that the input is a pre-supported miniature in the validated scope; geometry checks do not establish scope. Without it, the command records `scope_confirmation_required`.
 
 The command prints only `prepared` or a bounded rejection code. The input filename, source identity, raw path, checksum, measurements, and sliced resin mass remain in the private result and never appear in command output.
 
