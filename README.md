@@ -99,9 +99,12 @@ python3 -m minires.modeling.tuning \
   --seed 41
 ```
 
-Fitting and learned preprocessing use training rows only. Validation is limited
-to early stopping and candidate/ensemble selection. See the candidate-tuning
-reference before separately assessing a lock against the test artifact.
+Fitting and learned preprocessing use training rows only. Validation is grouped
+by anonymous source group for pooled, equal-source-weighted, and qualifying-source
+eligibility checks, then used for early stopping and candidate/ensemble selection.
+Source groups remain outside the prediction features and public output. See the
+candidate-tuning reference before separately assessing a lock against the test
+artifact.
 
 The main references are:
 

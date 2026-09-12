@@ -31,6 +31,7 @@ from minires.modeling.tuning import (
     load_locked_candidate,
     main as tuning_main,
     tune_candidates,
+    verify_locked_candidate_files,
     _selected_epoch_count,
 )
 
@@ -665,21 +666,95 @@ class ExplicitPartitionDevelopmentTests(unittest.TestCase):
         )
         self.assertIn("training_input_fingerprint", contract["development_evidence"])
         self.assertIn("validation_input_fingerprint", contract["development_evidence"])
+        self.assertEqual(
+            contract["development_evidence"]["validation_grouping_contract"],
+            "source-grouped-validation-v1",
+        )
+        self.assertEqual(len(contract["development_source_groups"]), 1)
         self.assertNotIn("private-source", json.dumps(first.to_dict()))
 
-    def test_invalid_or_overlapping_partition_identities_block_before_fitting(self):
-        runtime = ValidationSensitiveRuntime()
-        overlapping = [dict(self.validation[0], _id=self.training[0]["_id"])]
+    def test_unequal_validation_source_groups_remain_distinct_for_every_gate(self):
+        validation = []
+        value = 1_000
+        for source, count in (("validation-a", 200), ("validation-b", 600),
+                              ("validation-c", 600), ("validation-d", 600)):
+            for _ in range(count):
+                validation.append(dict(self.row(f"validation-{value}", value),
+                                       anonymous_source_group=source))
+                value += 1
+        shifted = {row["weight"] for row in validation[:5]}
 
         result = develop_candidates(
-            self.training, overlapping, self.config, runtime=runtime,
-            output_root=self.root / "overlap", limits=SearchLimits(seed=41),
+            self.training, validation, self.config,
+            runtime=SelectiveTailRuntime(shifted),
+            output_root=self.root / "source-balanced",
+            limits=SearchLimits(seed=41), clock=lambda: 0.0,
         )
 
-        self.assertEqual(result.status, "blocked")
-        self.assertEqual(result.blockers, ("invalid_or_overlapping_partition_identities",))
-        self.assertEqual(runtime.fit_calls, [])
-        self.assertEqual(runtime.refit_calls, [])
+        self.assertEqual(result.status, "completed_no_candidate")
+        self.assertTrue(result.initial_results)
+        for run in result.initial_results:
+            self.assertEqual(run.metrics["source_count"], 4)
+            self.assertAlmostEqual(run.metrics["pooled_above_5g_fraction"], 0.0025)
+            self.assertAlmostEqual(
+                run.metrics["source_balanced_above_5g_fraction"], 0.00625
+            )
+            self.assertAlmostEqual(
+                run.metrics["maximum_qualifying_source_above_5g_fraction"], 0.025
+            )
+            self.assertFalse(run.eligible)
+            self.assertEqual(len(run.source_reports), 4)
+        self.assertNotIn("source_reports", result.to_dict(public=True))
+        self.assertNotIn("validation-a", json.dumps(result.to_dict()))
+
+    def test_pre_correction_explicit_lock_is_rejected_even_with_valid_checksums(self):
+        runtime = ValidationSensitiveRuntime()
+        result = develop_candidates(
+            self.training, self.validation, self.config, runtime=runtime,
+            output_root=self.root / "current-lock", limits=SearchLimits(seed=41),
+            clock=lambda: 0.0,
+        )
+        assert result.locked_candidate is not None
+        lock = result.locked_candidate.directory
+        contract_path = lock / "candidate-contract.json"
+        contract = json.loads(contract_path.read_text())
+        contract["development_evidence"].pop("validation_grouping_contract")
+        contract_path.write_text(json.dumps(contract, sort_keys=True))
+        manifest_path = lock / "lock-manifest.json"
+        manifest = json.loads(manifest_path.read_text())
+        manifest["files"]["candidate-contract.json"] = sha256(
+            contract_path.read_bytes()
+        ).hexdigest()
+        manifest_path.write_text(json.dumps(manifest, sort_keys=True))
+
+        blockers, _, _ = verify_locked_candidate_files(
+            lock, runtime.dependency_versions
+        )
+
+        self.assertIn("locked_candidate_contract_mismatch", blockers)
+
+    def test_invalid_or_overlapping_partition_identities_block_before_fitting(self):
+        invalid_cases = {
+            "overlap": [dict(self.validation[0], _id=self.training[0]["_id"])],
+            "missing-source": [
+                {key: value for key, value in self.validation[0].items()
+                 if key != "anonymous_source_group"}
+            ],
+        }
+        for name, validation in invalid_cases.items():
+            with self.subTest(name=name):
+                runtime = ValidationSensitiveRuntime()
+                result = develop_candidates(
+                    self.training, validation, self.config, runtime=runtime,
+                    output_root=self.root / name, limits=SearchLimits(seed=41),
+                )
+
+                self.assertEqual(result.status, "blocked")
+                self.assertEqual(
+                    result.blockers, ("invalid_or_overlapping_partition_identities",)
+                )
+                self.assertEqual(runtime.fit_calls, [])
+                self.assertEqual(runtime.refit_calls, [])
 
 
 class CandidateTuningTests(unittest.TestCase):

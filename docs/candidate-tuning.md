@@ -20,11 +20,12 @@ python3.13 -m venv .venv-candidates
 
 Model development consumes the explicit `train.jsonl` and `validation.jsonl`
 artifacts produced by the expanded-dataset workflow. Every row needs a unique
-private `_id`; an identity or evidenced duplicate/linkage that crosses the two
-artifacts blocks development. Anonymous source groups, partition fields,
-miniature families, duplicate/linkage values, and join keys never enter the model
-feature matrix. This mixed-source path does not require miniature-family evidence
-or leave-one-source-out folds.
+private `_id` and an anonymous source group; missing source-group evidence, an
+invalid identity, or evidenced duplicate/linkage that crosses the two artifacts
+blocks development. Anonymous source groups remain evaluation-only metadata.
+They, partition fields, miniature families, duplicate/linkage values, and join
+keys never enter the model feature matrix. This mixed-source path does not require
+miniature-family evidence or leave-one-source-out folds.
 
 ## Run the complete command-level workflow
 
@@ -260,10 +261,13 @@ and the absence of eligible candidates remain bounded outcomes in
 completed or failed launch, and every skipped slot with its bounded stop reason.
 A stopped search preserves all completed results and cannot lock a candidate.
 
-Eligibility applies the observed above-5-g error limits before ranking: no more
+Eligibility groups explicit validation predictions by their anonymous source-group
+metadata and applies the observed above-5-g error limits before ranking: no more
 than 1% pooled, 1% under equal source weighting, and 2% for each source with at
 least 200 accepted records. Smaller sources remain part of pooled and
-source-balanced metrics, but do not receive the separate per-source gate.
+source-balanced metrics, but do not receive the separate per-source gate. The
+private tuning report retains per-source rows and metrics; public summaries omit
+source reports and source identities.
 Ineligible results remain in the private initial results and history but are
 excluded from `initial_promotable_ranking`. Eligible candidates rank by
 source-balanced mean absolute error, pooled mean absolute error, within-2-g
@@ -300,10 +304,19 @@ A successful search creates `locked-candidate/` with:
 - SHA-256 checksums in a create-only lock manifest.
 
 The tuning and refit seam receives only normalized development features and
-labels. It has no final-test argument or final-test path, and the contract records
-that final-test access did not occur. Final-test records, source metadata,
-fingerprints, labels, and predictions enter only through the later assessment
-command after lock verification.
+labels. Evaluation separately retains one-way anonymous source-group identifiers
+for validation grouping and later source-overlap checks; those identifiers never enter
+the feature matrix or public output. The seam has no final-test argument or
+final-test path, and the contract records that final-test access did not occur.
+Final-test records, source metadata, fingerprints, labels, and predictions enter
+only through the later assessment command after lock verification.
+
+Explicit-partition runs created before this correction collapsed validation into
+one synthetic report and are not source-balanced evidence. Do not reinterpret or
+publish them as such. Run development again into a fresh create-only output
+directory; the recorded code fingerprint distinguishes the corrected run. Locks
+also carry the `source-grouped-validation-v1` evidence contract. Lock verification
+rejects affected earlier explicit-partition locks that lack this attestation.
 
 Use `load_locked_candidate` from `minires.modeling.tuning` when assessment runs
 in a later process. Loading and assessment fail closed if an artifact,

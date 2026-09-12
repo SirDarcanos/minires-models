@@ -38,6 +38,7 @@ from ..evaluation.splits import ALLOCATION_VERSION, freeze_splits
 
 
 TUNING_VERSION = "minires-candidate-tuning-v5"
+EXPLICIT_DEVELOPMENT_EVIDENCE_VERSION = "source-grouped-validation-v1"
 DEVELOPMENT_ONLY_STAGES = (
     "fitting", "preprocessing", "early_stopping", "ensemble_selection",
     "threshold_selection", "candidate_locking",
@@ -1111,7 +1112,9 @@ def _valid_explicit_partitions(
     training: Sequence[CanonicalRow], validation: Sequence[CanonicalRow],
 ) -> bool:
     if not training or not validation or any(
-        row.outcome != "included" or not row.metadata.get("record_identity")
+        row.outcome != "included"
+        or not row.metadata.get("record_identity")
+        or not row.metadata.get("anonymous_source_group")
         for row in (*training, *validation)
     ):
         return False
@@ -1196,21 +1199,15 @@ def _evaluate_explicit_candidate(
                     _fingerprintable_state(fitted.fitted_state)
                 ),
             }
-        observed = _source_candidate_metrics(validation_y, predictions)
-        report = {
-            "source": "validation_partition",
-            "train_rows": list(range(len(training))),
-            "validation_rows": list(range(len(validation))),
-            "actual": list(validation_y),
-            "predictions": list(predictions),
-            **observed,
-        }
-        metrics = _candidate_metrics((report,))
+        reports = _explicit_validation_source_reports(
+            len(training), validation, predictions
+        )
+        metrics = _candidate_metrics(reports)
         eligible = _tail_eligible(metrics)
         return CandidateRun(
             candidate, seed, "completed",
             () if eligible else ("development_serious_error_gate_failed",),
-            eligible, metrics, (report,), (metadata,),
+            eligible, metrics, reports, (metadata,),
             _resources(time.perf_counter() - started, time.process_time() - cpu_started),
         )
     except Exception:
@@ -1565,6 +1562,34 @@ def _fingerprintable_state(state: Mapping[str, Any]) -> dict[str, Any]:
     return {key: value for key, value in state.items() if not key.startswith("_")}
 
 
+def _explicit_validation_source_reports(
+    training_count: int, validation: Sequence[CanonicalRow],
+    predictions: Sequence[float],
+) -> tuple[dict[str, Any], ...]:
+    grouped: dict[str, dict[str, Any]] = {}
+    for row, prediction in zip(validation, predictions, strict=True):
+        target = row.sliced_resin_mass_g
+        if target is None:
+            raise ValueError("validation target required")
+        source = str(row.metadata["anonymous_source_group"])
+        report = grouped.setdefault(source, {
+            "source": source,
+            "train_rows": list(range(training_count)),
+            "validation_rows": [],
+            "actual": [],
+            "predictions": [],
+        })
+        report["validation_rows"].append(row.row_index)
+        report["actual"].append(float(target))
+        report["predictions"].append(float(prediction))
+    reports = []
+    for source in sorted(grouped):
+        report = grouped[source]
+        report.update(_source_candidate_metrics(report["actual"], report["predictions"]))
+        reports.append(report)
+    return tuple(reports)
+
+
 def _source_candidate_metrics(
     actual: Sequence[float], predictions: Sequence[float]
 ) -> dict[str, float | int]:
@@ -1867,8 +1892,12 @@ def _refit_and_lock_explicit(
             "partition_identity_fingerprint": plan.source_allocation_fingerprint,
             "search_plan_fingerprint": fingerprint(plan.to_dict()),
             "test_input_attestation": "no_test_argument_or_path_available",
+            "validation_grouping_contract": EXPLICIT_DEVELOPMENT_EVIDENCE_VERSION,
         },
-        "development_source_groups": [],
+        "development_source_groups": sorted({
+            str(row.metadata["anonymous_source_group"])
+            for row in (*training, *validation)
+        }),
         "development_data_usage": {
             "fitting": "training_records_only",
             "preprocessing": "training_records_only",
@@ -2107,7 +2136,11 @@ def _valid_locked_contract(contract: Mapping[str, Any]) -> bool:
                 "search_plan_fingerprint", "test_input_attestation",
             ))
             and evidence.get("test_input_attestation") == "no_test_argument_or_path_available"
-            and development_sources == []
+            and evidence.get("validation_grouping_contract")
+            == EXPLICIT_DEVELOPMENT_EVIDENCE_VERSION
+            and isinstance(development_sources, list) and bool(development_sources)
+            and development_sources == sorted(set(development_sources))
+            and all(isinstance(source, str) and source for source in development_sources)
             and development_usage == required_usage
             and isinstance(feature_contract, Mapping)
             and feature_contract.get("ordered_features") == list(LEGACY_FEATURES)
