@@ -9,7 +9,7 @@ from unittest.mock import patch
 
 from minires import EvaluationConfig, PhysicalBaseline, evaluate_records
 from minires.preparation.prepare_one import main as prepare_one_main
-from minires.preparation.slicing_contract import BUNDLED_PROFILE_PATH
+from minires.preparation.slicing_contract import BUNDLED_PROFILE_RESOURCE
 from minires.preparation.stl import (
     PROFILE_SHA256,
     ProcessResult,
@@ -96,7 +96,7 @@ class StlPreparationTests(unittest.TestCase):
         self.addCleanup(self.temp.cleanup)
         self.root = Path(self.temp.name)
         self.profile = self.root / "config-anycubic-mono.ini"
-        self.profile.write_bytes(BUNDLED_PROFILE_PATH.read_bytes())
+        self.profile.write_bytes(BUNDLED_PROFILE_RESOURCE.read_bytes())
         self.stl = self.root / "private-source-canary.stl"
         self.stl.write_bytes(b"solid private source canary")
 
@@ -160,7 +160,7 @@ class StlPreparationTests(unittest.TestCase):
 
     def test_pinned_profile_checksum_is_verified(self):
         self.profile.write_text("modified profile")
-        with patch("minires.preparation.stl.BUNDLED_PROFILE_PATH", self.profile):
+        with patch("minires.preparation.stl.BUNDLED_PROFILE_RESOURCE", self.profile):
             result = prepare_stl(
                 self.stl,
                 runner=FakeRunner(),
@@ -275,7 +275,7 @@ class StlPreparationTests(unittest.TestCase):
         )
         profile_digest = sha256(self.profile.read_bytes()).hexdigest()
         with (
-            patch("minires.preparation.stl.BUNDLED_PROFILE_PATH", self.profile),
+            patch("minires.preparation.stl.BUNDLED_PROFILE_RESOURCE", self.profile),
             patch("minires.preparation.stl.PROFILE_SHA256", profile_digest),
         ):
             result = self.prepare(FakeRunner())
