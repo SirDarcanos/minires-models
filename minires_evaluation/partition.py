@@ -1,4 +1,4 @@
-"""Private dataset preparation command-line entry point."""
+"""Command-line entry point for private source-balanced partitioning."""
 
 from __future__ import annotations
 
@@ -7,40 +7,40 @@ from pathlib import Path
 from typing import Sequence
 
 from .ingestion import InputError
-from .preparation import prepare_private_dataset
+from .partitioning import partition_private_dataset
 from .private_io import PrivateArgumentParser
 
 
 def build_parser() -> argparse.ArgumentParser:
     parser = PrivateArgumentParser(
-        description="Prepare identity-redacted records and grouping evidence beneath private/."
+        description="Create deterministic private train, validation, and test record artifacts."
     )
-    parser.add_argument("--records", required=True, type=Path, help="Retained local JSONL export")
+    parser.add_argument("--records", required=True, type=Path, help="Harmonized local JSON, JSONL, or CSV records")
+    parser.add_argument("--seed", required=True, type=int, help="Fixed allocation seed")
     parser.add_argument(
-        "--reconcile", type=Path, action="append", default=[],
-        help="Existing labeled CSV or export to reconcile (repeatable)",
+        "--exclude-source", required=True,
+        help="Private anonymous source identity to omit (never persisted)",
     )
     parser.add_argument(
         "--private-dir", required=True, type=Path,
-        help="New output directory beneath private/",
+        help="Current output directory beneath private/; complete sets are replaced",
     )
-    parser.add_argument("--seed", type=int, default=0, help="Frozen-fold allocation seed")
     return parser
 
 
 def main(argv: Sequence[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     try:
-        prepare_private_dataset(
+        partition_private_dataset(
             args.records,
-            comparison_records=args.reconcile,
+            excluded_source=args.exclude_source,
             output_dir=args.private_dir,
             seed=args.seed,
         )
     except InputError as error:
         raise SystemExit(str(error)) from None
     except (OSError, TypeError, ValueError):
-        raise SystemExit("private_preparation_failed") from None
+        raise SystemExit("private_partitioning_failed") from None
     return 0
 
 

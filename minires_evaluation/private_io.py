@@ -1,9 +1,15 @@
-"""Create-only file boundary: restrictive permissions apply before the first byte."""
+"""Private command and file boundaries."""
 
+import argparse
 import json
 import os
 from pathlib import Path
-from typing import Any, BinaryIO
+from typing import Any, BinaryIO, Never
+
+
+class PrivateArgumentParser(argparse.ArgumentParser):
+    def error(self, message: str) -> Never:
+        self.exit(2, "Invalid command arguments; use --help.\n")
 
 
 def create_private_file(path: Path) -> BinaryIO:

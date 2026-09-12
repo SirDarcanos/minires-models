@@ -46,6 +46,41 @@ support the frozen folds; it does not claim model quality or dataset equivalence
 The input and every reconciliation input are hashed before and after preparation
 and must remain byte-for-byte unchanged.
 
+## Generate source-balanced partitions
+
+Allocate harmonized labeled records independently within each retained anonymous
+source group:
+
+```bash
+.venv/bin/python -m minires_evaluation.partition \
+  --records private/harmonized-records.jsonl \
+  --exclude-source "$PRIVATE_SOURCE_TO_OMIT" \
+  --seed 23 \
+  --private-dir private/current-partitions
+```
+
+`--exclude-source` is compared with `anonymous_source_group` and is never written
+to the output. Each eligible record requires a stable `_id` or
+`record_identity`. An explicit `duplicate_group` keeps exact duplicates together;
+no miniature-family field is read, required, or inferred. Membership depends on
+source stratum, stable record identity, duplicate evidence, and seed—not targets,
+geometry measurements, or input order.
+
+The command writes `train.jsonl`, `validation.jsonl`, `test.jsonl`, and
+`manifest.json`. Allocation targets 70%, 15%, and 15% of each source; indivisible
+duplicate components and very small sources can cause rounding differences. The
+manifest records row accounting, per-source allocation under private hashed
+aliases, canonical prediction-feature units, the input fingerprint, and SHA-256
+checksums for all three record artifacts. Its prediction-feature allowlist omits
+source groups, split metadata, targets, identities, duplicate evidence, and join
+keys.
+
+The output directory represents the one current artifact set. An intentional
+rerun stages a complete replacement beside it and installs the set only after all
+artifacts and the manifest have been written. Input or write failure leaves the
+previous complete set in place. The directory must be beneath `private/`; the
+command writes no record data or source identity to stdout.
+
 ## Run a private audit
 
 ```bash
