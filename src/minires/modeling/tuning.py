@@ -38,6 +38,7 @@ from ..evaluation.splits import ALLOCATION_VERSION, freeze_splits
 
 
 TUNING_VERSION = "minires-candidate-tuning-v5"
+EXPLICIT_DEVELOPMENT_EVIDENCE_VERSION = "source-grouped-validation-v1"
 DEVELOPMENT_ONLY_STAGES = (
     "fitting", "preprocessing", "early_stopping", "ensemble_selection",
     "threshold_selection", "candidate_locking",
@@ -1199,7 +1200,7 @@ def _evaluate_explicit_candidate(
                 ),
             }
         reports = _explicit_validation_source_reports(
-            training, validation, validation_y, predictions
+            len(training), validation, predictions
         )
         metrics = _candidate_metrics(reports)
         eligible = _tail_eligible(metrics)
@@ -1562,15 +1563,18 @@ def _fingerprintable_state(state: Mapping[str, Any]) -> dict[str, Any]:
 
 
 def _explicit_validation_source_reports(
-    training: Sequence[CanonicalRow], validation: Sequence[CanonicalRow],
-    actual: Sequence[float], predictions: Sequence[float],
+    training_count: int, validation: Sequence[CanonicalRow],
+    predictions: Sequence[float],
 ) -> tuple[dict[str, Any], ...]:
     grouped: dict[str, dict[str, Any]] = {}
-    for row, target, prediction in zip(validation, actual, predictions):
+    for row, prediction in zip(validation, predictions, strict=True):
+        target = row.sliced_resin_mass_g
+        if target is None:
+            raise ValueError("validation target required")
         source = str(row.metadata["anonymous_source_group"])
         report = grouped.setdefault(source, {
             "source": source,
-            "train_rows": list(range(len(training))),
+            "train_rows": list(range(training_count)),
             "validation_rows": [],
             "actual": [],
             "predictions": [],
@@ -1888,6 +1892,7 @@ def _refit_and_lock_explicit(
             "partition_identity_fingerprint": plan.source_allocation_fingerprint,
             "search_plan_fingerprint": fingerprint(plan.to_dict()),
             "test_input_attestation": "no_test_argument_or_path_available",
+            "validation_grouping_contract": EXPLICIT_DEVELOPMENT_EVIDENCE_VERSION,
         },
         "development_source_groups": sorted({
             str(row.metadata["anonymous_source_group"])
@@ -2131,6 +2136,8 @@ def _valid_locked_contract(contract: Mapping[str, Any]) -> bool:
                 "search_plan_fingerprint", "test_input_attestation",
             ))
             and evidence.get("test_input_attestation") == "no_test_argument_or_path_available"
+            and evidence.get("validation_grouping_contract")
+            == EXPLICIT_DEVELOPMENT_EVIDENCE_VERSION
             and isinstance(development_sources, list) and bool(development_sources)
             and development_sources == sorted(set(development_sources))
             and all(isinstance(source, str) and source for source in development_sources)

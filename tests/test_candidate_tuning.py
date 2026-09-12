@@ -31,6 +31,7 @@ from minires.modeling.tuning import (
     load_locked_candidate,
     main as tuning_main,
     tune_candidates,
+    verify_locked_candidate_files,
     _selected_epoch_count,
 )
 
@@ -665,10 +666,14 @@ class ExplicitPartitionDevelopmentTests(unittest.TestCase):
         )
         self.assertIn("training_input_fingerprint", contract["development_evidence"])
         self.assertIn("validation_input_fingerprint", contract["development_evidence"])
+        self.assertEqual(
+            contract["development_evidence"]["validation_grouping_contract"],
+            "source-grouped-validation-v1",
+        )
         self.assertEqual(len(contract["development_source_groups"]), 1)
         self.assertNotIn("private-source", json.dumps(first.to_dict()))
 
-    def test_unequal_validation_sources_remain_distinct_for_every_eligibility_gate(self):
+    def test_unequal_validation_source_groups_remain_distinct_for_every_gate(self):
         validation = []
         value = 1_000
         for source, count in (("validation-a", 200), ("validation-b", 600),
@@ -701,6 +706,32 @@ class ExplicitPartitionDevelopmentTests(unittest.TestCase):
             self.assertEqual(len(run.source_reports), 4)
         self.assertNotIn("source_reports", result.to_dict(public=True))
         self.assertNotIn("validation-a", json.dumps(result.to_dict()))
+
+    def test_pre_correction_explicit_lock_is_rejected_even_with_valid_checksums(self):
+        runtime = ValidationSensitiveRuntime()
+        result = develop_candidates(
+            self.training, self.validation, self.config, runtime=runtime,
+            output_root=self.root / "current-lock", limits=SearchLimits(seed=41),
+            clock=lambda: 0.0,
+        )
+        assert result.locked_candidate is not None
+        lock = result.locked_candidate.directory
+        contract_path = lock / "candidate-contract.json"
+        contract = json.loads(contract_path.read_text())
+        contract["development_evidence"].pop("validation_grouping_contract")
+        contract_path.write_text(json.dumps(contract, sort_keys=True))
+        manifest_path = lock / "lock-manifest.json"
+        manifest = json.loads(manifest_path.read_text())
+        manifest["files"]["candidate-contract.json"] = sha256(
+            contract_path.read_bytes()
+        ).hexdigest()
+        manifest_path.write_text(json.dumps(manifest, sort_keys=True))
+
+        blockers, _, _ = verify_locked_candidate_files(
+            lock, runtime.dependency_versions
+        )
+
+        self.assertIn("locked_candidate_contract_mismatch", blockers)
 
     def test_invalid_or_overlapping_partition_identities_block_before_fitting(self):
         invalid_cases = {

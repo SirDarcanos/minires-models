@@ -100,7 +100,7 @@ python3 -m minires.modeling.tuning \
 ```
 
 Fitting and learned preprocessing use training rows only. Validation is grouped
-by anonymous source for pooled, equal-source-weighted, and qualifying-source
+by anonymous source group for pooled, equal-source-weighted, and qualifying-source
 eligibility checks, then used for early stopping and candidate/ensemble selection.
 Source groups remain outside the prediction features and public output. See the
 candidate-tuning reference before separately assessing a lock against the test
