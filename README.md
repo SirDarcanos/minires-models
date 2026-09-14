@@ -16,7 +16,7 @@ MiniRes estimates sliced resin mass under validated slicing conditions. It does 
 
 ## Repository status
 
-The current code supports data preparation and governed model development. The latest large-batch extended candidate round improved aggregate validation accuracy but produced no eligible lock, so final assessment was not started and no replacement production model has been declared. A materially distinct, finite geometry-regime round is now predeclared under issue #50 without changing the fixed eligibility gates or held-out test boundary; it has not yet been executed.
+The current code supports data preparation and governed model development. The latest geometry-regime candidate round produced no eligible lock, so final assessment was not started and no replacement production model has been declared. Any subsequent issue #50 round requires another materially distinct, finite, predeclared hypothesis without changing the fixed eligibility gates or held-out test boundary.
 
 Start with:
 
