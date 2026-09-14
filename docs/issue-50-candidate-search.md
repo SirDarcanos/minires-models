@@ -294,3 +294,40 @@ The one permitted execution will use the next fresh create-only directory:
   --seed 41 \
   --plan-kind cross_fitted_geometry_gate
 ```
+
+## Aggregate result
+
+The one permitted execution completed all 15 initial candidates: six neural
+networks, six XGBoost models, and three cross-fitted geometry gates. No initial
+candidate satisfied every serious-error gate, so none advanced to second-seed
+repetition and the five reserved repetition slots remained unused.
+
+The best result was a cross-fitted geometry gate with these source-neutral
+validation metrics:
+
+| Metric | Result |
+| --- | ---: |
+| Pooled mean absolute error | 0.6891 g |
+| Source-balanced mean absolute error | 0.7467 g |
+| Pooled within-2-g fraction | 95.14% |
+| Source-balanced within-2-g fraction | 94.28% |
+| Pooled above-5-g fraction | 1.44% |
+| Source-balanced above-5-g fraction | 1.86% |
+| Maximum qualifying-source above-5-g fraction | 4.84% |
+
+The round used 238.41 seconds elapsed time, 561.80 process CPU seconds, and a
+process high-water resident-set measurement of 1,166,245,888 platform units. Its
+create-only manifest was checksum-verified after completion.
+
+## Decision
+
+The round ended as `completed_no_candidate` with `no_eligible_candidate`. The
+hypothesis was falsified for this plan: training-only cross-fitted,
+geometry-conditioned gating did not satisfy the fixed serious-error gates.
+
+No candidate was repeated or refitted, no checksum-verified lock was created, and
+the held-out assessment was not started. This round stops without automatic
+expansion. Issue #50 remains open for a future separately justified and
+predeclared hypothesis. Private row-level results, source reports, paths,
+fingerprints, mappings, candidate configurations, and model artifacts remain
+unpublished.
