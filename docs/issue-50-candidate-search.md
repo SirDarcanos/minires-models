@@ -63,7 +63,38 @@ Execution uses the next fresh create-only directory and preserves every outcome:
   --plan-kind large_batch_extended
 ```
 
-## Result
+## Aggregate result
 
-Not run. Record the aggregate source-neutral outcome here after the one permitted
-execution.
+The one permitted execution completed all 60 initial candidates: 24 neural
+networks, 24 XGBoost models, and 12 ensembles. No initial candidate satisfied
+every serious-error gate, so none advanced to second-seed repetition and the 20
+reserved repetition slots remained unused.
+
+The best result was an ensemble with these source-neutral validation metrics:
+
+| Metric | Result |
+| --- | ---: |
+| Pooled mean absolute error | 0.6021 g |
+| Source-balanced mean absolute error | 0.6592 g |
+| Pooled within-2-g fraction | 95.90% |
+| Source-balanced within-2-g fraction | 94.65% |
+| Pooled above-5-g fraction | 1.22% |
+| Source-balanced above-5-g fraction | 1.68% |
+| Maximum qualifying-source above-5-g fraction | 5.19% |
+
+The round used 338.10 seconds elapsed time, 1,169.91 process CPU seconds, and a
+process high-water resident-set measurement of 1,460,715,520 platform units. Its
+create-only manifest was checksum-verified after completion.
+
+## Decision
+
+The round ended as `completed_no_candidate` with `no_eligible_candidate`. The
+hypothesis was falsified for this plan: larger batches, longer training, higher
+tree ceilings, and denser deterministic coverage improved the aggregate ranking
+metrics but did not satisfy the fixed serious-error gates.
+
+No candidate was repeated or refitted, no checksum-verified lock was created, and
+the held-out assessment was not started. This round stops without automatic
+expansion. Issue #50 remains open for a future separately justified and
+predeclared hypothesis. Private row-level results, source reports, paths,
+fingerprints, mappings, and model artifacts remain unpublished.
