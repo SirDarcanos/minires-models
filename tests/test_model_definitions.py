@@ -95,15 +95,18 @@ class ModelSpecificationTests(unittest.TestCase):
                 "xgboost", {**XGBOOST_PARAMETERS, "n_jobs": -1}
             )
 
-    def test_target_weighting_is_part_of_the_candidate_training_contract(self):
+    def test_sliced_resin_mass_weighting_is_in_the_training_contract(self):
         weighted = candidate_model_specification(
             "xgboost",
-            {**XGBOOST_PARAMETERS, "target_weighting": "mass_band_1_2_3_4"},
+            {
+                **XGBOOST_PARAMETERS,
+                "target_weighting": "sliced_resin_mass_band_1_2_3_4",
+            },
         )
 
         self.assertEqual(
             weighted.training_parameters["target_weighting"],
-            "mass_band_1_2_3_4",
+            "sliced_resin_mass_band_1_2_3_4",
         )
         self.assertNotEqual(
             weighted.stable_identity,
@@ -149,10 +152,13 @@ class ModelRuntimeTests(unittest.TestCase):
         self.assertEqual(self.backend.fit_calls[0][1], self.training)
         self.assertEqual(self.backend.fit_calls[0][2], self.validation)
 
-    def test_target_mass_weighting_is_derived_only_from_training_targets(self):
+    def test_sliced_resin_mass_weighting_uses_only_training_labels(self):
         specification = candidate_model_specification(
             "xgboost",
-            {**XGBOOST_PARAMETERS, "target_weighting": "mass_band_1_2_3_4"},
+            {
+                **XGBOOST_PARAMETERS,
+                "target_weighting": "sliced_resin_mass_band_1_2_3_4",
+            },
         )
         training = TrainingData(
             tuple((float(index),) * 7 for index in range(4)),
@@ -164,7 +170,9 @@ class ModelRuntimeTests(unittest.TestCase):
         fitted_training = self.backend.fit_calls[0][1]
         self.assertEqual(fitted_training.targets, training.targets)
         self.assertEqual(fitted_training.sample_weights, (0.4, 0.8, 1.2, 1.6))
-        self.assertIsNone(self.backend.fit_calls[0][2].sample_weights)
+        self.assertEqual(self.backend.fit_calls[0][2], self.validation)
+        with self.assertRaises(TypeError):
+            TrainingData(training.features, training.targets, (1.0,) * 4)
 
     def test_ensemble_composition_derives_from_its_specification(self):
         neural = candidate_model_specification("neural_network", NEURAL_PARAMETERS)

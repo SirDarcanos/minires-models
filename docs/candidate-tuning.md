@@ -264,9 +264,9 @@ rules while broadening deterministic configuration coverage:
 
 ```bash
 .venv-candidates/bin/python -m minires.modeling.tuning \
-  --training-records data/train.jsonl \
-  --validation-records data/validation.jsonl \
-  --output-root private/candidate-tuning/run-004 \
+  --training-records <training-artifact> \
+  --validation-records <validation-artifact> \
+  --output-root <new-private-run-directory> \
   --volume-unit mm3 \
   --scope-confirmed \
   --seed 41 \
@@ -276,11 +276,14 @@ rules while broadening deterministic configuration coverage:
 The expanded plan contains 12 neural-network trials, 12 XGBoost trials, six
 validation-selected ensembles, and second-seed repetition of at most ten eligible
 initial candidates, with a hard maximum of 40 candidate runs and 7,200 seconds.
-Both component families sample either unweighted training or target-only mass-band
-weights of 1× below 10 g, 2× from 10–25 g, 3× from 25–50 g, and 4× at 50 g or
-above. Weights are normalized to mean one. They are derived solely from training
-targets; validation metrics and eligibility gates remain unweighted. The plan
-records its tail-error hypothesis and plan kind before fitting starts.
+Both component families sample either unweighted training or sliced-resin-mass-
+band weights of 1× below 10 g, 2× from 10–25 g, 3× from 25–50 g, and 4× at 50 g
+or above. Weights are normalized to mean one. They are derived solely from
+training sliced resin mass labels; validation metrics and eligibility gates remain
+unweighted. A seeded mixed-radix traversal guarantees that each component-family
+slot has a distinct complete
+configuration. The plan records its tail-error hypothesis and plan kind before
+fitting starts.
 Runtime failures, invalid plans, missing grouping evidence, deadline exhaustion,
 and the absence of eligible candidates remain bounded outcomes in
 `tuning-result.json`. The private `candidate_history` records the control, every

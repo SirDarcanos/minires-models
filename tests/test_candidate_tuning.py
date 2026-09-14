@@ -356,11 +356,7 @@ class CandidateSearchPlanTests(unittest.TestCase):
         self.assertEqual(reordered, baseline)
 
     def test_tail_aware_plan_expands_the_search_and_records_its_hypothesis(self):
-        limits = SearchLimits(
-            seed=41, plan_kind="tail_aware_expanded",
-            neural_network_trials=12, xgboost_trials=12, ensemble_trials=6,
-            second_seed_candidates=10, maximum_candidate_runs=40,
-        )
+        limits = SearchLimits.for_plan(41, "tail_aware_expanded")
 
         plan = generate_search_plan(
             limits, input_fingerprint="input", code_fingerprint="code",
@@ -372,16 +368,24 @@ class CandidateSearchPlanTests(unittest.TestCase):
         self.assertEqual(plan.second_seed_rule["candidate_count"], 10)
         self.assertEqual(plan.resource_limits["maximum_candidate_runs"], 40)
         self.assertEqual(plan.generator["plan_kind"], "tail_aware_expanded")
-        self.assertIn("target-mass weighting", plan.generator["hypothesis"])
+        self.assertIn("sliced resin mass weighting", plan.generator["hypothesis"])
         for family in ("neural_network", "xgboost"):
             self.assertEqual(
                 plan.parameter_domains[family]["target_weighting"],
-                ("none", "mass_band_1_2_3_4"),
+                ("none", "sliced_resin_mass_band_1_2_3_4"),
             )
         self.assertTrue(any(
-            candidate.parameters["target_weighting"] == "mass_band_1_2_3_4"
+            candidate.parameters["target_weighting"]
+            == "sliced_resin_mass_band_1_2_3_4"
             for candidate in plan.component_trials
         ))
+        for family in ("neural_network", "xgboost"):
+            configurations = [
+                json.dumps(candidate.parameters, sort_keys=True)
+                for candidate in plan.component_trials
+                if candidate.family == family
+            ]
+            self.assertEqual(len(configurations), len(set(configurations)))
 
     def test_invalid_domains_and_resources_fail_at_the_plan_generation_interface(self):
         invalid = {

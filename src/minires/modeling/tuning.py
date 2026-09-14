@@ -78,11 +78,11 @@ XGBOOST_DOMAIN: dict[str, tuple[Any, ...]] = {
 }
 TAIL_AWARE_NEURAL_NETWORK_DOMAIN = {
     **NEURAL_NETWORK_DOMAIN,
-    "target_weighting": ("none", "mass_band_1_2_3_4"),
+    "target_weighting": ("none", "sliced_resin_mass_band_1_2_3_4"),
 }
 TAIL_AWARE_XGBOOST_DOMAIN = {
     **XGBOOST_DOMAIN,
-    "target_weighting": ("none", "mass_band_1_2_3_4"),
+    "target_weighting": ("none", "sliced_resin_mass_band_1_2_3_4"),
 }
 
 CANDIDATE_RUNTIME_CONTRACT: dict[str, dict[str, Any]] = {
@@ -106,6 +106,19 @@ CANDIDATE_RUNTIME_CONTRACT: dict[str, dict[str, Any]] = {
 
 
 @dataclass(frozen=True)
+class SearchPlanPolicy:
+    plan_kind: str
+    neural_network_trials: int
+    xgboost_trials: int
+    ensemble_trials: int
+    second_seed_candidates: int
+    maximum_candidate_runs: int
+    neural_network_domain: Mapping[str, tuple[Any, ...]]
+    xgboost_domain: Mapping[str, tuple[Any, ...]]
+    hypothesis: str
+
+
+@dataclass(frozen=True)
 class SearchLimits:
     seed: int
     second_seed: int | None = None
@@ -123,6 +136,42 @@ class SearchLimits:
     @property
     def resolved_second_seed(self) -> int:
         return self.seed + 1 if self.second_seed is None else self.second_seed
+
+    @classmethod
+    def for_plan(
+        cls, seed: int, plan_kind: str = "baseline", second_seed: int | None = None,
+    ) -> "SearchLimits":
+        policy = _plan_policy(plan_kind)
+        return cls(
+            seed=seed, second_seed=second_seed, plan_kind=policy.plan_kind,
+            neural_network_trials=policy.neural_network_trials,
+            xgboost_trials=policy.xgboost_trials,
+            ensemble_trials=policy.ensemble_trials,
+            second_seed_candidates=policy.second_seed_candidates,
+            maximum_candidate_runs=policy.maximum_candidate_runs,
+        )
+
+
+SEARCH_PLAN_POLICIES = {
+    "baseline": SearchPlanPolicy(
+        "baseline", 6, 6, 3, 5, 20,
+        NEURAL_NETWORK_DOMAIN, XGBOOST_DOMAIN,
+        "baseline governed candidate search",
+    ),
+    "tail_aware_expanded": SearchPlanPolicy(
+        "tail_aware_expanded", 12, 12, 6, 10, 40,
+        TAIL_AWARE_NEURAL_NETWORK_DOMAIN, TAIL_AWARE_XGBOOST_DOMAIN,
+        "bounded sliced resin mass weighting and broader configuration coverage "
+        "reduce serious absolute errors",
+    ),
+}
+
+
+def _plan_policy(plan_kind: str) -> SearchPlanPolicy:
+    try:
+        return SEARCH_PLAN_POLICIES[plan_kind]
+    except (KeyError, TypeError):
+        raise ValueError("invalid_search_plan") from None
 
 
 @dataclass(frozen=True)
@@ -583,7 +632,8 @@ def generate_search_plan(
         )
     ):
         raise ValueError("invalid_search_plan")
-    domains = _validated_parameter_domains(parameter_domains, limits.plan_kind)
+    policy = _plan_policy(limits.plan_kind)
+    domains = _validated_parameter_domains(parameter_domains, policy)
     neural = _space_filling_candidates(
         "neural_network", domains["neural_network"], limits.neural_network_trials,
         limits.seed,
@@ -634,17 +684,12 @@ def generate_search_plan(
         },
         "parameter_domains": domains,
         "generator": {
-            "strategy": "seeded_cyclic_space_filling",
+            "strategy": "seeded_mixed_radix_space_filling",
             "ordered": True,
             "target_access": False,
             "prior_score_access": False,
-            "plan_kind": limits.plan_kind,
-            "hypothesis": (
-                "bounded target-mass weighting and broader configuration coverage "
-                "reduce serious absolute errors"
-                if limits.plan_kind == "tail_aware_expanded"
-                else "baseline governed candidate search"
-            ),
+            "plan_kind": policy.plan_kind,
+            "hypothesis": policy.hypothesis,
         },
         "component_trials": components,
         "ensemble_rules": ensemble_rules,
@@ -685,9 +730,9 @@ def generate_search_plan(
 
 def _validated_parameter_domains(
     supplied: Mapping[str, Mapping[str, Sequence[Any]]] | None,
-    plan_kind: str,
+    policy: SearchPlanPolicy,
 ) -> dict[str, dict[str, tuple[Any, ...]]]:
-    supported = _supported_domains(plan_kind)
+    supported = _supported_domains(policy)
     source = supported if supplied is None else supplied
     if set(source) != set(supported):
         raise ValueError("invalid_search_plan")
@@ -710,18 +755,13 @@ def _validated_parameter_domains(
     return domains
 
 
-def _supported_domains(plan_kind: str) -> dict[str, dict[str, tuple[Any, ...]]]:
-    if plan_kind == "baseline":
-        return {
-            "neural_network": NEURAL_NETWORK_DOMAIN,
-            "xgboost": XGBOOST_DOMAIN,
-        }
-    if plan_kind == "tail_aware_expanded":
-        return {
-            "neural_network": TAIL_AWARE_NEURAL_NETWORK_DOMAIN,
-            "xgboost": TAIL_AWARE_XGBOOST_DOMAIN,
-        }
-    raise ValueError("invalid_search_plan")
+def _supported_domains(
+    policy: SearchPlanPolicy,
+) -> dict[str, dict[str, tuple[Any, ...]]]:
+    return {
+        "neural_network": dict(policy.neural_network_domain),
+        "xgboost": dict(policy.xgboost_domain),
+    }
 
 
 def _jsonable(value: Any) -> Any:
@@ -774,15 +814,21 @@ def _space_filling_candidates(
 ) -> tuple[Candidate, ...]:
     rng = random.Random(seed)
     keys = tuple(sorted(domain))
-    offsets = {key: rng.randrange(len(domain[key])) for key in keys}
-    steps = {key: rng.choice([step for step in range(1, len(domain[key]) + 1)
-                             if math.gcd(step, len(domain[key])) == 1]) for key in keys}
+    combination_count = math.prod(len(domain[key]) for key in keys)
+    if count > combination_count:
+        raise ValueError("invalid_search_plan")
+    offset = rng.randrange(combination_count)
+    step = rng.randrange(1, combination_count + 1)
+    while math.gcd(step, combination_count) != 1:
+        step = 1 if step == combination_count else step + 1
     candidates = []
     for trial in range(count):
-        parameters = {
-            key: domain[key][(offsets[key] + trial * steps[key]) % len(domain[key])]
-            for key in keys
-        }
+        encoded = (offset + trial * step) % combination_count
+        parameters = {}
+        for key in keys:
+            choices = domain[key]
+            parameters[key] = choices[encoded % len(choices)]
+            encoded //= len(choices)
         identity = json.dumps([family, parameters], sort_keys=True, separators=(",", ":"))
         candidates.append(Candidate(
             candidate_id=f"{family[:3]}-{trial + 1:02d}-{sha256(identity.encode()).hexdigest()[:8]}",
@@ -2220,10 +2266,11 @@ def _validate_declared_candidate(candidate: Candidate) -> None:
     # The deep model-definition module owns structural and semantic validation;
     # this additional check limits governed search candidates to the declared domain.
     candidate_model_specification(candidate.family, candidate.parameters)
-    domains = _supported_domains(
+    policy = _plan_policy(
         "tail_aware_expanded"
         if "target_weighting" in candidate.parameters else "baseline"
     )
+    domains = _supported_domains(policy)
     domain = domains.get(candidate.family)
     if domain is None or set(candidate.parameters) != set(domain):
         raise ValueError("invalid_candidate_configuration")
@@ -2663,15 +2710,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             runtime = _BlockedCandidateRuntime("candidate_tuning_dependencies_required")
         except RuntimeError:
             runtime = _BlockedCandidateRuntime("candidate_tuning_runtime_unavailable")
-        limits = (
-            SearchLimits(
-                seed=args.seed, plan_kind="tail_aware_expanded",
-                neural_network_trials=12, xgboost_trials=12, ensemble_trials=6,
-                second_seed_candidates=10, maximum_candidate_runs=40,
-            )
-            if args.plan_kind == "tail_aware_expanded"
-            else SearchLimits(seed=args.seed)
-        )
+        limits = SearchLimits.for_plan(args.seed, args.plan_kind)
         result = develop_candidates(
             args.training_records, args.validation_records,
             EvaluationConfig(None, args.volume_unit,
@@ -2695,13 +2734,14 @@ def _validate_limits(limits: SearchLimits) -> None:
         or limits.second_seed == limits.seed
     ):
         raise ValueError("invalid_search_plan")
-    expected_by_kind = {
-        "baseline": (6, 6, 3, 5, 20),
-        "tail_aware_expanded": (12, 12, 6, 10, 40),
-    }
+    policy = _plan_policy(limits.plan_kind)
+    expected = (
+        policy.neural_network_trials, policy.xgboost_trials, policy.ensemble_trials,
+        policy.second_seed_candidates, policy.maximum_candidate_runs,
+    )
     actual = (limits.neural_network_trials, limits.xgboost_trials, limits.ensemble_trials,
               limits.second_seed_candidates, limits.maximum_candidate_runs)
-    if actual != expected_by_kind.get(limits.plan_kind):
+    if actual != expected:
         raise ValueError("invalid_search_plan")
     if not isinstance(limits.maximum_elapsed_seconds, (int, float)) or isinstance(
         limits.maximum_elapsed_seconds, bool

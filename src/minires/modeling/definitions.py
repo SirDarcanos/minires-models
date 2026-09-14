@@ -155,22 +155,31 @@ class ModelSpecification:
 class TrainingData:
     features: tuple[tuple[float, ...], ...]
     targets: tuple[float, ...]
-    sample_weights: tuple[float, ...] | None = None
 
     def __post_init__(self) -> None:
         _validate_data(self.features, self.targets)
-        _validate_sample_weights(self.sample_weights, len(self.targets))
+
+
+@dataclass(frozen=True)
+class _WeightedTrainingData(TrainingData):
+    sample_weights: tuple[float, ...]
+
+    def __post_init__(self) -> None:
+        super().__post_init__()
+        if (
+            len(self.sample_weights) != len(self.targets)
+            or any(not _positive_number(value) for value in self.sample_weights)
+        ):
+            raise ValueError("invalid_model_training_data")
 
 
 @dataclass(frozen=True)
 class ValidationData:
     features: tuple[tuple[float, ...], ...]
     targets: tuple[float, ...]
-    sample_weights: tuple[float, ...] | None = None
 
     def __post_init__(self) -> None:
         _validate_data(self.features, self.targets)
-        _validate_sample_weights(self.sample_weights, len(self.targets))
 
 
 @dataclass(frozen=True)
@@ -530,8 +539,9 @@ class TensorflowXGBoostBackend:
             "epochs": int(parameters["maximum_epochs"]),
             "batch_size": int(parameters["batch_size"]),
         }
-        if training.sample_weights is not None:
-            kwargs["sample_weight"] = np.asarray(training.sample_weights, dtype=np.float32)
+        sample_weights = getattr(training, "sample_weights", None)
+        if sample_weights is not None:
+            kwargs["sample_weight"] = np.asarray(sample_weights, dtype=np.float32)
         if validation is not None:
             validation_x = np.asarray(validation.features, dtype=np.float32)
             validation_y = np.asarray(validation.targets, dtype=np.float32)
@@ -598,7 +608,7 @@ class TensorflowXGBoostBackend:
             np.asarray(training.features, dtype=np.float32),
             np.asarray(training.targets, dtype=np.float32),
             **({"sample_weight": np.asarray(training.sample_weights, dtype=np.float32)}
-               if training.sample_weights is not None else {}),
+               if isinstance(training, _WeightedTrainingData) else {}),
             **fit_kwargs,
         )
         selected = (
@@ -691,7 +701,7 @@ def _validate_neural_parameters(parameters: Mapping[str, Any]) -> None:
         any(name in parameters and not check(parameters[name])
             for name, check in optional_numbers.items())
         or parameters.get("target_weighting", "none")
-        not in {"none", "mass_band_1_2_3_4"}
+        not in {"none", "sliced_resin_mass_band_1_2_3_4"}
     ):
         raise ValueError("invalid_model_specification")
 
@@ -717,7 +727,7 @@ def _validate_xgboost(parameters: Mapping[str, Any]) -> None:
         or parameters["n_jobs"] != 1
         or not _positive_int(parameters["early_stopping_rounds"])
         or parameters.get("target_weighting", "none")
-        not in {"none", "mass_band_1_2_3_4"}
+        not in {"none", "sliced_resin_mass_band_1_2_3_4"}
     ):
         raise ValueError("invalid_model_specification")
 
@@ -728,7 +738,7 @@ def _apply_target_weighting(
     strategy = specification.training_parameters.get("target_weighting", "none")
     if strategy == "none":
         return training
-    if strategy != "mass_band_1_2_3_4" or training.sample_weights is not None:
+    if strategy != "sliced_resin_mass_band_1_2_3_4":
         raise ValueError("invalid_model_training_data")
     raw = tuple(
         1.0 if target < 10.0 else 2.0 if target < 25.0
@@ -736,20 +746,10 @@ def _apply_target_weighting(
         for target in training.targets
     )
     mean = math.fsum(raw) / len(raw)
-    return TrainingData(
+    return _WeightedTrainingData(
         training.features, training.targets,
         tuple(weight / mean for weight in raw),
     )
-
-
-def _validate_sample_weights(
-    sample_weights: tuple[float, ...] | None, target_count: int,
-) -> None:
-    if sample_weights is not None and (
-        len(sample_weights) != target_count
-        or any(not _positive_number(value) for value in sample_weights)
-    ):
-        raise ValueError("invalid_model_training_data")
 
 
 def _ensemble_predictor(

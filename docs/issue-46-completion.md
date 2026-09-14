@@ -12,7 +12,7 @@ confirmation, slicing conditions, target aliases, required geometry, or feature
 units. Every prediction feature was finite, and none of the serious-error rows
 fell outside the corresponding training-feature range.
 
-Aggregate error increased materially with target mass:
+Aggregate error increased materially with sliced resin mass:
 
 | Sliced resin mass band | Rows | Above-5-g fraction | Mean absolute error | Mean signed error |
 | --- | ---: | ---: | ---: | ---: |
@@ -21,9 +21,9 @@ Aggregate error increased materially with target mass:
 | 25–50 g | 221 | 4.98% | 1.150 g | +0.151 g |
 | 50 g and above | 160 | 7.50% | 3.890 g | −1.876 g |
 
-This supported a bounded hypothesis: target-only mass-band weighting plus broader
-configuration coverage might reduce serious absolute errors, particularly for
-heavier miniatures. It did not support excluding rows, using anonymous source
+This supported a bounded hypothesis: sliced-resin-mass-band weighting plus broader
+configuration coverage might reduce serious absolute errors at larger sliced resin
+masses. It did not support excluding rows, using anonymous source
 metadata as a feature, or changing the fixed gates.
 
 ## Predeclared plan
@@ -38,37 +38,46 @@ second seed 42 with:
 - at most 40 candidate runs and 7,200 seconds; and
 - the pinned Python 3.13 candidate environment.
 
-Both component families sampled unweighted training and mean-normalized target
-weights of 1× below 10 g, 2× from 10–25 g, 3× from 25–50 g, and 4× at 50 g or
-above. Weights came only from training targets. Validation scoring and every
+Both component families sampled unweighted training and mean-normalized sliced
+resin mass weights of 1× below 10 g, 2× from 10–25 g, 3× from 25–50 g, and 4× at
+50 g or above. Weights came only from training sliced resin mass labels. Validation scoring and every
 eligibility gate remained unweighted.
 
 ## Aggregate result
 
-All 30 initial candidates completed. None passed every serious-error gate, so no
-candidate advanced to second-seed repetition or locking.
+The first execution of the expanded plan exposed a generator defect during
+independent review: its 12 XGBoost slots represented only four unique complete
+configurations. That completed failed run remains preserved and is not interpreted
+as the intended broader search. The generator was corrected to use a deterministic
+mixed-radix traversal, and the corrected plan was documented before a new
+create-only execution.
 
-The best expanded-round result was an ensemble:
+All 30 corrected initial candidates completed, including 12 distinct configurations
+from each component family. None passed every serious-error gate, so no candidate
+advanced to second-seed repetition or locking.
+
+The best corrected expanded-round result was an ensemble combining an unweighted
+neural network with a sliced-resin-mass-weighted XGBoost model:
 
 | Metric | Result |
 | --- | ---: |
-| Pooled mean absolute error | 0.6760 g |
-| Source-balanced mean absolute error | 0.7659 g |
-| Pooled within-2-g fraction | 94.24% |
-| Source-balanced within-2-g fraction | 92.82% |
-| Pooled above-5-g fraction | 1.49% |
-| Source-balanced above-5-g fraction | 2.11% |
-| Maximum qualifying-source above-5-g fraction | 6.23% |
+| Pooled mean absolute error | 0.6470 g |
+| Source-balanced mean absolute error | 0.7178 g |
+| Pooled within-2-g fraction | 94.96% |
+| Source-balanced within-2-g fraction | 93.89% |
+| Pooled above-5-g fraction | 1.53% |
+| Source-balanced above-5-g fraction | 2.13% |
+| Maximum qualifying-source above-5-g fraction | 5.19% |
 
 The fixed serious-error limits remain 1% pooled, 1% source-balanced, and 2% for
-each qualifying source. The result therefore remained ineligible. It also did not
-improve on the previous round's best source-neutral ranking metrics.
+each qualifying source. The result therefore remained ineligible. Its pooled mean
+absolute error improved slightly over the prior governed round, but its
+source-balanced mean absolute error and serious-error rates did not.
 
-Target weighting improved the best sampled neural-network tail result relative to
-the unweighted neural-network candidates in this round, but neither weighting nor
-the expanded configuration coverage produced an eligible candidate. The round
-used 158.89 seconds elapsed time, 349.07 process CPU seconds, and a process
-high-water resident-set measurement of 1,065,041,920 platform units.
+Neither sliced resin mass weighting nor the expanded distinct configuration
+coverage produced an eligible candidate. The corrected round used 191.17 seconds
+elapsed time, 367.22 process CPU seconds, and a process high-water resident-set
+measurement of 1,086,980,096 platform units.
 
 ## Decision
 
