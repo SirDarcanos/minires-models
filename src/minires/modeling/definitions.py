@@ -23,6 +23,7 @@ from .legacy import LEGACY_FEATURES
 
 
 BatchPredictor = Callable[[Sequence[tuple[float, ...]]], Sequence[float]]
+PredictionRanker = Callable[[Sequence[float]], tuple[Any, ...]]
 MODEL_DEFINITION_VERSION = "minires-model-definition-v1"
 
 
@@ -179,9 +180,14 @@ class _WeightedTrainingData(TrainingData):
 class ValidationData:
     features: tuple[tuple[float, ...], ...]
     targets: tuple[float, ...]
+    prediction_ranker: PredictionRanker | None = field(
+        default=None, repr=False, compare=False,
+    )
 
     def __post_init__(self) -> None:
         _validate_data(self.features, self.targets)
+        if self.prediction_ranker is not None and not callable(self.prediction_ranker):
+            raise ValueError("invalid_model_validation_data")
 
 
 @dataclass(frozen=True)
@@ -331,7 +337,9 @@ def candidate_model_specification(
         )
     if kind is ModelKind.XGBOOST:
         _validate_xgboost(copied)
-        training_keys = {"early_stopping_rounds", "target_weighting"}
+        training_keys = {
+            "early_stopping_rounds", "target_weighting", "validation_selection",
+        }
         return ModelSpecification(
             kind,
             PreprocessingContract("float32", "none"),
@@ -516,6 +524,7 @@ class TensorflowXGBoostBackend:
         np, tf = self.np, self.tf
         parameters = specification_parameters(specification)
         parameters.pop("target_weighting", None)
+        validation_selection = parameters.pop("validation_selection", "mae")
         random.seed(seed)
         np.random.seed(seed)
         tf.keras.utils.set_random_seed(seed)
@@ -555,27 +564,62 @@ class TensorflowXGBoostBackend:
         sample_weights = getattr(training, "sample_weights", None)
         if sample_weights is not None:
             kwargs["sample_weight"] = np.asarray(sample_weights, dtype=np.float32)
+        tail_callback = None
         if validation is not None:
             validation_x = np.asarray(validation.features, dtype=np.float32)
             validation_y = np.asarray(validation.targets, dtype=np.float32)
             kwargs["validation_data"] = (validation_x, validation_y)
-            callbacks = [tf.keras.callbacks.EarlyStopping(
-                monitor="val_mean_absolute_error", mode="min",
-                min_delta=float(parameters.get("early_stopping_min_delta", 0.0)),
-                patience=int(parameters["early_stopping_patience"]),
-                restore_best_weights=True, verbose=0,
-            )]
-            if "lr_reduction_factor" in parameters:
-                callbacks.append(tf.keras.callbacks.ReduceLROnPlateau(
+            if validation_selection == "serious_error_gates_then_ranking_v1":
+                if validation.prediction_ranker is None:
+                    raise ValueError("validation_prediction_ranker_required")
+                ranker = validation.prediction_ranker
+
+                class TailAlignedCheckpoint(tf.keras.callbacks.Callback):
+                    def __init__(self) -> None:
+                        super().__init__()
+                        self.best_key: tuple[Any, ...] | None = None
+                        self.best_weights: list[Any] | None = None
+                        self.selected_epochs = 0
+
+                    def on_epoch_end(self, epoch: int, logs: Any = None) -> None:
+                        del logs
+                        predictions = np.asarray(
+                            self.model(validation_x, training=False)
+                        ).reshape(-1).tolist()
+                        key = (*ranker(predictions), epoch + 1)
+                        if self.best_key is None or key < self.best_key:
+                            self.best_key = key
+                            self.best_weights = self.model.get_weights()
+                            self.selected_epochs = epoch + 1
+
+                    def on_train_end(self, logs: Any = None) -> None:
+                        del logs
+                        if self.best_weights is None:
+                            raise ValueError("validation_checkpoint_unavailable")
+                        self.model.set_weights(self.best_weights)
+
+                tail_callback = TailAlignedCheckpoint()
+                callbacks = [tail_callback]
+            else:
+                callbacks = [tf.keras.callbacks.EarlyStopping(
                     monitor="val_mean_absolute_error", mode="min",
-                    factor=float(parameters["lr_reduction_factor"]),
-                    patience=int(parameters["lr_reduction_patience"]),
-                    min_lr=float(parameters["minimum_learning_rate"]), verbose=0,
-                ))
+                    min_delta=float(parameters.get("early_stopping_min_delta", 0.0)),
+                    patience=int(parameters["early_stopping_patience"]),
+                    restore_best_weights=True, verbose=0,
+                )]
+                if "lr_reduction_factor" in parameters:
+                    callbacks.append(tf.keras.callbacks.ReduceLROnPlateau(
+                        monitor="val_mean_absolute_error", mode="min",
+                        factor=float(parameters["lr_reduction_factor"]),
+                        patience=int(parameters["lr_reduction_patience"]),
+                        min_lr=float(parameters["minimum_learning_rate"]), verbose=0,
+                    ))
             kwargs["callbacks"] = callbacks
         history = model.fit(train_x, train_y, **kwargs)
         selected_epochs = len(history.epoch)
-        if validation is not None:
+        if tail_callback is not None:
+            selected_epochs = tail_callback.selected_epochs
+        elif validation is not None:
             selected_epochs = _selected_epoch_count(
                 history.history.get("val_mean_absolute_error", ()),
                 float(parameters.get("early_stopping_min_delta", 0.0)),
@@ -606,9 +650,41 @@ class TensorflowXGBoostBackend:
         parameters = specification_parameters(specification)
         early_stopping = parameters.pop("early_stopping_rounds")
         parameters.pop("target_weighting", None)
+        validation_selection = parameters.pop("validation_selection", "mae")
+        tail_callback = None
+        model_kwargs: dict[str, Any] = {}
+        if validation is not None and validation_selection == "serious_error_gates_then_ranking_v1":
+            if validation.prediction_ranker is None:
+                raise ValueError("validation_prediction_ranker_required")
+            ranker = validation.prediction_ranker
+            validation_matrix = self.xgboost.DMatrix(
+                np.asarray(validation.features, dtype=np.float32)
+            )
+            xgboost = self.xgboost
+
+            class TailAlignedCheckpoint(xgboost.callback.TrainingCallback):
+                def __init__(self) -> None:
+                    self.best_key: tuple[Any, ...] | None = None
+                    self.selected_trees = 0
+
+                def after_iteration(self, booster: Any, epoch: int, evals_log: Any) -> bool:
+                    del evals_log
+                    predictions = booster.predict(
+                        validation_matrix, iteration_range=(0, epoch + 1)
+                    ).reshape(-1).tolist()
+                    key = (*ranker(predictions), epoch + 1)
+                    if self.best_key is None or key < self.best_key:
+                        self.best_key = key
+                        self.selected_trees = epoch + 1
+                    return False
+
+            tail_callback = TailAlignedCheckpoint()
+            model_kwargs["callbacks"] = [tail_callback]
+        elif validation is not None:
+            model_kwargs["early_stopping_rounds"] = early_stopping
         model = self.xgboost.XGBRegressor(
             **parameters, random_state=seed, tree_method="hist", eval_metric="mae",
-            **({"early_stopping_rounds": early_stopping} if validation is not None else {}),
+            **model_kwargs,
         )
         fit_kwargs = {}
         if validation is not None:
@@ -625,12 +701,17 @@ class TensorflowXGBoostBackend:
             **fit_kwargs,
         )
         selected = (
-            int(model.best_iteration) + 1 if validation is not None
+            tail_callback.selected_trees if tail_callback is not None
+            else int(model.best_iteration) + 1 if validation is not None
             else int(parameters["n_estimators"])
         )
+        if selected <= 0:
+            raise ValueError("validation_checkpoint_unavailable")
         return FittedModel(
             specification,
-            lambda rows: model.predict(np.asarray(rows, dtype=np.float32)).reshape(-1).tolist(),
+            lambda rows: model.predict(
+                np.asarray(rows, dtype=np.float32), iteration_range=(0, selected)
+            ).reshape(-1).tolist(),
             {"xgboost": "unnormalized_float32"},
             {"selected_trees": selected, "fitted_parameter_fingerprint": sha256(
                 bytes(model.get_booster().save_raw())
@@ -659,7 +740,8 @@ def _validate_neural_candidate(parameters: Mapping[str, Any]) -> None:
         "layers", "activation", "dropout", "optimizer", "loss", "learning_rate",
         "l2", "batch_size", "maximum_epochs", "early_stopping_patience",
     }
-    if set(parameters) not in (expected, expected | {"target_weighting"}):
+    optional = {"target_weighting", "validation_selection"}
+    if not expected.issubset(parameters) or not set(parameters).issubset(expected | optional):
         raise ValueError("invalid_model_specification")
     _validate_neural_parameters(parameters)
 
@@ -672,6 +754,7 @@ def _validate_neural_parameters(parameters: Mapping[str, Any]) -> None:
     optional = {
         "layer_specs", "early_stopping_min_delta", "lr_reduction_factor",
         "lr_reduction_patience", "minimum_learning_rate", "target_weighting",
+        "validation_selection",
     }
     if not required.issubset(parameters) or not set(parameters).issubset(required | optional):
         raise ValueError("invalid_model_specification")
@@ -715,6 +798,8 @@ def _validate_neural_parameters(parameters: Mapping[str, Any]) -> None:
             for name, check in optional_numbers.items())
         or parameters.get("target_weighting", "none")
         not in {"none", "sliced_resin_mass_band_1_2_3_4"}
+        or parameters.get("validation_selection", "mae")
+        not in {"mae", "serious_error_gates_then_ranking_v1"}
     ):
         raise ValueError("invalid_model_specification")
 
@@ -725,8 +810,10 @@ def _validate_xgboost(parameters: Mapping[str, Any]) -> None:
         "min_child_weight", "gamma", "reg_alpha", "reg_lambda", "objective", "n_jobs",
         "early_stopping_rounds",
     }
+    optional = {"target_weighting", "validation_selection"}
     if (
-        set(parameters) not in (expected, expected | {"target_weighting"})
+        not expected.issubset(parameters)
+        or not set(parameters).issubset(expected | optional)
         or not _positive_int(parameters["n_estimators"])
         or not _positive_int(parameters["max_depth"])
         or not _positive_number(parameters["learning_rate"])
@@ -741,6 +828,8 @@ def _validate_xgboost(parameters: Mapping[str, Any]) -> None:
         or not _positive_int(parameters["early_stopping_rounds"])
         or parameters.get("target_weighting", "none")
         not in {"none", "sliced_resin_mass_band_1_2_3_4"}
+        or parameters.get("validation_selection", "mae")
+        not in {"mae", "serious_error_gates_then_ranking_v1"}
     ):
         raise ValueError("invalid_model_specification")
 

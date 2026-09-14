@@ -440,6 +440,45 @@ the pinned Python 3.13 environment with NumPy 2.2.6, Keras 3.15.0, TensorFlow
 fingerprinted. See [the issue #50 round ledger](issue-50-candidate-search.md) for
 the complete falsifiable hypothesis and stop rule.
 
+### Run the predeclared tail-aligned selection plan
+
+Use this plan only for the issue #50 round predeclared after geometry augmentation
+failed the fixed eligibility gates:
+
+```bash
+.venv-candidates/bin/python -m minires.modeling.tuning \
+  --training-records data/train.jsonl \
+  --validation-records data/validation.jsonl \
+  --output-root private/candidate-tuning/run-010 \
+  --volume-unit mm3 \
+  --scope-confirmed \
+  --seed 41 \
+  --plan-kind tail_aligned_selection
+```
+
+The plan retains the seven legacy candidate inputs and adds no prediction feature,
+source metadata, or resliced evidence. It contains six Huber neural-network
+candidates, six XGBoost candidates, three equal-rank convex ensembles, and at most
+five eligible second-seed repetitions, with seeds 41/42, at most 20 runs, and
+7,200 seconds.
+
+For each component, every bounded validation checkpoint is scored by the versioned
+`serious_error_gates_then_ranking_v1` rule. It prefers eligible checkpoints, then
+minimizes the maximum and sum of normalized excess above the unchanged pooled,
+source-balanced, and qualifying-source serious-error limits. Existing ranking
+metrics and the checkpoint number break ties. Anonymous source groups are held
+inside an opaque validation prediction scorer and never enter TensorFlow or
+XGBoost prediction matrices, training weights, or model construction. The selected
+epoch/tree count is retained for training-only refit.
+
+Component pairing and each predeclared ensemble-weight grid use the same gate-first
+selection rule. Final eligibility and ranking remain unchanged. The command verifies
+the committed development checksums and pinned environment before fitting, receives
+no test argument, writes once to the next create-only directory, and stops without
+expansion if no candidate qualifies. See
+[the issue #50 round ledger](issue-50-candidate-search.md) for the complete
+hypothesis and decision record.
+
 Runtime failures, invalid plans, missing grouping evidence, deadline exhaustion,
 and the absence of eligible candidates remain bounded outcomes in
 `tuning-result.json`. The private `candidate_history` records the control, every

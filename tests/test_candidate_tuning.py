@@ -32,7 +32,9 @@ from minires.modeling.tuning import (
     main as tuning_main,
     tune_candidates,
     verify_locked_candidate_files,
+    _select_ensemble_weight,
     _selected_epoch_count,
+    _tail_selection_key,
 )
 
 
@@ -429,6 +431,79 @@ class CandidateSearchPlanTests(unittest.TestCase):
                 for candidate in family_candidates
             ]
             self.assertEqual(len(configurations), len(set(configurations)))
+
+    def test_tail_aligned_selection_plan_is_finite_and_changes_only_selection(self):
+        limits = SearchLimits.for_plan(41, "tail_aligned_selection")
+
+        first = generate_search_plan(
+            limits, input_fingerprint="input", code_fingerprint="code",
+            dependency_versions={"runtime": "synthetic-1"},
+        )
+        second = generate_search_plan(
+            limits, input_fingerprint="input", code_fingerprint="code",
+            dependency_versions={"runtime": "synthetic-1"},
+        )
+
+        self.assertEqual(first, second)
+        self.assertEqual((first.seed, first.second_seed), (41, 42))
+        self.assertEqual(first.generator["plan_kind"], "tail_aligned_selection")
+        self.assertEqual(
+            first.generator["validation_selection"],
+            "serious_error_gates_then_ranking_v1",
+        )
+        self.assertEqual(len(first.component_trials), 12)
+        self.assertEqual(len(first.ensemble_rules), 3)
+        self.assertEqual(first.second_seed_rule["candidate_count"], 5)
+        self.assertEqual(first.resource_limits["maximum_candidate_runs"], 20)
+        self.assertEqual(first.resource_limits["maximum_elapsed_seconds"], 7200.0)
+        self.assertTrue(all(
+            candidate.ordered_prediction_features
+            == ("kb", "volume", "surface_area", "bbox_area", "euler_number",
+                "scale", "surface_volume_ratio")
+            and candidate.parameters["validation_selection"]
+            == "serious_error_gates_then_ranking_v1"
+            for candidate in first.component_trials
+        ))
+        self.assertEqual(
+            first.parameter_domains["neural_network"]["loss"], ("huber",),
+        )
+        self.assertTrue(all(
+            rule["selection_rule"] == "serious_error_gates_then_ranking_v1"
+            for rule in first.ensemble_rules
+        ))
+        serialized = json.dumps(first.to_dict(), sort_keys=True)
+        self.assertNotIn("anonymous_source_group", serialized)
+        self.assertNotIn("miniature_family", serialized)
+
+    def test_tail_selection_prioritizes_gate_violation_before_mae(self):
+        worse_gate = {
+            "pooled_above_5g_fraction": 0.012,
+            "source_balanced_above_5g_fraction": 0.016,
+            "maximum_qualifying_source_above_5g_fraction": 0.05,
+            "source_balanced_mae_g": 0.5,
+            "pooled_mae_g": 0.5,
+            "pooled_within_2g_fraction": 0.97,
+        }
+        better_gate = {
+            **worse_gate,
+            "pooled_above_5g_fraction": 0.011,
+            "source_balanced_above_5g_fraction": 0.014,
+            "maximum_qualifying_source_above_5g_fraction": 0.03,
+            "source_balanced_mae_g": 0.8,
+            "pooled_mae_g": 0.8,
+        }
+        self.assertLess(
+            _tail_selection_key(better_gate), _tail_selection_key(worse_gate)
+        )
+
+        selected = _select_ensemble_weight(
+            (0.0, 10.0), (0.0, 10.0), (6.0, 16.0), (0.0, 1.0),
+            prediction_ranker=lambda predictions: (
+                sum(abs(value - target) > 5.0
+                    for value, target in zip(predictions, (0.0, 10.0))),
+            ),
+        )
+        self.assertEqual(selected, 1.0)
 
     def test_geometry_regime_plan_predeclares_one_richer_source_neutral_representation(self):
         limits = SearchLimits.for_plan(41, "geometry_regime")

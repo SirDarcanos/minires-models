@@ -453,3 +453,84 @@ expansion. Issue #50 remains open for a future separately justified and
 predeclared hypothesis. Private row-level results, source reports, paths,
 fingerprints, mappings, candidate configurations, and model artifacts remain
 unpublished.
+
+# Tail-aligned selection search (predeclared)
+
+## Falsifiable hypothesis
+
+The completed searches select neural-network epochs, XGBoost tree counts, component
+pairs, and convex ensemble weights primarily by validation mean absolute error,
+although eligibility is determined by three serious-error gates. Preserved
+source-neutral diagnostics also show substantial component diversity on the serious
+misses. This round tests one isolated intervention: aligning every validation-based
+selection decision with the fixed serious-error gates before applying the unchanged
+ranking metrics can reduce serious errors enough for at least one candidate to
+satisfy every gate.
+
+The hypothesis is falsified if no candidate satisfies every gate. The round then
+stops without new losses, features, model families, seeds, gates, omitted rows,
+reslicing, or expanded compute.
+
+## Selection contract
+
+The versioned `serious_error_gates_then_ranking_v1` rule scores predictions in this
+order:
+
+1. eligible checkpoints before ineligible checkpoints;
+2. smallest maximum normalized excess over the pooled, source-balanced, and
+   qualifying-source serious-error limits;
+3. smallest sum of those normalized excesses;
+4. source-balanced mean absolute error;
+5. pooled mean absolute error;
+6. pooled within-2-g fraction; and
+7. stable checkpoint, weight, or candidate identity.
+
+Normalized excess is zero at or below a fixed limit and otherwise the observed rate
+divided by its limit, minus one. Every bounded epoch and tree checkpoint is scored;
+there is no patience-based tail stopping. The selected count is fixed for any
+training-only refit. Equal-rank component pairing and every predeclared convex-weight
+grid use the same selection contract. Final candidate eligibility and ranking are
+unchanged.
+
+Anonymous source groups remain evaluation metadata. A validation scorer may group
+completed prediction vectors to calculate the fixed gates, but source metadata is
+not passed in prediction matrices, model inputs, training weights, preprocessing, or
+model construction.
+
+## Fixed plan and budget
+
+The `tail_aligned_selection` plan is fixed before fitting:
+
+- the unchanged seven legacy candidate inputs and transformation contract;
+- primary seed 41 and second seed 42;
+- six Huber neural-network candidates and six XGBoost candidates from the existing
+  bounded baseline domains;
+- three deterministic equal-rank convex ensembles;
+- at most five eligible second-seed repetitions;
+- at most 20 candidate runs and 7,200 elapsed seconds; and
+- the pinned Python 3.13 environment with NumPy 2.2.6, Keras 3.15.0,
+  TensorFlow 2.20.0, scikit-learn 1.7.2, and XGBoost 3.1.2.
+
+The explicit validation-selection parameter makes every component contract distinct
+from completed configurations. Huber is fixed because it produced the strongest
+neural tail result in the preserved large-batch evidence; this is not another broad
+hyperparameter sweep.
+
+Immediately before execution, only `data/train.jsonl` and `data/validation.jsonl`
+will be checksum-verified against `data/manifest.json`. Fitting and preprocessing
+use training rows only. Validation is limited to checkpoint selection, component and
+ensemble decisions, unweighted scoring, eligibility, ranking, and locking. The
+held-out test artifact is not an argument and will not be read or fingerprinted.
+
+The one permitted execution will use the next fresh create-only directory:
+
+```bash
+.venv-candidates/bin/python -m minires.modeling.tuning \
+  --training-records data/train.jsonl \
+  --validation-records data/validation.jsonl \
+  --output-root private/candidate-tuning/run-010 \
+  --volume-unit mm3 \
+  --scope-confirmed \
+  --seed 41 \
+  --plan-kind tail_aligned_selection
+```

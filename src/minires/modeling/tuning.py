@@ -48,6 +48,7 @@ POOLED_ABOVE_5G_FRACTION_MAXIMUM = 0.01
 SOURCE_BALANCED_ABOVE_5G_FRACTION_MAXIMUM = 0.01
 PER_SOURCE_ABOVE_5G_FRACTION_MAXIMUM = 0.02
 PER_SOURCE_MINIMUM_ACCEPTED_RECORDS = 200
+TAIL_ALIGNED_VALIDATION_SELECTION = "serious_error_gates_then_ranking_v1"
 
 # This representation is deliberately source-neutral. Every value is derived from
 # canonical geometry; source, identity, family, linkage, and legacy proxy metadata
@@ -136,6 +137,15 @@ LARGE_BATCH_NEURAL_NETWORK_DOMAIN = {
 LARGE_BATCH_XGBOOST_DOMAIN = {
     **TAIL_AWARE_XGBOOST_DOMAIN,
     "n_estimators": (1500, 1800, 2400),
+}
+TAIL_ALIGNED_NEURAL_NETWORK_DOMAIN = {
+    **NEURAL_NETWORK_DOMAIN,
+    "loss": ("huber",),
+    "validation_selection": (TAIL_ALIGNED_VALIDATION_SELECTION,),
+}
+TAIL_ALIGNED_XGBOOST_DOMAIN = {
+    **XGBOOST_DOMAIN,
+    "validation_selection": (TAIL_ALIGNED_VALIDATION_SELECTION,),
 }
 
 CANDIDATE_RUNTIME_CONTRACT: dict[str, dict[str, Any]] = {
@@ -257,6 +267,14 @@ SEARCH_PLAN_POLICIES = {
         "a constrained geometry-conditioned gate fitted from training-only "
         "out-of-fold base-model predictions exploits complementary errors enough "
         "to satisfy the unchanged serious-error gates",
+    ),
+    "tail_aligned_selection": SearchPlanPolicy(
+        "tail_aligned_selection", LEGACY_FEATURES, TRANSFORMATION_VERSION,
+        (41, 42), 6, 6, 3, 5, 20, 7200.0,
+        TAIL_ALIGNED_NEURAL_NETWORK_DOMAIN, TAIL_ALIGNED_XGBOOST_DOMAIN,
+        "selecting bounded model checkpoints, component pairs, and ensemble "
+        "weights by fixed serious-error gate violation before the unchanged "
+        "ranking metrics reduces serious absolute errors",
     ),
 }
 
@@ -429,6 +447,7 @@ class CandidateRuntime(Protocol):
         self, candidate: Candidate, seed: int,
         train_features: Sequence[tuple[float, ...]], train_targets: Sequence[float],
         validation_features: Sequence[tuple[float, ...]], validation_targets: Sequence[float],
+        *, prediction_ranker: Callable[[Sequence[float]], tuple[Any, ...]] | None = None,
     ) -> CandidateFoldFit: ...
 
     def refit(
@@ -847,6 +866,10 @@ def generate_search_plan(
             "component_ranking_partition": "development_validation_only",
             "weight_selection_partition": "development_validation_only",
             "neural_network_weight_grid": limits.ensemble_neural_network_weights,
+            "selection_rule": (
+                TAIL_ALIGNED_VALIDATION_SELECTION
+                if policy.plan_kind == "tail_aligned_selection" else "pooled_mae"
+            ),
             "stable_tie_breaker": "candidate_id_ascending",
         } for rank in range(1, limits.ensemble_trials + 1))
     plan_payload: dict[str, Any] = {
@@ -876,6 +899,10 @@ def generate_search_plan(
             "prior_score_access": False,
             "plan_kind": policy.plan_kind,
             "hypothesis": policy.hypothesis,
+            "validation_selection": (
+                TAIL_ALIGNED_VALIDATION_SELECTION
+                if policy.plan_kind == "tail_aligned_selection" else "pooled_mae"
+            ),
         },
         "component_trials": components,
         "ensemble_rules": ensemble_rules,
@@ -1294,13 +1321,17 @@ def develop_candidates(
             break
 
     if len(initial) == len(plan.component_trials) and not blockers:
+        component_rank_key = (
+            _tail_component_rank_key
+            if limits.plan_kind == "tail_aligned_selection" else _rank_key
+        )
         neural = sorted(
             (run for run in initial if run.candidate.family == "neural_network"),
-            key=_rank_key,
+            key=component_rank_key,
         )
         xgboost = sorted(
             (run for run in initial if run.candidate.family == "xgboost"),
-            key=_rank_key,
+            key=component_rank_key,
         )
         for index in range(limits.ensemble_trials):
             now = clock()
@@ -1624,6 +1655,46 @@ def _valid_candidate_feature_data(
         return False
 
 
+def _uses_tail_aligned_selection(candidate: Candidate) -> bool:
+    if candidate.family in {"neural_network", "xgboost"}:
+        return candidate.parameters.get("validation_selection") == (
+            TAIL_ALIGNED_VALIDATION_SELECTION
+        )
+    if candidate.family == "ensemble":
+        return all(
+            _uses_tail_aligned_selection(_candidate_from_dict(candidate.parameters[name]))
+            for name in ("neural_network", "xgboost")
+        )
+    return False
+
+
+def _tail_prediction_ranker(
+    training_count: int, validation: Sequence[CanonicalRow],
+) -> Callable[[Sequence[float]], tuple[Any, ...]]:
+    def rank(predictions: Sequence[float]) -> tuple[Any, ...]:
+        reports = _explicit_validation_source_reports(
+            training_count, validation, predictions
+        )
+        return _tail_selection_key(_candidate_metrics(reports))
+    return rank
+
+
+def _fit_explicit_component(
+    runtime: CandidateRuntime, candidate: Candidate, seed: int,
+    train_x: Sequence[tuple[float, ...]], train_y: Sequence[float],
+    validation_x: Sequence[tuple[float, ...]], validation_y: Sequence[float],
+    prediction_ranker: Callable[[Sequence[float]], tuple[Any, ...]] | None,
+) -> CandidateFoldFit:
+    if prediction_ranker is None:
+        return runtime.fit_fold(
+            candidate, seed, train_x, train_y, validation_x, validation_y
+        )
+    return runtime.fit_fold(
+        candidate, seed, train_x, train_y, validation_x, validation_y,
+        prediction_ranker=prediction_ranker,
+    )
+
+
 def _evaluate_explicit_candidate(
     candidate: Candidate, seed: int, runtime: CandidateRuntime,
     training: Sequence[CanonicalRow], validation: Sequence[CanonicalRow],
@@ -1638,19 +1709,26 @@ def _evaluate_explicit_candidate(
             )
         train_x, train_y = candidate_prediction_matrix(training, candidate)
         validation_x, validation_y = candidate_prediction_matrix(validation, candidate)
+        prediction_ranker = (
+            _tail_prediction_ranker(len(training), validation)
+            if _uses_tail_aligned_selection(candidate) else None
+        )
         if candidate.family == "ensemble":
             neural = _candidate_from_dict(candidate.parameters["neural_network"])
             xgboost = _candidate_from_dict(candidate.parameters["xgboost"])
-            neural_fit = runtime.fit_fold(
-                neural, seed, train_x, train_y, validation_x, validation_y
+            neural_fit = _fit_explicit_component(
+                runtime, neural, seed, train_x, train_y, validation_x, validation_y,
+                prediction_ranker,
             )
-            xgboost_fit = runtime.fit_fold(
-                xgboost, seed, train_x, train_y, validation_x, validation_y
+            xgboost_fit = _fit_explicit_component(
+                runtime, xgboost, seed, train_x, train_y, validation_x, validation_y,
+                prediction_ranker,
             )
             neural_predictions = _predict(neural_fit.predictor, validation_x)
             xgboost_predictions = _predict(xgboost_fit.predictor, validation_x)
             weight = _select_ensemble_weight(
-                validation_y, neural_predictions, xgboost_predictions, weight_grid
+                validation_y, neural_predictions, xgboost_predictions, weight_grid,
+                prediction_ranker=prediction_ranker,
             )
             specification = ensemble_model_specification(
                 neural.specification, xgboost.specification, weight
@@ -1669,8 +1747,9 @@ def _evaluate_explicit_candidate(
                 }),
             }
         else:
-            fitted = runtime.fit_fold(
-                candidate, seed, train_x, train_y, validation_x, validation_y
+            fitted = _fit_explicit_component(
+                runtime, candidate, seed, train_x, train_y,
+                validation_x, validation_y, prediction_ranker,
             )
             predictions = _predict(fitted.predictor, validation_x)
             metadata = {
@@ -2426,6 +2505,34 @@ def _tail_eligible(metrics: Mapping[str, Any]) -> bool:
     )
 
 
+def _tail_selection_key(metrics: Mapping[str, Any]) -> tuple[Any, ...]:
+    pooled = metrics.get("pooled_above_5g_fraction")
+    balanced = metrics.get("source_balanced_above_5g_fraction")
+    maximum = metrics.get("maximum_qualifying_source_above_5g_fraction")
+    if pooled is None or balanced is None:
+        return (1, math.inf, math.inf, math.inf, math.inf, 0.0)
+    ratios = (
+        float(pooled) / POOLED_ABOVE_5G_FRACTION_MAXIMUM,
+        float(balanced) / SOURCE_BALANCED_ABOVE_5G_FRACTION_MAXIMUM,
+        0.0 if maximum is None else (
+            float(maximum) / PER_SOURCE_ABOVE_5G_FRACTION_MAXIMUM
+        ),
+    )
+    excesses = tuple(max(0.0, ratio - 1.0) for ratio in ratios)
+    return (
+        0 if _tail_eligible(metrics) else 1,
+        max(excesses),
+        math.fsum(excesses),
+        metrics.get("source_balanced_mae_g", math.inf),
+        metrics.get("pooled_mae_g", math.inf),
+        -(metrics.get("pooled_within_2g_fraction") or 0.0),
+    )
+
+
+def _tail_component_rank_key(run: CandidateRun) -> tuple[Any, ...]:
+    return (*_tail_selection_key(run.metrics), run.candidate.candidate_id)
+
+
 def _rank_key(run: CandidateRun) -> tuple[Any, ...]:
     metrics = run.metrics
     return (
@@ -2527,13 +2634,24 @@ def _freeze_json_lists(value: Any) -> Any:
     return value
 
 
-def _select_ensemble_weight(actual: Sequence[float], neural: Sequence[float],
-                            xgboost: Sequence[float], weights: Sequence[float]) -> float:
-    return min(weights, key=lambda weight: (
-        math.fsum(abs(weight * left + (1 - weight) * right - target)
-                  for left, right, target in zip(neural, xgboost, actual)) / len(actual),
-        weight,
-    ))
+def _select_ensemble_weight(
+    actual: Sequence[float], neural: Sequence[float], xgboost: Sequence[float],
+    weights: Sequence[float], *,
+    prediction_ranker: Callable[[Sequence[float]], tuple[Any, ...]] | None = None,
+) -> float:
+    def key(weight: float) -> tuple[Any, ...]:
+        predictions = tuple(
+            weight * left + (1 - weight) * right
+            for left, right in zip(neural, xgboost)
+        )
+        if prediction_ranker is not None:
+            return (*prediction_ranker(predictions), weight)
+        return (
+            math.fsum(abs(prediction - target)
+                      for prediction, target in zip(predictions, actual)) / len(actual),
+            weight,
+        )
+    return min(weights, key=key)
 
 
 def _combine_seed_results(initial: Sequence[CandidateRun], second: Sequence[CandidateRun]
@@ -3475,9 +3593,11 @@ class TensorflowXGBoostCandidateRuntime:
         self.dependency_versions = self.models.dependency_versions
 
     def fit_fold(self, candidate, seed, train_features, train_targets,
-                 validation_features, validation_targets):
+                 validation_features, validation_targets, *, prediction_ranker=None):
         training = TrainingData(tuple(train_features), tuple(train_targets))
-        validation = ValidationData(tuple(validation_features), tuple(validation_targets))
+        validation = ValidationData(
+            tuple(validation_features), tuple(validation_targets), prediction_ranker,
+        )
         if candidate.family == "control":
             fitted = self.models.fit(
                 fixed_model_specification(), training, validation, seed=seed
@@ -3691,10 +3811,11 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv: Sequence[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     try:
-        governed_geometry_plans = {
+        governed_predeclared_plans = {
             "cross_fitted_geometry_gate", "legacy_geometry_augmentation",
+            "tail_aligned_selection",
         }
-        if args.plan_kind in governed_geometry_plans:
+        if args.plan_kind in governed_predeclared_plans:
             _verify_development_artifact_manifest(
                 args.training_records, args.validation_records
             )
@@ -3704,7 +3825,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             runtime = _BlockedCandidateRuntime("candidate_tuning_dependencies_required")
         except RuntimeError:
             runtime = _BlockedCandidateRuntime("candidate_tuning_runtime_unavailable")
-        if args.plan_kind in governed_geometry_plans:
+        if args.plan_kind in governed_predeclared_plans:
             _verify_predeclared_environment(runtime.dependency_versions)
         limits = SearchLimits.for_plan(args.seed, args.plan_kind)
         result = develop_candidates(
