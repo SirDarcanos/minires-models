@@ -387,6 +387,42 @@ class CandidateSearchPlanTests(unittest.TestCase):
             ]
             self.assertEqual(len(configurations), len(set(configurations)))
 
+    def test_large_batch_extended_plan_adds_distinct_capacity_and_records_its_hypothesis(self):
+        limits = SearchLimits.for_plan(41, "large_batch_extended")
+
+        plan = generate_search_plan(
+            limits, input_fingerprint="input", code_fingerprint="code",
+            dependency_versions={"runtime": "synthetic-1"},
+        )
+
+        self.assertEqual(len(plan.component_trials), 48)
+        self.assertEqual(len(plan.ensemble_rules), 12)
+        self.assertEqual(plan.second_seed_rule["candidate_count"], 20)
+        self.assertEqual(plan.resource_limits["maximum_candidate_runs"], 80)
+        self.assertEqual(plan.resource_limits["maximum_elapsed_seconds"], 14_400.0)
+        self.assertEqual(plan.generator["plan_kind"], "large_batch_extended")
+        self.assertIn("larger neural-network batches", plan.generator["hypothesis"])
+        neural = [
+            candidate for candidate in plan.component_trials
+            if candidate.family == "neural_network"
+        ]
+        trees = [
+            candidate for candidate in plan.component_trials
+            if candidate.family == "xgboost"
+        ]
+        self.assertEqual(plan.parameter_domains["neural_network"]["batch_size"], (512, 1024))
+        self.assertEqual(
+            plan.parameter_domains["xgboost"]["n_estimators"],
+            (1500, 1800, 2400),
+        )
+        self.assertTrue(all(candidate.parameters["batch_size"] >= 512 for candidate in neural))
+        self.assertTrue(all(candidate.parameters["n_estimators"] >= 1500 for candidate in trees))
+        for family in (neural, trees):
+            configurations = [
+                json.dumps(candidate.parameters, sort_keys=True) for candidate in family
+            ]
+            self.assertEqual(len(configurations), len(set(configurations)))
+
     def test_invalid_domains_and_resources_fail_at_the_plan_generation_interface(self):
         invalid = {
             "neural_network": {
@@ -1179,6 +1215,37 @@ class CandidateTuningTests(unittest.TestCase):
         self.assertEqual(status["run_count"], 40)
         self.assertEqual(plan["generator"]["plan_kind"], "tail_aware_expanded")
         self.assertEqual(plan["resource_limits"]["maximum_candidate_runs"], 40)
+
+    def test_cli_runs_the_predeclared_large_batch_extended_plan(self):
+        training = Path(self.temp.name) / "training-large-batch.json"
+        validation = Path(self.temp.name) / "validation-large-batch.json"
+        training.write_text(json.dumps([
+            dict(row, _id=f"training-{index}") for index, row in enumerate(self.records[:4])
+        ]))
+        validation.write_text(json.dumps([
+            dict(row, _id=f"validation-{index}") for index, row in enumerate(self.records[4:])
+        ]))
+        output_root = self.root.parent / "large-batch"
+        output = io.StringIO()
+
+        with patch(
+            "minires.modeling.tuning.TensorflowXGBoostCandidateRuntime",
+            return_value=RecordingTuningRuntime(),
+        ), contextlib.redirect_stdout(output):
+            code = tuning_main([
+                "--training-records", str(training),
+                "--validation-records", str(validation),
+                "--output-root", str(output_root),
+                "--volume-unit", "mm3", "--scope-confirmed", "--seed", "41",
+                "--plan-kind", "large_batch_extended",
+            ])
+
+        status = json.loads(output.getvalue())
+        plan = json.loads((output_root / "search-plan.json").read_text())
+        self.assertEqual(code, 0)
+        self.assertEqual(status["run_count"], 80)
+        self.assertEqual(plan["generator"]["plan_kind"], "large_batch_extended")
+        self.assertEqual(plan["resource_limits"]["maximum_candidate_runs"], 80)
 
     def test_invalid_unbounded_worker_plan_is_rejected_before_runtime_fitting(self):
         runtime = RecordingTuningRuntime()

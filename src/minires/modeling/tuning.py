@@ -84,6 +84,16 @@ TAIL_AWARE_XGBOOST_DOMAIN = {
     **XGBOOST_DOMAIN,
     "target_weighting": ("none", "sliced_resin_mass_band_1_2_3_4"),
 }
+LARGE_BATCH_NEURAL_NETWORK_DOMAIN = {
+    **TAIL_AWARE_NEURAL_NETWORK_DOMAIN,
+    "batch_size": (512, 1024),
+    "maximum_epochs": (150, 200),
+    "early_stopping_patience": (12, 16),
+}
+LARGE_BATCH_XGBOOST_DOMAIN = {
+    **TAIL_AWARE_XGBOOST_DOMAIN,
+    "n_estimators": (1500, 1800, 2400),
+}
 
 CANDIDATE_RUNTIME_CONTRACT: dict[str, dict[str, Any]] = {
     "neural_network": {
@@ -113,6 +123,7 @@ class SearchPlanPolicy:
     ensemble_trials: int
     second_seed_candidates: int
     maximum_candidate_runs: int
+    maximum_elapsed_seconds: float
     neural_network_domain: Mapping[str, tuple[Any, ...]]
     xgboost_domain: Mapping[str, tuple[Any, ...]]
     hypothesis: str
@@ -149,20 +160,28 @@ class SearchLimits:
             ensemble_trials=policy.ensemble_trials,
             second_seed_candidates=policy.second_seed_candidates,
             maximum_candidate_runs=policy.maximum_candidate_runs,
+            maximum_elapsed_seconds=policy.maximum_elapsed_seconds,
         )
 
 
 SEARCH_PLAN_POLICIES = {
     "baseline": SearchPlanPolicy(
-        "baseline", 6, 6, 3, 5, 20,
+        "baseline", 6, 6, 3, 5, 20, 7200.0,
         NEURAL_NETWORK_DOMAIN, XGBOOST_DOMAIN,
         "baseline governed candidate search",
     ),
     "tail_aware_expanded": SearchPlanPolicy(
-        "tail_aware_expanded", 12, 12, 6, 10, 40,
+        "tail_aware_expanded", 12, 12, 6, 10, 40, 7200.0,
         TAIL_AWARE_NEURAL_NETWORK_DOMAIN, TAIL_AWARE_XGBOOST_DOMAIN,
         "bounded sliced resin mass weighting and broader configuration coverage "
         "reduce serious absolute errors",
+    ),
+    "large_batch_extended": SearchPlanPolicy(
+        "large_batch_extended", 24, 24, 12, 20, 80, 14_400.0,
+        LARGE_BATCH_NEURAL_NETWORK_DOMAIN, LARGE_BATCH_XGBOOST_DOMAIN,
+        "larger neural-network batches, longer neural-network training, and "
+        "higher XGBoost tree ceilings with denser deterministic coverage reduce "
+        "serious absolute errors",
     ),
 }
 
@@ -2266,17 +2285,19 @@ def _validate_declared_candidate(candidate: Candidate) -> None:
     # The deep model-definition module owns structural and semantic validation;
     # this additional check limits governed search candidates to the declared domain.
     candidate_model_specification(candidate.family, candidate.parameters)
-    policy = _plan_policy(
-        "tail_aware_expanded"
-        if "target_weighting" in candidate.parameters else "baseline"
-    )
-    domains = _supported_domains(policy)
-    domain = domains.get(candidate.family)
-    if domain is None or set(candidate.parameters) != set(domain):
+    matching_domains = [
+        domain
+        for policy in SEARCH_PLAN_POLICIES.values()
+        for family, domain in _supported_domains(policy).items()
+        if family == candidate.family
+        and set(candidate.parameters) == set(domain)
+        and all(
+            _supported_domain_value(value, domain[key])
+            for key, value in candidate.parameters.items()
+        )
+    ]
+    if not matching_domains:
         raise ValueError("invalid_candidate_configuration")
-    for key, value in candidate.parameters.items():
-        if not _supported_domain_value(value, domain[key]):
-            raise ValueError("invalid_candidate_configuration")
     if candidate.family == "xgboost" and (
         candidate.parameters["objective"] != "reg:squarederror"
         or candidate.parameters["n_jobs"] != 1
@@ -2695,7 +2716,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--scope-confirmed", action="store_true")
     parser.add_argument("--seed", required=True, type=int)
     parser.add_argument(
-        "--plan-kind", choices=("baseline", "tail_aware_expanded"),
+        "--plan-kind", choices=tuple(SEARCH_PLAN_POLICIES),
         default="baseline",
     )
     return parser
@@ -2746,7 +2767,7 @@ def _validate_limits(limits: SearchLimits) -> None:
     if not isinstance(limits.maximum_elapsed_seconds, (int, float)) or isinstance(
         limits.maximum_elapsed_seconds, bool
     ) or not math.isfinite(limits.maximum_elapsed_seconds) or not (
-        0 < limits.maximum_elapsed_seconds <= 7200.0
+        0 < limits.maximum_elapsed_seconds <= policy.maximum_elapsed_seconds
     ):
         raise ValueError("invalid_search_plan")
     if not limits.ensemble_neural_network_weights or any(

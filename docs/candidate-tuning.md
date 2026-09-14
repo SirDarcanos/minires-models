@@ -284,6 +284,34 @@ unweighted. A seeded mixed-radix traversal guarantees that each component-family
 slot has a distinct complete
 configuration. The plan records its tail-error hypothesis and plan kind before
 fitting starts.
+### Run the predeclared large-batch extended plan
+
+Use this plan only for the issue #50 round predeclared after the tail-aware plan
+failed its fixed eligibility gates:
+
+```bash
+.venv-candidates/bin/python -m minires.modeling.tuning \
+  --training-records <training-artifact> \
+  --validation-records <validation-artifact> \
+  --output-root <new-private-run-directory> \
+  --volume-unit mm3 \
+  --scope-confirmed \
+  --seed 41 \
+  --plan-kind large_batch_extended
+```
+
+The plan contains 24 neural-network trials, 24 XGBoost trials, 12
+validation-selected ensembles, and second-seed repetition of at most 20 eligible
+initial candidates. Its hard limits are 80 candidate runs and 14,400 seconds.
+Neural candidates use the larger batch sizes 512 and 1,024, train for at most 150
+or 200 epochs, and use early-stopping patience of 12 or 16 epochs. XGBoost
+candidates use ceilings of 1,500, 1,800, or 2,400 trees. These exclusive new
+ranges prevent repetition of complete component configurations from the preceding
+expanded round. The target-weighting choices and every fixed development,
+eligibility, ranking, and locking rule remain unchanged. See
+[the issue #50 round ledger](issue-50-candidate-search.md) for the falsifiable
+hypothesis, dependency versions, and execution status.
+
 Runtime failures, invalid plans, missing grouping evidence, deadline exhaustion,
 and the absence of eligible candidates remain bounded outcomes in
 `tuning-result.json`. The private `candidate_history` records the control, every

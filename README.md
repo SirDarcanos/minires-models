@@ -16,7 +16,7 @@ MiniRes estimates sliced resin mass under validated slicing conditions. It does 
 
 ## Repository status
 
-The current code supports data preparation and governed model development. The latest tail-aware expanded candidate round produced no eligible lock, so final assessment was not started and no replacement production model has been declared. Further tuning requires a separate predeclared hypothesis and finite plan rather than automatic search expansion.
+The current code supports data preparation and governed model development. The latest completed tail-aware expanded candidate round produced no eligible lock, so final assessment was not started and no replacement production model has been declared. Issue #50 predeclares a materially distinct, finite large-batch extended round; its result does not alter the fixed eligibility gates or held-out test boundary.
 
 Start with:
 
@@ -115,6 +115,7 @@ The main references are:
 - [Candidate tuning](docs/candidate-tuning.md)
 - [Regenerated-data tuning result](docs/issue-49-completion.md)
 - [Tail-aware expanded tuning result](docs/issue-46-completion.md)
+- [Large-batch extended search ledger](docs/issue-50-candidate-search.md)
 - [Baseline evidence](docs/baseline-evidence.md)
 
 `notebooks/baseline_analysis.ipynb` remains because it is a current, output-free view over the public aggregate evaluation interface. It is not a historical training notebook and is not required by the runtime.
