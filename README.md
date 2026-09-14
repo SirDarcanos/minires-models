@@ -8,7 +8,7 @@ This repository is developing and validating the next MiniRes model. It does not
 
 - A one-STL preparation workflow that inventories geometry, slices with a bundled checksum-pinned profile, and extracts UVtools `WeightG` without exposing the input identity.
 - Deterministic private dataset preparation and source-balanced train, validation, and held-out test partitions.
-- Explicit neural-network, XGBoost, and ensemble model specifications.
+- Explicit neural-network, XGBoost, convex-ensemble, and cross-fitted geometry-gate model specifications.
 - Bounded candidate search, candidate locking, and final assessment workflows.
 - Reproducible physical, clean-refit, and legacy comparison baselines.
 
@@ -16,7 +16,7 @@ MiniRes estimates sliced resin mass under validated slicing conditions. It does 
 
 ## Repository status
 
-The current code supports data preparation and governed model development. The latest geometry-regime candidate round produced no eligible lock, so final assessment was not started and no replacement production model has been declared. Any subsequent issue #50 round requires another materially distinct, finite, predeclared hypothesis without changing the fixed eligibility gates or held-out test boundary.
+The current code supports data preparation and governed model development. The latest geometry-regime candidate round produced no eligible lock, so final assessment was not started and no replacement production model has been declared. The next issue #50 round is predeclared as a finite cross-fitted geometry-gate search with unchanged eligibility gates and held-out test boundary.
 
 Start with:
 

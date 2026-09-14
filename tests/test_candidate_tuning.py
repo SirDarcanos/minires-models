@@ -483,6 +483,51 @@ class CandidateSearchPlanTests(unittest.TestCase):
             len({candidate.candidate_id for candidate in first.component_trials}), 24
         )
 
+    def test_cross_fitted_geometry_gate_plan_is_finite_training_only_and_source_neutral(self):
+        limits = SearchLimits.for_plan(41, "cross_fitted_geometry_gate")
+
+        first = generate_search_plan(
+            limits, input_fingerprint="input", code_fingerprint="code",
+            dependency_versions={"runtime": "synthetic-1"},
+        )
+        second = generate_search_plan(
+            limits, input_fingerprint="input", code_fingerprint="code",
+            dependency_versions={"runtime": "synthetic-1"},
+        )
+
+        self.assertEqual(first, second)
+        self.assertEqual((first.seed, first.second_seed), (41, 42))
+        self.assertEqual(first.generator["plan_kind"], "cross_fitted_geometry_gate")
+        self.assertIn("training-only out-of-fold", first.generator["hypothesis"])
+        self.assertEqual(len(first.component_trials), 12)
+        self.assertEqual(len(first.ensemble_rules), 3)
+        self.assertEqual(first.resource_limits["maximum_candidate_runs"], 20)
+        self.assertEqual(first.resource_limits["maximum_elapsed_seconds"], 7200.0)
+        for rule, penalty in zip(first.ensemble_rules, (0.01, 0.1, 1.0)):
+            self.assertEqual(rule["construction"], "cross_fitted_geometry_gate")
+            self.assertEqual(rule["cross_fit_folds"], 5)
+            self.assertEqual(rule["cross_fit_partition"], "training_records_only")
+            self.assertEqual(rule["gate_fit_partition"], "training_oof_predictions_only")
+            self.assertEqual(rule["validation_use"], "scoring_eligibility_ranking_and_locking_only")
+            self.assertEqual(rule["ridge_penalty"], penalty)
+            self.assertEqual(
+                rule["gate_features"],
+                (
+                    "volume_mm3", "surface_area_mm2", "bounding_box_short_mm",
+                    "bounding_box_middle_mm", "bounding_box_long_mm",
+                    "bounding_box_volume_mm3", "euler_number", "log1p_volume_mm3",
+                    "log1p_surface_area_mm2", "log1p_bounding_box_volume_mm3",
+                    "log1p_bounding_box_short_mm", "log1p_bounding_box_middle_mm",
+                    "log1p_bounding_box_long_mm",
+                    "log_volume_to_bounding_box_volume_ratio",
+                    "log_surface_to_volume_ratio_per_mm",
+                    "log_bounding_box_long_to_short_ratio",
+                ),
+            )
+            self.assertNotIn("anonymous_source_group", json.dumps(rule))
+            self.assertNotIn("miniature_family", json.dumps(rule))
+        self.assertTrue(first.second_seed_rule["both_seed_results_must_be_eligible"])
+
     def test_geometry_regime_rejects_seeds_outside_its_predeclared_pair(self):
         with self.assertRaisesRegex(ValueError, "invalid_search_plan"):
             generate_search_plan(
@@ -728,6 +773,33 @@ class ValidationSensitiveRuntime(RecordingTuningRuntime):
         )
 
 
+class ComplementaryGeometryRuntime(RecordingTuningRuntime):
+    def fit_fold(self, candidate, seed, train_features, train_targets,
+                 validation_features, validation_targets):
+        self.fit_calls.append((candidate.candidate_id, seed, tuple(train_features),
+                               tuple(validation_features)))
+        if candidate.family == "control":
+            predictor = lambda rows: [row[1] / 1000.0 for row in rows]
+        elif candidate.family == "neural_network":
+            predictor = lambda rows: [
+                row[1] / 1000.0 + (0.0 if row[1] / 1000.0 <= 10 else 6.0)
+                for row in rows
+            ]
+        else:
+            predictor = lambda rows: [
+                row[1] / 1000.0 + (6.0 if row[1] / 1000.0 <= 10 else 0.0)
+                for row in rows
+            ]
+        return CandidateFoldFit(
+            predictor=predictor,
+            metadata={
+                "selected_epochs": 4 if candidate.family == "neural_network" else None,
+                "selected_trees": 20 if candidate.family == "xgboost" else None,
+            },
+            fitted_state={"training_features": tuple(train_features)},
+        )
+
+
 class GeometryRecordingRuntime(RecordingTuningRuntime):
     def __init__(self):
         super().__init__()
@@ -896,6 +968,92 @@ class ExplicitPartitionDevelopmentTests(unittest.TestCase):
         )
 
         self.assertIn("locked_candidate_contract_mismatch", blockers)
+
+    def test_cross_fitted_gate_uses_training_oof_evidence_and_locks_source_neutral_state(self):
+        def canonical(identity, value):
+            return {
+                **self.row(identity, value),
+                "volume_mm3": value * 1000,
+                "surface_area_mm2": value * 100,
+                "bounding_box_x_mm": value * 2, "bbox_x": value * 2,
+                "bounding_box_y_mm": value * 4, "bbox_y": value * 4,
+                "bounding_box_z_mm": value * 3, "bbox_z": value * 3,
+                "bounding_box_volume_mm3": value * 1100,
+            }
+
+        training = [canonical(f"train-gate-{value}", value) for value in range(1, 21)]
+        validation = [
+            canonical(f"validation-gate-{value}", value)
+            for value in (3, 8, 13, 18)
+        ]
+        runtime = ComplementaryGeometryRuntime()
+
+        result = develop_candidates(
+            training, validation, self.config, runtime=runtime,
+            output_root=self.root / "cross-fitted-gate",
+            limits=SearchLimits.for_plan(41, "cross_fitted_geometry_gate"),
+            clock=lambda: 0.0,
+        )
+
+        self.assertEqual(result.status, "completed")
+        gates = [run for run in result.initial_results
+                 if run.candidate.family == "geometry_gate"]
+        self.assertEqual(len(gates), 3)
+        self.assertTrue(all(run.eligible for run in gates))
+        self.assertTrue(all(
+            run.fit_metadata[0]["gate_training"] == {
+                "partition": "training_oof_predictions_only",
+                "cross_fit_folds": 5,
+                "oof_prediction_count": len(training),
+                "source_metadata_used": False,
+            }
+            for run in gates
+        ))
+        self.assertTrue(any(
+            0 < len(call[2]) < len(training) and 0 < len(call[3]) < len(training)
+            for call in runtime.fit_calls
+        ))
+        self.assertIsNotNone(result.locked_candidate)
+        contract = result.locked_candidate.contract
+        self.assertEqual(contract["candidate"]["family"], "geometry_gate")
+        self.assertEqual(
+            contract["development_data_usage"]["gate_fitting"],
+            "training_oof_predictions_only",
+        )
+        self.assertEqual(contract["runtime_configuration"]["combination"],
+                         "geometry_conditioned_clipped_weight")
+        fixed_counts = contract["fixed_training_counts"]
+        cross_fit_refits = [
+            call for call in runtime.refit_calls if len(call[1]) < len(training)
+        ]
+        self.assertEqual(len(cross_fit_refits), 10)
+        self.assertTrue(all(
+            call[2] in (
+                {"neural_network_epochs": fixed_counts["neural_network_epochs"]},
+                {"xgboost_trees": fixed_counts["xgboost_trees"]},
+            )
+            for call in cross_fit_refits
+        ))
+        self.assertEqual(contract["model_specification"]["model_kind"],
+                         "geometry_gate")
+        self.assertIn("gate-state.json", result.locked_candidate.manifest["files"])
+        reloaded = load_locked_candidate(result.locked_candidate.directory, runtime)
+        self.assertEqual(reloaded.candidate, result.locked_candidate.candidate)
+        gate_path = result.locked_candidate.directory / "gate-state.json"
+        gate_state = json.loads(gate_path.read_text())
+        gate_state["version"] = "tampered-gate"
+        gate_path.write_text(json.dumps(gate_state, sort_keys=True))
+        manifest_path = result.locked_candidate.directory / "lock-manifest.json"
+        manifest = json.loads(manifest_path.read_text())
+        manifest["files"]["gate-state.json"] = sha256(gate_path.read_bytes()).hexdigest()
+        manifest_path.write_text(json.dumps(manifest, sort_keys=True))
+        blockers, _, _ = verify_locked_candidate_files(
+            result.locked_candidate.directory, runtime.dependency_versions
+        )
+        self.assertIn("locked_candidate_contract_mismatch", blockers)
+        public = json.dumps(result.to_dict(public=True), sort_keys=True)
+        self.assertNotIn("private-source", public)
+        self.assertNotIn("anonymous_source_group", public)
 
     def test_geometry_regime_uses_only_richer_canonical_geometry_for_candidates(self):
         def canonical(row):
@@ -1507,6 +1665,36 @@ class CandidateTuningTests(unittest.TestCase):
                 if plan_kind == "geometry_regime":
                     self.assertEqual(len(plan["prediction_features"]), 16)
                     self.assertNotIn("anonymous_source_group", plan["prediction_features"])
+
+    def test_cross_fitted_gate_cli_rejects_unverified_development_artifacts(self):
+        dataset = Path(self.temp.name) / "dataset"
+        dataset.mkdir()
+        training = dataset / "train.jsonl"
+        validation = dataset / "validation.jsonl"
+        training.write_text("{}\n")
+        validation.write_text("{}\n")
+        (dataset / "manifest.json").write_text(json.dumps({
+            "artifacts": {
+                "train.jsonl": "0" * 64,
+                "validation.jsonl": sha256(validation.read_bytes()).hexdigest(),
+            },
+        }))
+        runtime = RecordingTuningRuntime()
+
+        with patch(
+            "minires.modeling.tuning.TensorflowXGBoostCandidateRuntime",
+            return_value=runtime,
+        ), self.assertRaisesRegex(SystemExit, "development_artifact_checksum_mismatch"):
+            tuning_main([
+                "--training-records", str(training),
+                "--validation-records", str(validation),
+                "--output-root", str(self.root),
+                "--volume-unit", "mm3", "--scope-confirmed", "--seed", "41",
+                "--plan-kind", "cross_fitted_geometry_gate",
+            ])
+
+        self.assertEqual(runtime.fit_calls, [])
+        self.assertFalse(self.root.exists())
 
     def test_invalid_unbounded_worker_plan_is_rejected_before_runtime_fitting(self):
         runtime = RecordingTuningRuntime()

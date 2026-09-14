@@ -355,6 +355,44 @@ separation, eligibility, ranking, locking, and held-out-test exclusions remain
 unchanged. See [the issue #50 round ledger](issue-50-candidate-search.md) for the
 complete predeclared hypothesis and stop rule.
 
+### Run the predeclared cross-fitted geometry-gate plan
+
+Use this plan only for the issue #50 round predeclared after the geometry-regime
+plan failed its fixed eligibility gates:
+
+```bash
+.venv-candidates/bin/python -m minires.modeling.tuning \
+  --training-records <training-artifact> \
+  --validation-records <validation-artifact> \
+  --output-root <new-private-run-directory> \
+  --volume-unit mm3 \
+  --scope-confirmed \
+  --seed 41 \
+  --plan-kind cross_fitted_geometry_gate
+```
+
+The plan restores the baseline six neural-network and six XGBoost component
+spaces and replaces the three constant convex ensembles with three constrained
+geometry-conditioned gates. Equal-rank component pairs are selected by the
+existing validation ranking. Each gate is fitted from five-fold out-of-fold
+predictions made for every training row; validation labels never fit the gate.
+Fold assignment is deterministic from the declared seed and stable private record
+identity, without source or miniature-family metadata. The three fixed ridge
+penalties are 0.01, 0.1, and 1.0. Gate weights are linear functions of the
+versioned 16-feature source-neutral geometry representation and are clipped to
+zero through one.
+
+After gate fitting, its two base models are fitted on all training rows and the
+unchanged validation seam supplies only permitted early stopping, scoring,
+eligibility, ranking, ensemble decisions, and locking. A locked gate repeats
+cross-fitting on training only with fixed training counts, refits both bases on
+all training rows without validation, and checksum-binds both model artifacts and
+the gate state. The plan uses seeds 41/42, 15 initial candidates, second-seed
+repetition of at most five eligible candidates, at most 20 candidate runs, and
+7,200 seconds. Every unchanged eligibility, ranking, create-only, and held-out-test
+rule remains in force. See [the issue #50 round ledger](issue-50-candidate-search.md)
+for the complete falsifiable hypothesis and stop rule.
+
 Runtime failures, invalid plans, missing grouping evidence, deadline exhaustion,
 and the absence of eligible candidates remain bounded outcomes in
 `tuning-result.json`. The private `candidate_history` records the control, every

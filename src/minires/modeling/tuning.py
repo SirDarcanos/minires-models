@@ -6,6 +6,7 @@ import argparse
 import copy
 from dataclasses import asdict, dataclass
 from hashlib import sha256
+from importlib.metadata import PackageNotFoundError, version as package_version
 import json
 import math
 from pathlib import Path
@@ -66,7 +67,20 @@ GEOMETRY_REGIME_INPUTS = (
     "euler_number",
 )
 GEOMETRY_REGIME_TRANSFORMATION_VERSION = "minires-geometry-regime-features-v1"
+CROSS_FITTED_GEOMETRY_GATE_TRANSFORMATION_VERSION = (
+    "minires-cross-fitted-geometry-gate-v1"
+)
+CROSS_FITTED_GEOMETRY_GATE_FEATURES = LEGACY_FEATURES + GEOMETRY_REGIME_FEATURES
+CROSS_FIT_FOLDS = 5
+GEOMETRY_GATE_RIDGE_PENALTIES = (0.01, 0.1, 1.0)
 FLOAT32_MAXIMUM = 3.4028234663852886e38
+CROSS_FITTED_GATE_DEPENDENCY_VERSIONS = {
+    "keras": "3.15.0",
+    "numpy": "2.2.6",
+    "tensorflow": "2.20.0",
+    "xgboost": "3.1.2",
+}
+CROSS_FITTED_GATE_SCIKIT_LEARN_VERSION = "1.7.2"
 
 NEURAL_NETWORK_DOMAIN: dict[str, tuple[Any, ...]] = {
     "layers": ((64, 32), (128, 64), (128, 64, 32), (256, 128, 64),
@@ -217,6 +231,14 @@ SEARCH_PLAN_POLICIES = {
         "a richer deterministic source-neutral geometry representation with "
         "logarithmic, ratio, and orientation-invariant features reduces serious "
         "absolute errors",
+    ),
+    "cross_fitted_geometry_gate": SearchPlanPolicy(
+        "cross_fitted_geometry_gate", LEGACY_FEATURES, TRANSFORMATION_VERSION,
+        (41, 42), 6, 6, 3, 5, 20, 7200.0,
+        NEURAL_NETWORK_DOMAIN, XGBOOST_DOMAIN,
+        "a constrained geometry-conditioned gate fitted from training-only "
+        "out-of-fold base-model predictions exploits complementary errors enough "
+        "to satisfy the unchanged serious-error gates",
     ),
 }
 
@@ -465,6 +487,53 @@ class DeclaredCandidateEvaluation:
 
 
 @dataclass(frozen=True)
+class GeometryGateModelSpecification:
+    neural_network: ModelSpecification
+    xgboost: ModelSpecification
+    ordered_prediction_features: tuple[str, ...]
+    gate_features: tuple[str, ...]
+    cross_fit_folds: int
+    ridge_penalty: float
+    identity_namespace: str = CROSS_FITTED_GEOMETRY_GATE_TRANSFORMATION_VERSION
+
+    @property
+    def stable_identity(self) -> str:
+        encoded = json.dumps(
+            self.to_dict(include_identity=False), sort_keys=True,
+            separators=(",", ":"), allow_nan=False,
+        ).encode()
+        return f"model-geometry_gate-{sha256(encoded).hexdigest()[:16]}"
+
+    def to_dict(self, *, include_identity: bool = True) -> dict[str, Any]:
+        result = {
+            "version": self.identity_namespace,
+            "model_kind": "geometry_gate",
+            "ordered_prediction_features": list(self.ordered_prediction_features),
+            "preprocessing": {
+                "feature_dtype": "float32",
+                "normalization": "defined_by_members_and_training_oof_gate",
+            },
+            "architecture_parameters": {
+                "gate_features": list(self.gate_features),
+                "cross_fit_folds": self.cross_fit_folds,
+                "ridge_penalty": self.ridge_penalty,
+                "weight_constraint": "clip_0_1",
+            },
+            "training_parameters": {
+                "gate_fit_partition": "training_oof_predictions_only",
+            },
+            "members": {
+                "neural_network": self.neural_network.to_dict(),
+                "xgboost": self.xgboost.to_dict(),
+            },
+            "output_unit": "g",
+        }
+        if include_identity:
+            result["stable_identity"] = self.stable_identity
+        return result
+
+
+@dataclass(frozen=True)
 class LockedCandidate:
     candidate: Candidate
     predictor: Callable[[Sequence[tuple[float, ...]]], Sequence[float]]
@@ -473,7 +542,7 @@ class LockedCandidate:
     contract: dict[str, Any]
 
     @property
-    def specification(self) -> ModelSpecification:
+    def specification(self) -> ModelSpecification | GeometryGateModelSpecification:
         return _locked_model_specification(
             self.candidate, self.contract["fixed_training_counts"]
         )
@@ -584,6 +653,14 @@ def verify_locked_candidate_files(
         preprocessing = json.loads((root / "preprocessing-state.json").read_text())
         if not isinstance(preprocessing, dict) or not _valid_locked_contract(contract):
             blockers.add("locked_candidate_contract_mismatch")
+        if contract.get("candidate", {}).get("family") == "geometry_gate":
+            gate_state = json.loads((root / "gate-state.json").read_text())
+            if (
+                not isinstance(gate_state, dict)
+                or not _valid_geometry_gate_state(gate_state)
+                or preprocessing.get("gate") != gate_state
+            ):
+                blockers.add("locked_candidate_contract_mismatch")
     except (AttributeError, OSError, ValueError, TypeError, json.JSONDecodeError):
         blockers.add("locked_candidate_unavailable")
     return tuple(sorted(blockers)), manifest, contract
@@ -723,15 +800,37 @@ def generate_search_plan(
         "code": code_fingerprint, "configuration": configuration_identity,
     })
     dependencies = dict(sorted(dependency_versions.items()))
-    ensemble_rules = tuple({
-        "ensemble_slot": rank,
-        "component_rank": rank,
-        "pairing": "rank_each_component_family_then_pair_equal_rank",
-        "component_ranking_partition": "development_validation_only",
-        "weight_selection_partition": "development_validation_only",
-        "neural_network_weight_grid": limits.ensemble_neural_network_weights,
-        "stable_tie_breaker": "candidate_id_ascending",
-    } for rank in range(1, limits.ensemble_trials + 1))
+    if policy.plan_kind == "cross_fitted_geometry_gate":
+        ensemble_rules = tuple({
+            "ensemble_slot": rank,
+            "component_rank": rank,
+            "construction": "cross_fitted_geometry_gate",
+            "pairing": "rank_each_component_family_then_pair_equal_rank",
+            "component_ranking_partition": "development_validation_only",
+            "cross_fit_folds": CROSS_FIT_FOLDS,
+            "cross_fit_partition": "training_records_only",
+            "cross_fit_assignment": "stable_record_identity_hash_without_source_metadata",
+            "gate_fit_partition": "training_oof_predictions_only",
+            "validation_use": "scoring_eligibility_ranking_and_locking_only",
+            "gate_features": GEOMETRY_REGIME_FEATURES,
+            "gate_feature_transformation_version": GEOMETRY_REGIME_TRANSFORMATION_VERSION,
+            "gate_transformation_version": (
+                CROSS_FITTED_GEOMETRY_GATE_TRANSFORMATION_VERSION
+            ),
+            "ridge_penalty": GEOMETRY_GATE_RIDGE_PENALTIES[rank - 1],
+            "weight_constraint": "clip_0_1",
+            "stable_tie_breaker": "candidate_id_ascending",
+        } for rank in range(1, limits.ensemble_trials + 1))
+    else:
+        ensemble_rules = tuple({
+            "ensemble_slot": rank,
+            "component_rank": rank,
+            "pairing": "rank_each_component_family_then_pair_equal_rank",
+            "component_ranking_partition": "development_validation_only",
+            "weight_selection_partition": "development_validation_only",
+            "neural_network_weight_grid": limits.ensemble_neural_network_weights,
+            "stable_tie_breaker": "candidate_id_ascending",
+        } for rank in range(1, limits.ensemble_trials + 1))
     plan_payload: dict[str, Any] = {
         "version": TUNING_VERSION,
         "generator_version": TUNING_VERSION,
@@ -1114,8 +1213,13 @@ def develop_candidates(
         _write_tuning_outputs(output, result)
         return result
 
+    required_prediction_features = (
+        CROSS_FITTED_GEOMETRY_GATE_FEATURES
+        if limits.plan_kind == "cross_fitted_geometry_gate"
+        else plan.prediction_features
+    )
     if not _valid_candidate_feature_data(
-        (*training_rows, *validation_rows), plan.prediction_features
+        (*training_rows, *validation_rows), required_prediction_features
     ):
         result = TuningResult(
             "blocked", ("invalid_candidate_feature_data",), 0,
@@ -1186,10 +1290,16 @@ def develop_candidates(
                 blockers.append("candidate_search_deadline_reached" if now >= deadline
                                 else "candidate_run_limit_reached")
                 break
-            candidate = _explicit_ensemble_candidate(
-                index, neural[index].candidate, xgboost[index].candidate,
-                limits.ensemble_neural_network_weights,
-            )
+            if limits.plan_kind == "cross_fitted_geometry_gate":
+                candidate = _explicit_geometry_gate_candidate(
+                    index, neural[index].candidate, xgboost[index].candidate,
+                    plan.ensemble_rules[index],
+                )
+            else:
+                candidate = _explicit_ensemble_candidate(
+                    index, neural[index].candidate, xgboost[index].candidate,
+                    limits.ensemble_neural_network_weights,
+                )
             run = _evaluate_explicit_candidate(
                 candidate, plan.seed, runtime, training_rows, validation_rows,
                 limits.ensemble_neural_network_weights,
@@ -1301,6 +1411,37 @@ def _valid_explicit_partitions(
     )
 
 
+def _explicit_geometry_gate_candidate(
+    index: int, neural: Candidate, xgboost: Candidate, rule: Mapping[str, Any],
+) -> Candidate:
+    if (
+        neural.ordered_prediction_features != LEGACY_FEATURES
+        or xgboost.ordered_prediction_features != LEGACY_FEATURES
+    ):
+        raise ValueError("invalid_candidate_feature_contract")
+    parameters = {
+        "component_rank": index + 1,
+        "selection_partition": "validation_records_only",
+        "neural_network": asdict(neural),
+        "xgboost": asdict(xgboost),
+        "cross_fit_folds": rule["cross_fit_folds"],
+        "cross_fit_assignment": rule["cross_fit_assignment"],
+        "gate_fit_partition": rule["gate_fit_partition"],
+        "gate_features": tuple(rule["gate_features"]),
+        "gate_feature_transformation_version": rule[
+            "gate_feature_transformation_version"
+        ],
+        "ridge_penalty": rule["ridge_penalty"],
+        "weight_constraint": rule["weight_constraint"],
+    }
+    digest = sha256(json.dumps(parameters, sort_keys=True).encode()).hexdigest()[:8]
+    return Candidate(
+        f"gate-{index + 1:02d}-{digest}", "geometry_gate", parameters,
+        CROSS_FITTED_GEOMETRY_GATE_FEATURES,
+        CROSS_FITTED_GEOMETRY_GATE_TRANSFORMATION_VERSION,
+    )
+
+
 def _explicit_ensemble_candidate(
     index: int, neural: Candidate, xgboost: Candidate, weights: Sequence[float],
 ) -> Candidate:
@@ -1331,6 +1472,17 @@ def candidate_prediction_matrix(
     if candidate.family == "control" or candidate.ordered_prediction_features == LEGACY_FEATURES:
         return _matrix(rows)
     if (
+        candidate.ordered_prediction_features == CROSS_FITTED_GEOMETRY_GATE_FEATURES
+        and candidate.feature_transformation_version
+        == CROSS_FITTED_GEOMETRY_GATE_TRANSFORMATION_VERSION
+        and candidate.family == "geometry_gate"
+    ):
+        legacy, targets = _matrix(rows)
+        geometry = tuple(_geometry_regime_row(row) for row in rows)
+        if len(legacy) != len(geometry):
+            raise ValueError("invalid_candidate_feature_data")
+        return tuple(left + right for left, right in zip(legacy, geometry)), targets
+    if (
         candidate.ordered_prediction_features != GEOMETRY_REGIME_FEATURES
         or candidate.feature_transformation_version
         != GEOMETRY_REGIME_TRANSFORMATION_VERSION
@@ -1348,7 +1500,10 @@ def candidate_prediction_matrix(
 
 def _geometry_regime_row(row: CanonicalRow) -> tuple[float, ...]:
     try:
-        raw = tuple(float(row.features[name]) for name in GEOMETRY_REGIME_INPUTS)
+        selected = tuple(row.features[name] for name in GEOMETRY_REGIME_INPUTS)
+        if any(value is None for value in selected):
+            raise ValueError("missing geometry")
+        raw = tuple(float(value) for value in selected if value is not None)
     except (KeyError, TypeError, ValueError):
         raise ValueError("invalid_candidate_feature_data") from None
     if not all(math.isfinite(value) for value in raw):
@@ -1377,7 +1532,9 @@ def _valid_candidate_feature_data(
 ) -> bool:
     if prediction_features == LEGACY_FEATURES:
         return True
-    if prediction_features != GEOMETRY_REGIME_FEATURES or not rows:
+    if prediction_features not in {
+        GEOMETRY_REGIME_FEATURES, CROSS_FITTED_GEOMETRY_GATE_FEATURES,
+    } or not rows:
         return False
     try:
         return all(
@@ -1396,6 +1553,10 @@ def _evaluate_explicit_candidate(
     started = time.perf_counter()
     cpu_started = time.process_time()
     try:
+        if candidate.family == "geometry_gate":
+            return _evaluate_explicit_geometry_gate(
+                candidate, seed, runtime, training, validation, started, cpu_started
+            )
         train_x, train_y = candidate_prediction_matrix(training, candidate)
         validation_x, validation_y = candidate_prediction_matrix(validation, candidate)
         if candidate.family == "ensemble":
@@ -1456,6 +1617,253 @@ def _evaluate_explicit_candidate(
             _empty_metrics(), (), (),
             _resources(time.perf_counter() - started, time.process_time() - cpu_started),
         )
+
+
+def _evaluate_explicit_geometry_gate(
+    candidate: Candidate, seed: int, runtime: CandidateRuntime,
+    training: Sequence[CanonicalRow], validation: Sequence[CanonicalRow],
+    started: float, cpu_started: float,
+) -> CandidateRun:
+    _validate_geometry_gate_candidate(candidate)
+    neural = _candidate_from_dict(candidate.parameters["neural_network"])
+    xgboost = _candidate_from_dict(candidate.parameters["xgboost"])
+    gate_state, fold_metadata = _fit_training_oof_geometry_gate(
+        candidate, seed, runtime, training
+    )
+    fold_count = int(candidate.parameters["cross_fit_folds"])
+    neural_train_x, neural_train_y = candidate_prediction_matrix(training, neural)
+    neural_validation_x, validation_y = candidate_prediction_matrix(validation, neural)
+    xgboost_train_x, xgboost_train_y = candidate_prediction_matrix(training, xgboost)
+    xgboost_validation_x, xgboost_validation_y = candidate_prediction_matrix(
+        validation, xgboost
+    )
+    if neural_train_y != xgboost_train_y or validation_y != xgboost_validation_y:
+        raise ValueError("invalid_candidate_feature_data")
+    neural_fit = runtime.fit_fold(
+        neural, seed, neural_train_x, neural_train_y,
+        neural_validation_x, validation_y,
+    )
+    xgboost_fit = runtime.fit_fold(
+        xgboost, seed, xgboost_train_x, xgboost_train_y,
+        xgboost_validation_x, validation_y,
+    )
+    neural_predictions = _predict(neural_fit.predictor, neural_validation_x)
+    xgboost_predictions = _predict(xgboost_fit.predictor, xgboost_validation_x)
+    validation_geometry = tuple(_geometry_regime_row(row) for row in validation)
+    predictions = _geometry_gate_predictions(
+        gate_state, validation_geometry, neural_predictions, xgboost_predictions
+    )
+    metadata = {
+        "neural_network": copy.deepcopy(neural_fit.metadata),
+        "xgboost": copy.deepcopy(xgboost_fit.metadata),
+        "gate_training": {
+            "partition": "training_oof_predictions_only",
+            "cross_fit_folds": fold_count,
+            "oof_prediction_count": len(training),
+            "source_metadata_used": False,
+        },
+        "cross_fit_metadata": fold_metadata,
+        "gate_state": gate_state,
+        "fitted_state_fingerprint": fingerprint({
+            "neural_network": _fingerprintable_state(neural_fit.fitted_state),
+            "xgboost": _fingerprintable_state(xgboost_fit.fitted_state),
+            "gate_state": gate_state,
+        }),
+    }
+    reports = _explicit_validation_source_reports(
+        len(training), validation, predictions
+    )
+    metrics = _candidate_metrics(reports)
+    eligible = _tail_eligible(metrics)
+    return CandidateRun(
+        candidate, seed, "completed",
+        () if eligible else ("development_serious_error_gate_failed",),
+        eligible, metrics, reports, (metadata,),
+        _resources(time.perf_counter() - started, time.process_time() - cpu_started),
+    )
+
+
+def _fit_training_oof_geometry_gate(
+    candidate: Candidate, seed: int, runtime: CandidateRuntime,
+    training: Sequence[CanonicalRow],
+    fixed_training_counts: Mapping[str, int | float] | None = None,
+) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+    neural = _candidate_from_dict(candidate.parameters["neural_network"])
+    xgboost = _candidate_from_dict(candidate.parameters["xgboost"])
+    fold_count = int(candidate.parameters["cross_fit_folds"])
+    fold_assignments = _cross_fit_assignments(training, seed, fold_count)
+    oof_neural = [math.nan] * len(training)
+    oof_xgboost = [math.nan] * len(training)
+    fold_metadata: list[dict[str, Any]] = []
+    for fold in range(fold_count):
+        held_indices = [index for index, assigned in enumerate(fold_assignments)
+                        if assigned == fold]
+        fit_indices = [index for index, assigned in enumerate(fold_assignments)
+                       if assigned != fold]
+        if not held_indices or not fit_indices:
+            raise ValueError("invalid_cross_fit_partition")
+        fold_training = [training[index] for index in fit_indices]
+        fold_validation = [training[index] for index in held_indices]
+        train_x, train_y = candidate_prediction_matrix(fold_training, neural)
+        held_x, held_y = candidate_prediction_matrix(fold_validation, neural)
+        if fixed_training_counts is None:
+            neural_fit = runtime.fit_fold(
+                neural, seed, train_x, train_y, held_x, held_y
+            )
+            xgboost_fit = runtime.fit_fold(
+                xgboost, seed, train_x, train_y, held_x, held_y
+            )
+        else:
+            neural_locked = runtime.refit(
+                neural, seed, train_x, train_y,
+                {"neural_network_epochs": fixed_training_counts[
+                    "neural_network_epochs"
+                ]},
+            )
+            xgboost_locked = runtime.refit(
+                xgboost, seed, train_x, train_y,
+                {"xgboost_trees": fixed_training_counts["xgboost_trees"]},
+            )
+            neural_fit = CandidateFoldFit(
+                neural_locked.predictor, dict(neural_locked.metadata), {}
+            )
+            xgboost_fit = CandidateFoldFit(
+                xgboost_locked.predictor, dict(xgboost_locked.metadata), {}
+            )
+        for index, prediction in zip(
+            held_indices, _predict(neural_fit.predictor, held_x)
+        ):
+            oof_neural[index] = prediction
+        for index, prediction in zip(
+            held_indices, _predict(xgboost_fit.predictor, held_x)
+        ):
+            oof_xgboost[index] = prediction
+        fold_metadata.append({
+            "fold": fold,
+            "training_record_count": len(fit_indices),
+            "held_out_record_count": len(held_indices),
+            "neural_network": copy.deepcopy(neural_fit.metadata),
+            "xgboost": copy.deepcopy(xgboost_fit.metadata),
+        })
+    _, train_y = candidate_prediction_matrix(training, neural)
+    gate_features = tuple(_geometry_regime_row(row) for row in training)
+    gate_state = _fit_geometry_gate(
+        gate_features, train_y, oof_neural, oof_xgboost,
+        float(candidate.parameters["ridge_penalty"]),
+    )
+    return gate_state, fold_metadata
+
+
+def _cross_fit_assignments(
+    rows: Sequence[CanonicalRow], seed: int, fold_count: int,
+) -> tuple[int, ...]:
+    if len(rows) < fold_count or fold_count < 2:
+        raise ValueError("invalid_cross_fit_partition")
+    identities = []
+    for index, row in enumerate(rows):
+        identity = row.metadata.get("record_identity")
+        if not isinstance(identity, str) or not identity:
+            raise ValueError("invalid_cross_fit_partition")
+        digest = sha256(f"{seed}:{identity}".encode()).hexdigest()
+        identities.append((digest, identity, index))
+    if len({identity for _, identity, _ in identities}) != len(rows):
+        raise ValueError("invalid_cross_fit_partition")
+    assignments = [0] * len(rows)
+    for position, (_, _, index) in enumerate(sorted(identities)):
+        assignments[index] = position % fold_count
+    return tuple(assignments)
+
+
+def _fit_geometry_gate(
+    geometry: Sequence[tuple[float, ...]], targets: Sequence[float],
+    neural: Sequence[float], xgboost: Sequence[float], ridge_penalty: float,
+) -> dict[str, Any]:
+    import numpy as np
+
+    if (
+        not geometry or len(geometry) != len(targets)
+        or len(targets) != len(neural) or len(targets) != len(xgboost)
+        or not math.isfinite(ridge_penalty) or ridge_penalty <= 0.0
+    ):
+        raise ValueError("invalid_geometry_gate_training_data")
+    values = np.asarray(geometry, dtype=np.float64)
+    actual = np.asarray(targets, dtype=np.float64)
+    left = np.asarray(neural, dtype=np.float64)
+    right = np.asarray(xgboost, dtype=np.float64)
+    if not all(np.isfinite(item).all() for item in (values, actual, left, right)):
+        raise ValueError("invalid_geometry_gate_training_data")
+    means = values.mean(axis=0)
+    scales = values.std(axis=0)
+    scales = np.where(scales > 1e-12, scales, 1.0)
+    standardized = (values - means) / scales
+    basis = np.column_stack((np.ones(len(values)), standardized))
+    delta = left - right
+    design = basis * delta[:, None]
+    response = actual - right
+    penalty = np.sqrt(ridge_penalty) * np.eye(design.shape[1])
+    penalty[0, 0] = 0.0
+    augmented_design = np.vstack((design, penalty))
+    augmented_response = np.concatenate((response, np.zeros(design.shape[1])))
+    coefficients, *_ = np.linalg.lstsq(
+        augmented_design, augmented_response, rcond=None
+    )
+    state = {
+        "version": CROSS_FITTED_GEOMETRY_GATE_TRANSFORMATION_VERSION,
+        "gate_features": list(GEOMETRY_REGIME_FEATURES),
+        "weight_constraint": "clip_0_1",
+        "ridge_penalty": ridge_penalty,
+        "means": means.tolist(),
+        "scales": scales.tolist(),
+        "coefficients": coefficients.tolist(),
+    }
+    if not _valid_geometry_gate_state(state):
+        raise ValueError("invalid_geometry_gate_training_data")
+    return state
+
+
+def _geometry_gate_predictions(
+    state: Mapping[str, Any], geometry: Sequence[tuple[float, ...]],
+    neural: Sequence[float], xgboost: Sequence[float],
+) -> tuple[float, ...]:
+    import numpy as np
+
+    if not _valid_geometry_gate_state(state) or len(geometry) != len(neural) \
+            or len(neural) != len(xgboost):
+        raise ValueError("invalid_geometry_gate_state")
+    values = np.asarray(geometry, dtype=np.float64)
+    means = np.asarray(state["means"], dtype=np.float64)
+    scales = np.asarray(state["scales"], dtype=np.float64)
+    coefficients = np.asarray(state["coefficients"], dtype=np.float64)
+    basis = np.column_stack((np.ones(len(values)), (values - means) / scales))
+    weights = np.clip(basis @ coefficients, 0.0, 1.0)
+    predictions = tuple(
+        float(weight) * float(left) + (1.0 - float(weight)) * float(right)
+        for weight, left, right in zip(weights, neural, xgboost)
+    )
+    if not all(math.isfinite(value) for value in predictions):
+        raise ValueError("invalid_model_prediction")
+    return predictions
+
+
+def _valid_geometry_gate_state(state: Mapping[str, Any]) -> bool:
+    width = len(GEOMETRY_REGIME_FEATURES)
+    return (
+        state.get("version") == CROSS_FITTED_GEOMETRY_GATE_TRANSFORMATION_VERSION
+        and state.get("gate_features") == list(GEOMETRY_REGIME_FEATURES)
+        and state.get("weight_constraint") == "clip_0_1"
+        and isinstance(state.get("ridge_penalty"), (int, float))
+        and not isinstance(state.get("ridge_penalty"), bool)
+        and math.isfinite(float(state["ridge_penalty"]))
+        and float(state["ridge_penalty"]) > 0.0
+        and all(
+            isinstance(state.get(key), list) and len(state[key]) == expected
+            and all(isinstance(value, (int, float)) and math.isfinite(float(value))
+                    for value in state[key])
+            for key, expected in (("means", width), ("scales", width),
+                                  ("coefficients", width + 1))
+        )
+        and all(float(value) > 0.0 for value in state["scales"])
+    )
 
 
 def tune_candidates(
@@ -2143,7 +2551,13 @@ def _refit_and_lock_explicit(
     if not _valid_fixed_training_counts(candidate, fixed_counts):
         raise InputError("invalid_locked_candidate_training_counts")
     features, targets = candidate_prediction_matrix(training, candidate)
-    fitted = runtime.refit(candidate, plan.second_seed, features, targets, fixed_counts)
+    fitted = (
+        _refit_geometry_gate_candidate(
+            candidate, plan.second_seed, runtime, training, fixed_counts
+        )
+        if candidate.family == "geometry_gate"
+        else runtime.refit(candidate, plan.second_seed, features, targets, fixed_counts)
+    )
     if not isinstance(fitted.preprocessing_state, Mapping) or not fitted.artifacts:
         raise InputError("invalid_locked_candidate_artifact")
     directory.mkdir(parents=True, exist_ok=False, mode=0o700)
@@ -2180,6 +2594,8 @@ def _refit_and_lock_explicit(
             "threshold_selection": "validation_records_only",
             "candidate_selection": "validation_records_only",
             "candidate_locking": "training_and_validation_contract_only",
+            **({"gate_fitting": "training_oof_predictions_only"}
+               if candidate.family == "geometry_gate" else {}),
         },
         "code_fingerprint": plan.code_fingerprint,
         "transformation_version": TRANSFORMATION_VERSION,
@@ -2232,6 +2648,105 @@ def _refit_and_lock_explicit(
     }
     write_private_json(directory / "lock-manifest.json", manifest)
     return LockedCandidate(candidate, fitted.predictor, directory, manifest, contract)
+
+
+def _refit_geometry_gate_candidate(
+    candidate: Candidate, seed: int, runtime: CandidateRuntime,
+    training: Sequence[CanonicalRow], fixed_counts: Mapping[str, int | float],
+) -> LockedFit:
+    fixed_neural, fixed_xgboost = _fixed_geometry_gate_components(
+        candidate, fixed_counts
+    )
+    fixed_candidate = Candidate(
+        candidate.candidate_id, candidate.family,
+        {
+            **candidate.parameters,
+            "neural_network": asdict(fixed_neural),
+            "xgboost": asdict(fixed_xgboost),
+        },
+        candidate.ordered_prediction_features,
+        candidate.feature_transformation_version,
+    )
+    gate_state, fold_metadata = _fit_training_oof_geometry_gate(
+        fixed_candidate, seed, runtime, training, fixed_counts
+    )
+    neural_x, targets = candidate_prediction_matrix(training, fixed_neural)
+    xgboost_x, xgboost_targets = candidate_prediction_matrix(training, fixed_xgboost)
+    if targets != xgboost_targets:
+        raise ValueError("invalid_candidate_feature_data")
+    neural_fit = runtime.refit(
+        fixed_neural, seed, neural_x, targets,
+        {"neural_network_epochs": fixed_counts["neural_network_epochs"]},
+    )
+    xgboost_fit = runtime.refit(
+        fixed_xgboost, seed, xgboost_x, targets,
+        {"xgboost_trees": fixed_counts["xgboost_trees"]},
+    )
+
+    predictor = _geometry_gate_predictor(
+        gate_state, neural_fit.predictor, xgboost_fit.predictor
+    )
+
+    artifacts = {
+        **{f"neural-{name}": content for name, content in neural_fit.artifacts.items()},
+        **{f"xgboost-{name}": content for name, content in xgboost_fit.artifacts.items()},
+        "gate-state.json": (
+            json.dumps(gate_state, sort_keys=True, separators=(",", ":"),
+                       allow_nan=False) + "\n"
+        ).encode(),
+    }
+    return LockedFit(
+        predictor,
+        {
+            "neural_network": dict(neural_fit.preprocessing_state),
+            "xgboost": dict(xgboost_fit.preprocessing_state),
+            "gate": gate_state,
+        },
+        artifacts,
+        {
+            "seed": seed,
+            "gate_training": "training_oof_predictions_only",
+            "cross_fit_metadata": fold_metadata,
+            "neural_network": dict(neural_fit.metadata),
+            "xgboost": dict(xgboost_fit.metadata),
+        },
+    )
+
+
+def _fixed_geometry_gate_components(
+    candidate: Candidate, fixed_counts: Mapping[str, int | float],
+) -> tuple[Candidate, Candidate]:
+    neural = _candidate_from_dict(candidate.parameters["neural_network"])
+    xgboost = _candidate_from_dict(candidate.parameters["xgboost"])
+    neural_parameters = dict(neural.parameters)
+    neural_parameters["maximum_epochs"] = fixed_counts["neural_network_epochs"]
+    fixed_neural = Candidate(
+        neural.candidate_id, neural.family, neural_parameters,
+        neural.ordered_prediction_features, neural.feature_transformation_version,
+    )
+    xgboost_parameters = dict(xgboost.parameters)
+    xgboost_parameters["n_estimators"] = fixed_counts["xgboost_trees"]
+    fixed_xgboost = Candidate(
+        xgboost.candidate_id, xgboost.family, xgboost_parameters,
+        xgboost.ordered_prediction_features, xgboost.feature_transformation_version,
+    )
+    return fixed_neural, fixed_xgboost
+
+
+def _geometry_gate_predictor(
+    gate_state: Mapping[str, Any],
+    neural_predictor: Callable[[Sequence[tuple[float, ...]]], Sequence[float]],
+    xgboost_predictor: Callable[[Sequence[tuple[float, ...]]], Sequence[float]],
+) -> Callable[[Sequence[tuple[float, ...]]], Sequence[float]]:
+    def predict(rows: Sequence[tuple[float, ...]]) -> Sequence[float]:
+        legacy = tuple(tuple(row[:len(LEGACY_FEATURES)]) for row in rows)
+        geometry = tuple(tuple(row[len(LEGACY_FEATURES):]) for row in rows)
+        return _geometry_gate_predictions(
+            gate_state, geometry, neural_predictor(legacy),
+            xgboost_predictor(legacy),
+        )
+
+    return predict
 
 
 def _refit_and_lock(
@@ -2325,7 +2840,11 @@ def _derive_training_counts(candidate: Candidate, runs: Sequence[CandidateRun]) 
     weights: list[float] = []
     for run in runs:
         for metadata in run.fit_metadata:
-            values = metadata.values() if candidate.family == "ensemble" else (metadata,)
+            values = (
+                metadata.values()
+                if candidate.family in {"ensemble", "geometry_gate"}
+                else (metadata,)
+            )
             for value in values:
                 if isinstance(value, Mapping):
                     if isinstance(value.get("selected_epochs"), int):
@@ -2350,6 +2869,15 @@ def _rounded_median_count(values: Sequence[int]) -> int:
 
 
 def _locked_runtime_configuration(candidate: Candidate) -> dict[str, Any]:
+    if candidate.family == "geometry_gate":
+        return {
+            "neural_network": copy.deepcopy(CANDIDATE_RUNTIME_CONTRACT["neural_network"]),
+            "xgboost": copy.deepcopy(CANDIDATE_RUNTIME_CONTRACT["xgboost"]),
+            "combination": "geometry_conditioned_clipped_weight",
+            "gate_fit_partition": "training_oof_predictions_only",
+            "cross_fit_folds": candidate.parameters.get("cross_fit_folds"),
+            "gate_transformation_version": candidate.feature_transformation_version,
+        }
     if candidate.family == "ensemble":
         return {
             "neural_network": copy.deepcopy(CANDIDATE_RUNTIME_CONTRACT["neural_network"]),
@@ -2375,6 +2903,9 @@ def _valid_fixed_training_counts(
         and isinstance(trees, int) and not isinstance(trees, bool) and trees > 0
         and isinstance(weight, (int, float)) and not isinstance(weight, bool)
         and math.isfinite(float(weight)) and 0.0 <= float(weight) <= 1.0
+        or candidate.family == "geometry_gate"
+        and isinstance(epochs, int) and not isinstance(epochs, bool) and epochs > 0
+        and isinstance(trees, int) and not isinstance(trees, bool) and trees > 0
     )
 
 
@@ -2400,6 +2931,8 @@ def _valid_locked_contract(contract: Mapping[str, Any]) -> bool:
             "threshold_selection": "validation_records_only",
             "candidate_selection": "validation_records_only",
             "candidate_locking": "training_and_validation_contract_only",
+            **({"gate_fitting": "training_oof_predictions_only"}
+               if candidate.family == "geometry_gate" else {}),
         }
         return (
             contract.get("version") == TUNING_VERSION
@@ -2480,6 +3013,45 @@ def _valid_locked_contract(contract: Mapping[str, Any]) -> bool:
         and all(isinstance(seed, int) and not isinstance(seed, bool) for seed in seeds)
         and seeds[0] != seeds[1]
     )
+
+
+def _validate_geometry_gate_candidate(candidate: Candidate) -> None:
+    try:
+        neural = _candidate_from_dict(candidate.parameters["neural_network"])
+        xgboost = _candidate_from_dict(candidate.parameters["xgboost"])
+    except (KeyError, TypeError, ValueError):
+        raise ValueError("invalid_candidate_configuration") from None
+    if (
+        candidate.family != "geometry_gate"
+        or candidate.ordered_prediction_features
+        != CROSS_FITTED_GEOMETRY_GATE_FEATURES
+        or candidate.feature_transformation_version
+        != CROSS_FITTED_GEOMETRY_GATE_TRANSFORMATION_VERSION
+        or set(candidate.parameters) != {
+            "component_rank", "selection_partition", "neural_network", "xgboost",
+            "cross_fit_folds", "cross_fit_assignment", "gate_fit_partition",
+            "gate_features", "gate_feature_transformation_version",
+            "ridge_penalty", "weight_constraint",
+        }
+        or candidate.parameters["component_rank"] not in (1, 2, 3)
+        or candidate.parameters["selection_partition"] != "validation_records_only"
+        or candidate.parameters["cross_fit_folds"] != CROSS_FIT_FOLDS
+        or candidate.parameters["cross_fit_assignment"]
+        != "stable_record_identity_hash_without_source_metadata"
+        or candidate.parameters["gate_fit_partition"]
+        != "training_oof_predictions_only"
+        or tuple(candidate.parameters["gate_features"]) != GEOMETRY_REGIME_FEATURES
+        or candidate.parameters["gate_feature_transformation_version"]
+        != GEOMETRY_REGIME_TRANSFORMATION_VERSION
+        or candidate.parameters["ridge_penalty"] not in GEOMETRY_GATE_RIDGE_PENALTIES
+        or candidate.parameters["weight_constraint"] != "clip_0_1"
+        or neural.family != "neural_network" or xgboost.family != "xgboost"
+        or neural.ordered_prediction_features != LEGACY_FEATURES
+        or xgboost.ordered_prediction_features != LEGACY_FEATURES
+    ):
+        raise ValueError("invalid_candidate_configuration")
+    _validate_declared_candidate(neural)
+    _validate_declared_candidate(xgboost)
 
 
 def _validate_declared_candidate(candidate: Candidate) -> None:
@@ -2812,6 +3384,24 @@ class TensorflowXGBoostCandidateRuntime:
             candidate, contract["fixed_training_counts"]
         )
         preprocessing = json.loads((directory / "preprocessing-state.json").read_text())
+        if candidate.family == "geometry_gate":
+            assert isinstance(specification, GeometryGateModelSpecification)
+            gate_state = json.loads((directory / "gate-state.json").read_text())
+            if not _valid_geometry_gate_state(gate_state) or preprocessing.get("gate") != gate_state:
+                raise ValueError("invalid_geometry_gate_state")
+            neural = self.models.load(
+                specification.neural_network,
+                {"model.keras": (directory / "neural-model.keras").read_bytes()},
+                preprocessing["neural_network"],
+            )
+            xgboost = self.models.load(
+                specification.xgboost,
+                {"model.json": (directory / "xgboost-model.json").read_bytes()},
+                preprocessing["xgboost"],
+            )
+
+            return _geometry_gate_predictor(gate_state, neural, xgboost)
+        assert isinstance(specification, ModelSpecification)
         artifact_names = (
             ("model.keras",) if specification.model_kind is ModelKind.NEURAL_NETWORK
             else ("model.json",) if specification.model_kind is ModelKind.XGBOOST
@@ -2861,6 +3451,23 @@ def _component_fit_metadata(fitted: FittedModel) -> dict[str, Any]:
 def _locked_model_specification(
     candidate: Candidate, fixed_training_counts: Mapping[str, int | float],
 ):
+    if candidate.family == "geometry_gate":
+        _validate_geometry_gate_candidate(candidate)
+        fixed_neural, fixed_xgboost = _fixed_geometry_gate_components(
+            candidate, fixed_training_counts
+        )
+        neural_specification = fixed_neural.specification
+        xgboost_specification = fixed_xgboost.specification
+        if neural_specification is None or xgboost_specification is None:
+            raise ValueError("invalid_candidate_configuration")
+        return GeometryGateModelSpecification(
+            neural_specification,
+            xgboost_specification,
+            candidate.ordered_prediction_features,
+            tuple(candidate.parameters["gate_features"]),
+            int(candidate.parameters["cross_fit_folds"]),
+            float(candidate.parameters["ridge_penalty"]),
+        )
     if candidate.family == "ensemble":
         neural_candidate = _candidate_from_dict(candidate.parameters["neural_network"])
         xgboost_candidate = _candidate_from_dict(candidate.parameters["xgboost"])
@@ -2959,12 +3566,18 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv: Sequence[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     try:
+        if args.plan_kind == "cross_fitted_geometry_gate":
+            _verify_development_artifact_manifest(
+                args.training_records, args.validation_records
+            )
         try:
             runtime: CandidateRuntime = TensorflowXGBoostCandidateRuntime()
         except ImportError:
             runtime = _BlockedCandidateRuntime("candidate_tuning_dependencies_required")
         except RuntimeError:
             runtime = _BlockedCandidateRuntime("candidate_tuning_runtime_unavailable")
+        if args.plan_kind == "cross_fitted_geometry_gate":
+            _verify_cross_fitted_gate_environment(runtime.dependency_versions)
         limits = SearchLimits.for_plan(args.seed, args.plan_kind)
         result = develop_candidates(
             args.training_records, args.validation_records,
@@ -2978,6 +3591,41 @@ def main(argv: Sequence[str] | None = None) -> int:
         raise SystemExit("candidate_tuning_failed") from None
     print(json.dumps(result.to_dict(public=True), sort_keys=True, allow_nan=False))
     return 0
+
+
+def _verify_development_artifact_manifest(
+    training_records: Path, validation_records: Path,
+) -> None:
+    if training_records.parent.resolve() != validation_records.parent.resolve():
+        raise InputError("development_artifact_checksum_mismatch")
+    try:
+        manifest = json.loads((training_records.parent / "manifest.json").read_text())
+        artifacts = manifest["artifacts"]
+        for path in (training_records, validation_records):
+            expected = artifacts[path.name]
+            if (
+                not isinstance(expected, str)
+                or len(expected) != 64
+                or sha256(path.read_bytes()).hexdigest() != expected
+            ):
+                raise ValueError("checksum mismatch")
+    except (KeyError, OSError, TypeError, ValueError, json.JSONDecodeError):
+        raise InputError("development_artifact_checksum_mismatch") from None
+
+
+def _verify_cross_fitted_gate_environment(
+    dependency_versions: Mapping[str, str],
+) -> None:
+    try:
+        scikit_learn = package_version("scikit-learn")
+    except PackageNotFoundError:
+        raise InputError("candidate_tuning_dependency_mismatch") from None
+    if (
+        platform.python_version_tuple()[:2] != ("3", "13")
+        or dict(dependency_versions) != CROSS_FITTED_GATE_DEPENDENCY_VERSIONS
+        or scikit_learn != CROSS_FITTED_GATE_SCIKIT_LEARN_VERSION
+    ):
+        raise InputError("candidate_tuning_dependency_mismatch")
 
 
 def _validate_limits(limits: SearchLimits) -> None:

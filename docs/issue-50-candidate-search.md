@@ -212,3 +212,85 @@ the held-out assessment was not started. This round stops without stacking or
 automatic expansion. Issue #50 remains open for a future separately justified and
 predeclared hypothesis. Private row-level results, source reports, paths,
 fingerprints, mappings, and model artifacts remain unpublished.
+
+# Cross-fitted geometry-gate candidate search (predeclared)
+
+## Falsifiable hypothesis
+
+Existing neural-network and XGBoost candidates have complementary errors that a
+constant convex weight cannot exploit. This round tests one isolated change: a
+constrained gate fitted from training-only out-of-fold predictions and conditioned
+only on deterministic source-neutral geometry can choose between a fixed pair of
+existing model families well enough for at least one candidate to satisfy every
+unchanged validation gate.
+
+The hypothesis is falsified if no candidate satisfies every gate. The round will
+then stop without new component families, targets, feature contracts, seeds,
+penalties, folds, gates, omitted rows, or expanded compute.
+
+## Cross-fitting and gate contract
+
+The component search returns to the existing baseline domains: six deterministic
+neural-network candidates and six deterministic XGBoost candidates. The existing
+validation ranking pairs the three equal-rank members used by three gate slots;
+there is no constant-convex ensemble slot in this plan.
+
+For each pair and seed, every training row receives neural-network and XGBoost
+out-of-fold predictions from exactly one of five folds. Fold membership is a
+stable ordering of the SHA-256 digest of the declared seed and private record
+identity, assigned round-robin. Anonymous source groups and miniature families do
+not affect fold assignment and never enter a prediction matrix. Each base fit sees
+only the other four training folds; its held fold remains inside the training
+artifact and supplies early stopping for that cross-fit fit.
+
+The gate minimizes a deterministic ridge-regularized squared-error objective over
+the training targets and out-of-fold component predictions. Its linear covariates
+are the same ordered 16 source-neutral geometry values defined by
+`minires-geometry-regime-features-v1`. The three predeclared ridge penalties are
+0.01, 0.1, and 1.0, one per equal-rank pair. The resulting neural-network weight is
+clipped to the inclusive interval from zero through one. The gate contract is
+versioned as `minires-cross-fitted-geometry-gate-v1`.
+
+After the gate is fixed, both base models fit all training rows. Validation remains
+limited to permitted base-model early stopping, unweighted scoring, fixed
+eligibility gates, ranking, ensemble decisions, and locking; it never fits gate
+coefficients. A selected lock derives fixed component training counts from both
+seeds, repeats gate cross-fitting on training only, refits both bases on all
+training rows without validation, and checksum-binds both component artifacts,
+their preprocessing, and `gate-state.json`.
+
+## Fixed plan and budget
+
+The `cross_fitted_geometry_gate` plan is fixed before fitting:
+
+- primary seed 41 and second seed 42, enforced by plan validation;
+- six baseline-domain neural-network and six baseline-domain XGBoost candidates;
+- three equal-rank cross-fitted geometry gates with penalties 0.01, 0.1, and 1.0;
+- five deterministic training-only cross-fit folds per gate;
+- second-seed repetition of at most five eligible initial candidates;
+- at most 20 candidate runs and 7,200 elapsed seconds; and
+- the pinned Python 3.13 environment with NumPy 2.2.6, Keras 3.15.0,
+  TensorFlow 2.20.0, scikit-learn 1.7.2, and XGBoost 3.1.2.
+
+Unused finalist capacity cannot be reassigned. The eligibility gates remain at
+most 1% above-5-g errors pooled, 1% under equal source weighting, and 2% for every
+anonymous source group with at least 200 accepted validation records. Ranking
+remains source-balanced mean absolute error, pooled mean absolute error,
+within-2-g fraction, and stable candidate identity.
+
+Immediately before execution, the committed training and validation SHA-256 values
+must match `data/manifest.json`. The held-out test artifact is not an argument to
+this development seam and must not be loaded, inspected, or fingerprinted.
+
+The one permitted execution will use the next fresh create-only directory:
+
+```bash
+.venv-candidates/bin/python -m minires.modeling.tuning \
+  --training-records data/train.jsonl \
+  --validation-records data/validation.jsonl \
+  --output-root private/candidate-tuning/run-008 \
+  --volume-unit mm3 \
+  --scope-confirmed \
+  --seed 41 \
+  --plan-kind cross_fitted_geometry_gate
+```
