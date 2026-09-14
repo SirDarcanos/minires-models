@@ -76,6 +76,14 @@ XGBOOST_DOMAIN: dict[str, tuple[Any, ...]] = {
     "n_jobs": (1,),
     "early_stopping_rounds": (50,),
 }
+TAIL_AWARE_NEURAL_NETWORK_DOMAIN = {
+    **NEURAL_NETWORK_DOMAIN,
+    "target_weighting": ("none", "mass_band_1_2_3_4"),
+}
+TAIL_AWARE_XGBOOST_DOMAIN = {
+    **XGBOOST_DOMAIN,
+    "target_weighting": ("none", "mass_band_1_2_3_4"),
+}
 
 CANDIDATE_RUNTIME_CONTRACT: dict[str, dict[str, Any]] = {
     "neural_network": {
@@ -101,6 +109,7 @@ CANDIDATE_RUNTIME_CONTRACT: dict[str, dict[str, Any]] = {
 class SearchLimits:
     seed: int
     second_seed: int | None = None
+    plan_kind: str = "baseline"
     maximum_candidate_runs: int = 20
     maximum_elapsed_seconds: float = 7200.0
     neural_network_trials: int = 6
@@ -574,7 +583,7 @@ def generate_search_plan(
         )
     ):
         raise ValueError("invalid_search_plan")
-    domains = _validated_parameter_domains(parameter_domains)
+    domains = _validated_parameter_domains(parameter_domains, limits.plan_kind)
     neural = _space_filling_candidates(
         "neural_network", domains["neural_network"], limits.neural_network_trials,
         limits.seed,
@@ -629,6 +638,13 @@ def generate_search_plan(
             "ordered": True,
             "target_access": False,
             "prior_score_access": False,
+            "plan_kind": limits.plan_kind,
+            "hypothesis": (
+                "bounded target-mass weighting and broader configuration coverage "
+                "reduce serious absolute errors"
+                if limits.plan_kind == "tail_aware_expanded"
+                else "baseline governed candidate search"
+            ),
         },
         "component_trials": components,
         "ensemble_rules": ensemble_rules,
@@ -669,11 +685,9 @@ def generate_search_plan(
 
 def _validated_parameter_domains(
     supplied: Mapping[str, Mapping[str, Sequence[Any]]] | None,
+    plan_kind: str,
 ) -> dict[str, dict[str, tuple[Any, ...]]]:
-    supported = {
-        "neural_network": NEURAL_NETWORK_DOMAIN,
-        "xgboost": XGBOOST_DOMAIN,
-    }
+    supported = _supported_domains(plan_kind)
     source = supported if supplied is None else supplied
     if set(source) != set(supported):
         raise ValueError("invalid_search_plan")
@@ -694,6 +708,20 @@ def _validated_parameter_domains(
                 raise ValueError("invalid_search_plan")
             domains[family][name] = choices
     return domains
+
+
+def _supported_domains(plan_kind: str) -> dict[str, dict[str, tuple[Any, ...]]]:
+    if plan_kind == "baseline":
+        return {
+            "neural_network": NEURAL_NETWORK_DOMAIN,
+            "xgboost": XGBOOST_DOMAIN,
+        }
+    if plan_kind == "tail_aware_expanded":
+        return {
+            "neural_network": TAIL_AWARE_NEURAL_NETWORK_DOMAIN,
+            "xgboost": TAIL_AWARE_XGBOOST_DOMAIN,
+        }
+    raise ValueError("invalid_search_plan")
 
 
 def _jsonable(value: Any) -> Any:
@@ -2192,10 +2220,11 @@ def _validate_declared_candidate(candidate: Candidate) -> None:
     # The deep model-definition module owns structural and semantic validation;
     # this additional check limits governed search candidates to the declared domain.
     candidate_model_specification(candidate.family, candidate.parameters)
-    domain = {
-        "neural_network": NEURAL_NETWORK_DOMAIN,
-        "xgboost": XGBOOST_DOMAIN,
-    }.get(candidate.family)
+    domains = _supported_domains(
+        "tail_aware_expanded"
+        if "target_weighting" in candidate.parameters else "baseline"
+    )
+    domain = domains.get(candidate.family)
     if domain is None or set(candidate.parameters) != set(domain):
         raise ValueError("invalid_candidate_configuration")
     for key, value in candidate.parameters.items():
@@ -2245,9 +2274,14 @@ def _validate_plan(
     if plan != expected_plan:
         raise ValueError("invalid_search_plan")
     families = [candidate.family for candidate in plan.component_trials]
-    if families.count("neural_network") != 6 or families.count("xgboost") != 6:
+    if (
+        families.count("neural_network") != limits.neural_network_trials
+        or families.count("xgboost") != limits.xgboost_trials
+    ):
         raise ValueError("invalid_search_plan")
-    if len({candidate.candidate_id for candidate in plan.component_trials}) != 12:
+    if len({candidate.candidate_id for candidate in plan.component_trials}) != (
+        limits.neural_network_trials + limits.xgboost_trials
+    ):
         raise ValueError("invalid_search_plan")
     for candidate in plan.component_trials:
         domain = plan.parameter_domains.get(candidate.family)
@@ -2613,6 +2647,10 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--volume-unit", default="mm3")
     parser.add_argument("--scope-confirmed", action="store_true")
     parser.add_argument("--seed", required=True, type=int)
+    parser.add_argument(
+        "--plan-kind", choices=("baseline", "tail_aware_expanded"),
+        default="baseline",
+    )
     return parser
 
 
@@ -2625,11 +2663,20 @@ def main(argv: Sequence[str] | None = None) -> int:
             runtime = _BlockedCandidateRuntime("candidate_tuning_dependencies_required")
         except RuntimeError:
             runtime = _BlockedCandidateRuntime("candidate_tuning_runtime_unavailable")
+        limits = (
+            SearchLimits(
+                seed=args.seed, plan_kind="tail_aware_expanded",
+                neural_network_trials=12, xgboost_trials=12, ensemble_trials=6,
+                second_seed_candidates=10, maximum_candidate_runs=40,
+            )
+            if args.plan_kind == "tail_aware_expanded"
+            else SearchLimits(seed=args.seed)
+        )
         result = develop_candidates(
             args.training_records, args.validation_records,
             EvaluationConfig(None, args.volume_unit,
                              True if args.scope_confirmed else None, seed=args.seed),
-            runtime=runtime, output_root=args.output_root, limits=SearchLimits(seed=args.seed),
+            runtime=runtime, output_root=args.output_root, limits=limits,
         )
     except InputError as error:
         raise SystemExit(str(error)) from None
@@ -2648,10 +2695,13 @@ def _validate_limits(limits: SearchLimits) -> None:
         or limits.second_seed == limits.seed
     ):
         raise ValueError("invalid_search_plan")
-    expected = (6, 6, 3, 5, 20)
+    expected_by_kind = {
+        "baseline": (6, 6, 3, 5, 20),
+        "tail_aware_expanded": (12, 12, 6, 10, 40),
+    }
     actual = (limits.neural_network_trials, limits.xgboost_trials, limits.ensemble_trials,
               limits.second_seed_candidates, limits.maximum_candidate_runs)
-    if actual != expected:
+    if actual != expected_by_kind.get(limits.plan_kind):
         raise ValueError("invalid_search_plan")
     if not isinstance(limits.maximum_elapsed_seconds, (int, float)) or isinstance(
         limits.maximum_elapsed_seconds, bool

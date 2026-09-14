@@ -16,7 +16,7 @@ MiniRes estimates sliced resin mass under validated slicing conditions. It does 
 
 ## Repository status
 
-The current code supports data preparation and governed model development. A replacement production model has not been declared by this repository yet. Candidate selection and final assessment must complete before a model is presented as the current MiniRes estimator.
+The current code supports data preparation and governed model development. The latest tail-aware expanded candidate round produced no eligible lock, so final assessment was not started and no replacement production model has been declared. Further tuning requires a separate predeclared hypothesis rather than automatic search expansion.
 
 Start with:
 
@@ -113,6 +113,7 @@ The main references are:
 - [Clean learned baselines](docs/learned-baselines.md)
 - [Model definitions](docs/model-definitions.md)
 - [Candidate tuning](docs/candidate-tuning.md)
+- [Tail-aware expanded tuning result](docs/issue-46-completion.md)
 - [Baseline evidence](docs/baseline-evidence.md)
 
 `notebooks/baseline_analysis.ipynb` remains because it is a current, output-free view over the public aggregate evaluation interface. It is not a historical training notebook and is not required by the runtime.

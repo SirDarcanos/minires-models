@@ -355,6 +355,34 @@ class CandidateSearchPlanTests(unittest.TestCase):
 
         self.assertEqual(reordered, baseline)
 
+    def test_tail_aware_plan_expands_the_search_and_records_its_hypothesis(self):
+        limits = SearchLimits(
+            seed=41, plan_kind="tail_aware_expanded",
+            neural_network_trials=12, xgboost_trials=12, ensemble_trials=6,
+            second_seed_candidates=10, maximum_candidate_runs=40,
+        )
+
+        plan = generate_search_plan(
+            limits, input_fingerprint="input", code_fingerprint="code",
+            dependency_versions={"runtime": "synthetic-1"},
+        )
+
+        self.assertEqual(len(plan.component_trials), 24)
+        self.assertEqual(len(plan.ensemble_rules), 6)
+        self.assertEqual(plan.second_seed_rule["candidate_count"], 10)
+        self.assertEqual(plan.resource_limits["maximum_candidate_runs"], 40)
+        self.assertEqual(plan.generator["plan_kind"], "tail_aware_expanded")
+        self.assertIn("target-mass weighting", plan.generator["hypothesis"])
+        for family in ("neural_network", "xgboost"):
+            self.assertEqual(
+                plan.parameter_domains[family]["target_weighting"],
+                ("none", "mass_band_1_2_3_4"),
+            )
+        self.assertTrue(any(
+            candidate.parameters["target_weighting"] == "mass_band_1_2_3_4"
+            for candidate in plan.component_trials
+        ))
+
     def test_invalid_domains_and_resources_fail_at_the_plan_generation_interface(self):
         invalid = {
             "neural_network": {
@@ -1116,6 +1144,37 @@ class CandidateTuningTests(unittest.TestCase):
         self.assertIn("--training-records", help_text)
         self.assertIn("--validation-records", help_text)
         self.assertNotIn("--test-records", help_text)
+
+    def test_cli_runs_the_predeclared_tail_aware_expanded_plan(self):
+        training = Path(self.temp.name) / "training-expanded.json"
+        validation = Path(self.temp.name) / "validation-expanded.json"
+        training.write_text(json.dumps([
+            dict(row, _id=f"training-{index}") for index, row in enumerate(self.records[:4])
+        ]))
+        validation.write_text(json.dumps([
+            dict(row, _id=f"validation-{index}") for index, row in enumerate(self.records[4:])
+        ]))
+        output_root = self.root.parent / "expanded"
+        output = io.StringIO()
+
+        with patch(
+            "minires.modeling.tuning.TensorflowXGBoostCandidateRuntime",
+            return_value=RecordingTuningRuntime(),
+        ), contextlib.redirect_stdout(output):
+            code = tuning_main([
+                "--training-records", str(training),
+                "--validation-records", str(validation),
+                "--output-root", str(output_root),
+                "--volume-unit", "mm3", "--scope-confirmed", "--seed", "41",
+                "--plan-kind", "tail_aware_expanded",
+            ])
+
+        status = json.loads(output.getvalue())
+        plan = json.loads((output_root / "search-plan.json").read_text())
+        self.assertEqual(code, 0)
+        self.assertEqual(status["run_count"], 40)
+        self.assertEqual(plan["generator"]["plan_kind"], "tail_aware_expanded")
+        self.assertEqual(plan["resource_limits"]["maximum_candidate_runs"], 40)
 
     def test_invalid_unbounded_worker_plan_is_rejected_before_runtime_fitting(self):
         runtime = RecordingTuningRuntime()
