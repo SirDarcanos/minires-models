@@ -67,6 +67,15 @@ GEOMETRY_REGIME_INPUTS = (
     "euler_number",
 )
 GEOMETRY_REGIME_TRANSFORMATION_VERSION = "minires-geometry-regime-features-v1"
+LEGACY_GEOMETRY_AUGMENTATION_FEATURES = LEGACY_FEATURES + (
+    "mesh_volume_to_bounding_box_volume_ratio",
+    "surface_area_to_bounding_box_volume_ratio_per_mm",
+    "log1p_volume_squared",
+    "bounding_box_long_to_short_ratio",
+)
+LEGACY_GEOMETRY_AUGMENTATION_TRANSFORMATION_VERSION = (
+    "minires-legacy-geometry-augmentation-v1"
+)
 CROSS_FITTED_GEOMETRY_GATE_TRANSFORMATION_VERSION = (
     "minires-cross-fitted-geometry-gate-v1"
 )
@@ -230,6 +239,15 @@ SEARCH_PLAN_POLICIES = {
         LARGE_BATCH_NEURAL_NETWORK_DOMAIN, LARGE_BATCH_XGBOOST_DOMAIN,
         "a richer deterministic source-neutral geometry representation with "
         "logarithmic, ratio, and orientation-invariant features reduces serious "
+        "absolute errors",
+    ),
+    "legacy_geometry_augmentation": SearchPlanPolicy(
+        "legacy_geometry_augmentation", LEGACY_GEOMETRY_AUGMENTATION_FEATURES,
+        LEGACY_GEOMETRY_AUGMENTATION_TRANSFORMATION_VERSION, (41, 42),
+        6, 6, 3, 5, 20, 7200.0,
+        NEURAL_NETWORK_DOMAIN, XGBOOST_DOMAIN,
+        "augmenting the retained legacy candidate inputs with four deterministic "
+        "source-neutral compactness, shape, and curvature terms reduces serious "
         "absolute errors",
     ),
     "cross_fitted_geometry_gate": SearchPlanPolicy(
@@ -1472,6 +1490,17 @@ def candidate_prediction_matrix(
     if candidate.family == "control" or candidate.ordered_prediction_features == LEGACY_FEATURES:
         return _matrix(rows)
     if (
+        candidate.ordered_prediction_features == LEGACY_GEOMETRY_AUGMENTATION_FEATURES
+        and candidate.feature_transformation_version
+        == LEGACY_GEOMETRY_AUGMENTATION_TRANSFORMATION_VERSION
+    ):
+        legacy, targets = _matrix(rows)
+        additions = tuple(_legacy_geometry_augmentation_row(row) for row in rows)
+        features = tuple(left + right for left, right in zip(legacy, additions))
+        if len(legacy) != len(additions) or not _valid_float32_matrix(features):
+            raise ValueError("invalid_candidate_feature_data")
+        return features, targets
+    if (
         candidate.ordered_prediction_features == CROSS_FITTED_GEOMETRY_GATE_FEATURES
         and candidate.feature_transformation_version
         == CROSS_FITTED_GEOMETRY_GATE_TRANSFORMATION_VERSION
@@ -1496,6 +1525,35 @@ def candidate_prediction_matrix(
     if len(features) != len(targets) or not features:
         raise ValueError("invalid_candidate_feature_data")
     return features, targets
+
+
+def _legacy_geometry_augmentation_row(row: CanonicalRow) -> tuple[float, ...]:
+    try:
+        selected = tuple(row.features[name] for name in GEOMETRY_REGIME_INPUTS)
+        if any(value is None for value in selected):
+            raise ValueError("missing geometry")
+        raw = tuple(float(value) for value in selected if value is not None)
+    except (KeyError, TypeError, ValueError):
+        raise ValueError("invalid_candidate_feature_data") from None
+    if not all(
+        math.isfinite(value) and abs(value) <= FLOAT32_MAXIMUM for value in raw
+    ):
+        raise ValueError("invalid_candidate_feature_data")
+    volume, surface, x, y, z, bbox_volume, _ = raw
+    if any(value <= 0.0 for value in (volume, surface, x, y, z, bbox_volume)):
+        raise ValueError("invalid_candidate_feature_data")
+    short, _, long = sorted((x, y, z))
+    values = (
+        volume / bbox_volume,
+        surface / bbox_volume,
+        math.log1p(volume) ** 2,
+        long / short,
+    )
+    if not all(
+        math.isfinite(value) and abs(value) <= FLOAT32_MAXIMUM for value in values
+    ):
+        raise ValueError("invalid_candidate_feature_data")
+    return values
 
 
 def _geometry_regime_row(row: CanonicalRow) -> tuple[float, ...]:
@@ -1527,6 +1585,13 @@ def _geometry_regime_row(row: CanonicalRow) -> tuple[float, ...]:
     return values
 
 
+def _valid_float32_matrix(rows: Sequence[tuple[float, ...]]) -> bool:
+    return bool(rows) and all(
+        math.isfinite(value) and abs(value) <= FLOAT32_MAXIMUM
+        for row in rows for value in row
+    )
+
+
 def _valid_candidate_feature_data(
     rows: Sequence[CanonicalRow], prediction_features: tuple[str, ...],
 ) -> bool:
@@ -1534,13 +1599,27 @@ def _valid_candidate_feature_data(
         return True
     if prediction_features not in {
         GEOMETRY_REGIME_FEATURES, CROSS_FITTED_GEOMETRY_GATE_FEATURES,
+        LEGACY_GEOMETRY_AUGMENTATION_FEATURES,
     } or not rows:
         return False
+    feature_builder = (
+        _legacy_geometry_augmentation_row
+        if prediction_features == LEGACY_GEOMETRY_AUGMENTATION_FEATURES
+        else _geometry_regime_row
+    )
     try:
-        return all(
-            row.sliced_resin_mass_g is not None and bool(_geometry_regime_row(row))
+        if not all(
+            row.sliced_resin_mass_g is not None and bool(feature_builder(row))
             for row in rows
-        )
+        ):
+            return False
+        if prediction_features == LEGACY_GEOMETRY_AUGMENTATION_FEATURES:
+            legacy, _ = _matrix(rows)
+            additions = tuple(_legacy_geometry_augmentation_row(row) for row in rows)
+            return _valid_float32_matrix(tuple(
+                left + right for left, right in zip(legacy, additions)
+            ))
+        return True
     except ValueError:
         return False
 
@@ -2909,6 +2988,50 @@ def _valid_fixed_training_counts(
     )
 
 
+def _valid_locked_feature_contract(candidate: Candidate) -> bool:
+    if candidate.family == "geometry_gate":
+        try:
+            _validate_geometry_gate_candidate(candidate)
+            return True
+        except ValueError:
+            return False
+    valid_pairs = {
+        (LEGACY_FEATURES, TRANSFORMATION_VERSION),
+        (GEOMETRY_REGIME_FEATURES, GEOMETRY_REGIME_TRANSFORMATION_VERSION),
+        (
+            LEGACY_GEOMETRY_AUGMENTATION_FEATURES,
+            LEGACY_GEOMETRY_AUGMENTATION_TRANSFORMATION_VERSION,
+        ),
+    }
+    if (
+        candidate.family not in {"neural_network", "xgboost", "ensemble"}
+        or (
+            candidate.ordered_prediction_features,
+            candidate.feature_transformation_version,
+        ) not in valid_pairs
+    ):
+        return False
+    if candidate.family != "ensemble":
+        return True
+    try:
+        neural = _candidate_from_dict(candidate.parameters["neural_network"])
+        xgboost = _candidate_from_dict(candidate.parameters["xgboost"])
+    except (KeyError, TypeError, ValueError):
+        return False
+    return (
+        neural.family == "neural_network"
+        and xgboost.family == "xgboost"
+        and neural.ordered_prediction_features == candidate.ordered_prediction_features
+        and xgboost.ordered_prediction_features == candidate.ordered_prediction_features
+        and neural.feature_transformation_version
+        == candidate.feature_transformation_version
+        and xgboost.feature_transformation_version
+        == candidate.feature_transformation_version
+        and _valid_locked_feature_contract(neural)
+        and _valid_locked_feature_contract(xgboost)
+    )
+
+
 def _valid_locked_contract(contract: Mapping[str, Any]) -> bool:
     evidence = contract.get("development_evidence")
     feature_contract = contract.get("feature_contract")
@@ -2921,6 +3044,8 @@ def _valid_locked_contract(contract: Mapping[str, Any]) -> bool:
     try:
         candidate = _candidate_from_dict(contract["candidate"])
     except (KeyError, TypeError, ValueError):
+        return False
+    if not _valid_locked_feature_contract(candidate):
         return False
     if contract.get("development_contract") == "explicit_train_validation":
         required_usage = {
@@ -3566,7 +3691,10 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv: Sequence[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     try:
-        if args.plan_kind == "cross_fitted_geometry_gate":
+        governed_geometry_plans = {
+            "cross_fitted_geometry_gate", "legacy_geometry_augmentation",
+        }
+        if args.plan_kind in governed_geometry_plans:
             _verify_development_artifact_manifest(
                 args.training_records, args.validation_records
             )
@@ -3576,8 +3704,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             runtime = _BlockedCandidateRuntime("candidate_tuning_dependencies_required")
         except RuntimeError:
             runtime = _BlockedCandidateRuntime("candidate_tuning_runtime_unavailable")
-        if args.plan_kind == "cross_fitted_geometry_gate":
-            _verify_cross_fitted_gate_environment(runtime.dependency_versions)
+        if args.plan_kind in governed_geometry_plans:
+            _verify_predeclared_environment(runtime.dependency_versions)
         limits = SearchLimits.for_plan(args.seed, args.plan_kind)
         result = develop_candidates(
             args.training_records, args.validation_records,
@@ -3613,7 +3741,7 @@ def _verify_development_artifact_manifest(
         raise InputError("development_artifact_checksum_mismatch") from None
 
 
-def _verify_cross_fitted_gate_environment(
+def _verify_predeclared_environment(
     dependency_versions: Mapping[str, str],
 ) -> None:
     try:

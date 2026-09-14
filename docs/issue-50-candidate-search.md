@@ -331,3 +331,89 @@ expansion. Issue #50 remains open for a future separately justified and
 predeclared hypothesis. Private row-level results, source reports, paths,
 fingerprints, mappings, candidate configurations, and model artifacts remain
 unpublished.
+
+# Legacy geometry-augmentation search (predeclared)
+
+## Falsifiable hypothesis
+
+A small augmentation of the retained seven-feature legacy candidate matrix with
+explicit nonlinear compactness, shape, and volume-curvature terms can reduce
+serious validation errors enough for at least one otherwise unchanged candidate
+to satisfy every fixed eligibility gate.
+
+The hypothesis is falsified if no candidate satisfies every gate. The round will
+then stop without new features, model families, architectures, weighting, seeds,
+gates, omitted rows, or expanded compute.
+
+## Ordered feature contract
+
+The candidate matrix retains these seven legacy inputs in their existing order:
+`kb`, `volume`, `surface_area`, `bbox_area`, `euler_number`, `scale`, and
+`surface_volume_ratio`. It then appends exactly four values derived from canonical
+geometry:
+
+1. mesh volume divided by bounding-box volume;
+2. surface area divided by bounding-box volume;
+3. squared `log1p` mesh volume; and
+4. longest divided by shortest bounding-box dimension.
+
+The curvature choice is frozen as squared `log1p` volume rather than raw volume
+squared to limit numerical range while exposing an explicit nonlinear size term.
+Bounding-box dimensions are sorted before the aspect ratio is calculated. The
+ordered 11-feature contract is versioned as
+`minires-legacy-geometry-augmentation-v1` and is bound into every candidate,
+model specification, plan identity, and any resulting lock.
+
+Retaining `kb` and `scale` is scientifically acceptable only for this isolated
+comparison because it holds the existing candidate contract constant while
+adding geometry terms. Their historical semantics remain uncertain and they may
+act as source or style proxies. This limitation is predeclared; it is not evidence
+that those two legacy inputs are source-neutral. Anonymous source groups,
+miniature families, identities, linkage evidence, partitions, paths, artist
+identity, and held-out information remain excluded from prediction matrices.
+
+Missing, non-positive, non-finite, or non-float32 canonical volume, area,
+bounding-box volume, or dimensions block before fitting. No imputation or row
+removal is permitted. The fixed clean control continues to use only its legacy
+seven-feature contract.
+
+## Fixed plan and budget
+
+The `legacy_geometry_augmentation` plan is fixed before fitting:
+
+- primary seed 41 and second seed 42, enforced by plan validation;
+- six neural-network and six XGBoost candidates from the existing bounded
+  baseline component domains;
+- three deterministic validation-selected equal-rank constant convex ensembles;
+- second-seed repetition of at most five eligible initial candidates;
+- at most 20 candidate runs and 7,200 elapsed seconds; and
+- the pinned Python 3.13 environment with NumPy 2.2.6, Keras 3.15.0,
+  TensorFlow 2.20.0, scikit-learn 1.7.2, and XGBoost 3.1.2.
+
+This reuses the smallest existing bounded component plan because the feature
+contract is the sole intervention. The NN/XGBoost families, component parameter
+domains, target, unweighted training, ensemble rule, eligibility gates, ranking,
+and lock rules are unchanged. Unused finalist capacity cannot be reassigned.
+
+Immediately before execution, `data/train.jsonl` and `data/validation.jsonl` must
+match the SHA-256 values in `data/manifest.json`. The held-out test artifact must
+not be read, inspected, or fingerprinted. The one permitted execution will use
+the next fresh create-only directory:
+
+```bash
+.venv-candidates/bin/python -m minires.modeling.tuning \
+  --training-records data/train.jsonl \
+  --validation-records data/validation.jsonl \
+  --output-root private/candidate-tuning/run-009 \
+  --volume-unit mm3 \
+  --scope-confirmed \
+  --seed 41 \
+  --plan-kind legacy_geometry_augmentation
+```
+
+The fixed serious-error limits remain 1% pooled, 1% source-balanced, and 2% for
+every anonymous source group with at least 200 accepted validation records.
+Ranking remains source-balanced mean absolute error, pooled mean absolute error,
+within-2-g fraction, and stable candidate identity. If no initial candidate is
+eligible, there is no second seed, refit, lock, held-out assessment, or automatic
+expansion.

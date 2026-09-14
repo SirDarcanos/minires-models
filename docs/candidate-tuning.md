@@ -393,6 +393,53 @@ repetition of at most five eligible candidates, at most 20 candidate runs, and
 rule remains in force. See [the issue #50 round ledger](issue-50-candidate-search.md)
 for the complete falsifiable hypothesis and stop rule.
 
+### Run the predeclared legacy geometry-augmentation plan
+
+Use this plan only for the issue #50 round predeclared after the cross-fitted
+geometry gate failed its fixed eligibility gates:
+
+```bash
+.venv-candidates/bin/python -m minires.modeling.tuning \
+  --training-records data/train.jsonl \
+  --validation-records data/validation.jsonl \
+  --output-root private/candidate-tuning/run-009 \
+  --volume-unit mm3 \
+  --scope-confirmed \
+  --seed 41 \
+  --plan-kind legacy_geometry_augmentation
+```
+
+The plan keeps the seven ordered legacy candidate inputs and appends four
+source-neutral geometry terms in this exact order: mesh volume divided by
+bounding-box volume, surface area divided by bounding-box volume, squared
+`log1p` mesh volume, and longest divided by shortest bounding-box dimension.
+The complete 11-feature contract is versioned as
+`minires-legacy-geometry-augmentation-v1`. The fixed control remains on the
+seven-feature legacy contract.
+
+Legacy `kb` and `scale` are retained deliberately so augmentation is the only
+intervention. Their historical meaning is not fully established and they may act
+as source or style proxies; this is an explicit scientific limitation rather
+than a claim that they are source-neutral. No source group, miniature family,
+identity, linkage, partition, path, or held-out information is added.
+
+The plan reuses the bounded baseline component domains: six neural-network and
+six XGBoost candidates, three validation-selected constant convex ensembles,
+and second-seed repetition of at most five eligible initial candidates. Seeds
+41/42, at most 20 candidate runs, and 7,200 seconds are fixed. The target,
+weighting, architecture families, eligibility gates, ranking, and development
+boundary are unchanged. Missing, non-positive, non-finite, or non-float32
+canonical geometry blocks before fitting. The ordered feature contract and
+transformation version are bound into plan, candidate, model-specification, and
+lock identities and are reconstructed from canonical geometry during assessment.
+
+Immediately before execution, the command checksum-verifies only `train.jsonl`
+and `validation.jsonl` against their adjacent `manifest.json`. It also verifies
+the pinned Python 3.13 environment with NumPy 2.2.6, Keras 3.15.0, TensorFlow
+2.20.0, scikit-learn 1.7.2, and XGBoost 3.1.2. The test artifact is not read or
+fingerprinted. See [the issue #50 round ledger](issue-50-candidate-search.md) for
+the complete falsifiable hypothesis and stop rule.
+
 Runtime failures, invalid plans, missing grouping evidence, deadline exhaustion,
 and the absence of eligible candidates remain bounded outcomes in
 `tuning-result.json`. The private `candidate_history` records the control, every

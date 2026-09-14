@@ -483,6 +483,42 @@ class CandidateSearchPlanTests(unittest.TestCase):
             len({candidate.candidate_id for candidate in first.component_trials}), 24
         )
 
+    def test_legacy_geometry_augmentation_plan_is_finite_and_binds_its_feature_contract(self):
+        limits = SearchLimits.for_plan(41, "legacy_geometry_augmentation")
+
+        plan = generate_search_plan(
+            limits, input_fingerprint="input", code_fingerprint="code",
+            dependency_versions={"runtime": "synthetic-1"},
+        )
+
+        expected_features = (
+            "kb", "volume", "surface_area", "bbox_area", "euler_number", "scale",
+            "surface_volume_ratio", "mesh_volume_to_bounding_box_volume_ratio",
+            "surface_area_to_bounding_box_volume_ratio_per_mm",
+            "log1p_volume_squared", "bounding_box_long_to_short_ratio",
+        )
+        self.assertEqual((plan.seed, plan.second_seed), (41, 42))
+        self.assertEqual(plan.generator["plan_kind"], "legacy_geometry_augmentation")
+        self.assertEqual(plan.prediction_features, expected_features)
+        self.assertEqual(
+            plan.feature_transformation_version,
+            "minires-legacy-geometry-augmentation-v1",
+        )
+        self.assertEqual(len(plan.component_trials), 12)
+        self.assertEqual(len(plan.ensemble_rules), 3)
+        self.assertEqual(plan.second_seed_rule["candidate_count"], 5)
+        self.assertEqual(plan.resource_limits["maximum_candidate_runs"], 20)
+        self.assertEqual(plan.resource_limits["maximum_elapsed_seconds"], 7200.0)
+        self.assertTrue(all(
+            candidate.ordered_prediction_features == expected_features
+            and candidate.feature_transformation_version
+            == "minires-legacy-geometry-augmentation-v1"
+            for candidate in plan.component_trials
+        ))
+        serialized = json.dumps(plan.to_dict(), sort_keys=True)
+        self.assertNotIn("anonymous_source_group", serialized)
+        self.assertNotIn("miniature_family", serialized)
+
     def test_cross_fitted_geometry_gate_plan_is_finite_training_only_and_source_neutral(self):
         limits = SearchLimits.for_plan(41, "cross_fitted_geometry_gate")
 
@@ -828,6 +864,28 @@ class GeometryRecordingRuntime(RecordingTuningRuntime):
         return predict
 
 
+class AugmentedGeometryRecordingRuntime(RecordingTuningRuntime):
+    def __init__(self):
+        super().__init__()
+        self.feature_calls = []
+        self.loaded_feature_widths = []
+
+    def fit_fold(self, candidate, seed, train_features, train_targets,
+                 validation_features, validation_targets):
+        self.feature_calls.append((candidate.family, tuple(train_features),
+                                   tuple(validation_features)))
+        return super().fit_fold(
+            candidate, seed, train_features, train_targets,
+            validation_features, validation_targets,
+        )
+
+    def load_locked(self, candidate, directory, contract):
+        def predict(rows):
+            self.loaded_feature_widths.extend(len(row) for row in rows)
+            return [row[1] / 1000.0 for row in rows]
+        return predict
+
+
 class ExplicitPartitionDevelopmentTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
@@ -1054,6 +1112,184 @@ class ExplicitPartitionDevelopmentTests(unittest.TestCase):
         public = json.dumps(result.to_dict(public=True), sort_keys=True)
         self.assertNotIn("private-source", public)
         self.assertNotIn("anonymous_source_group", public)
+
+    def test_legacy_geometry_augmentation_appends_four_canonical_terms(self):
+        def canonical(row):
+            value = float(row["weight"])
+            return {
+                **row,
+                "volume_mm3": value * 1000,
+                "surface_area_mm2": value * 100,
+                "bounding_box_x_mm": value * 2, "bbox_x": value * 2,
+                "bounding_box_y_mm": value * 4, "bbox_y": value * 4,
+                "bounding_box_z_mm": value * 3, "bbox_z": value * 3,
+                "bounding_box_volume_mm3": value * 1100,
+            }
+
+        runtime = AugmentedGeometryRecordingRuntime()
+        result = develop_candidates(
+            [canonical(row) for row in self.training],
+            [canonical(row) for row in self.validation],
+            self.config, runtime=runtime, output_root=self.root / "augmented-geometry",
+            limits=SearchLimits.for_plan(41, "legacy_geometry_augmentation"),
+            clock=lambda: 0.0,
+        )
+
+        self.assertEqual(result.status, "completed")
+        control_calls = [call for call in runtime.feature_calls if call[0] == "control"]
+        candidate_calls = [call for call in runtime.feature_calls if call[0] != "control"]
+        self.assertTrue(control_calls)
+        self.assertTrue(candidate_calls)
+        self.assertTrue(all(len(row) == 7 for call in control_calls for rows in call[1:]
+                            for row in rows))
+        self.assertTrue(all(len(row) == 11 for call in candidate_calls for rows in call[1:]
+                            for row in rows))
+        first = candidate_calls[0][1][0]
+        self.assertEqual(first[:7], (1.0, 1000.0, 100.0, 1100.0, 1.0, 1.0, 0.1))
+        self.assertAlmostEqual(first[7], 1000.0 / 1100.0)
+        self.assertAlmostEqual(first[8], 100.0 / 1100.0)
+        self.assertAlmostEqual(first[9], math.log1p(1000.0) ** 2)
+        self.assertAlmostEqual(first[10], 4.0 / 2.0)
+        self.assertEqual(
+            result.locked_candidate.contract["feature_contract"]["ordered_features"],
+            list(result.plan.prediction_features),
+        )
+        reloaded = load_locked_candidate(result.locked_candidate.directory, runtime)
+        final = []
+        for source_index in range(3):
+            for index in range(200):
+                value = source_index * 200 + index + 1
+                row = canonical(CandidateTuningTests.row(
+                    f"unseen-{source_index}", f"family-{source_index}-{index}", value
+                ))
+                final.append({**row, "slicing_conditions": {"layer_height_mm": 0.05}})
+        legacy_predictor = lambda rows: [row[1] / 1000.0 for row in rows]
+        legacy = LegacyReference.from_predictors(
+            neural_network=legacy_predictor, xgboost=legacy_predictor,
+            neural_network_weight=0.2, provenance=LegacyProvenance.unknown(),
+        )
+
+        assessment = assess_locked_candidate(
+            final, EvaluationConfig(None, "mm3", True), reloaded, legacy,
+            output_root=self.root / "augmented-geometry-assessment", runtime=runtime,
+        )
+
+        self.assertNotEqual(assessment.status, "blocked")
+        self.assertEqual(set(runtime.loaded_feature_widths), {11})
+
+    def test_legacy_geometry_augmentation_blocks_invalid_geometry_before_fitting(self):
+        def canonical(row):
+            value = float(row["weight"])
+            return {
+                **row,
+                "volume_mm3": value * 1000,
+                "surface_area_mm2": value * 100,
+                "bounding_box_x_mm": value * 2, "bbox_x": value * 2,
+                "bounding_box_y_mm": value * 4, "bbox_y": value * 4,
+                "bounding_box_z_mm": value * 3, "bbox_z": value * 3,
+                "bounding_box_volume_mm3": value * 1100,
+            }
+
+        base_training = [canonical(row) for row in self.training]
+        base_validation = [canonical(row) for row in self.validation]
+        invalid_cases = {
+            "missing": lambda row: (
+                row.pop("bounding_box_z_mm"), row.pop("bbox_z")
+            ),
+            "not-float32-volume": lambda row: row.update(
+                {"bounding_box_volume_mm3": 1e100, "bbox_area": 1e100}
+            ),
+            "not-float32-dimensions": lambda row: row.update({
+                "bounding_box_x_mm": 1e100, "bbox_x": 1e100,
+                "bounding_box_y_mm": 1e100, "bbox_y": 1e100,
+                "bounding_box_z_mm": 1e100, "bbox_z": 1e100,
+            }),
+        }
+        for name, mutate in invalid_cases.items():
+            with self.subTest(name=name):
+                training = [dict(row) for row in base_training]
+                validation = [dict(row) for row in base_validation]
+                mutate(validation[0])
+                runtime = AugmentedGeometryRecordingRuntime()
+
+                result = develop_candidates(
+                    training, validation, self.config, runtime=runtime,
+                    output_root=self.root / f"augmented-{name}",
+                    limits=SearchLimits.for_plan(41, "legacy_geometry_augmentation"),
+                )
+
+                self.assertEqual(result.status, "blocked")
+                self.assertEqual(result.blockers, ("invalid_candidate_feature_data",))
+                self.assertEqual(runtime.feature_calls, [])
+                self.assertEqual(runtime.refit_calls, [])
+
+    def test_legacy_geometry_augmentation_lock_rejects_feature_contract_tampering(self):
+        def canonical(row):
+            value = float(row["weight"])
+            return {
+                **row,
+                "volume_mm3": value * 1000,
+                "surface_area_mm2": value * 100,
+                "bounding_box_x_mm": value * 2, "bbox_x": value * 2,
+                "bounding_box_y_mm": value * 4, "bbox_y": value * 4,
+                "bounding_box_z_mm": value * 3, "bbox_z": value * 3,
+                "bounding_box_volume_mm3": value * 1100,
+            }
+
+        runtime = AugmentedGeometryRecordingRuntime()
+        result = develop_candidates(
+            [canonical(row) for row in self.training],
+            [canonical(row) for row in self.validation], self.config,
+            runtime=runtime, output_root=self.root / "augmented-tampering",
+            limits=SearchLimits.for_plan(41, "legacy_geometry_augmentation"),
+            clock=lambda: 0.0,
+        )
+        assert result.locked_candidate is not None
+        lock = result.locked_candidate.directory
+        contract_path = lock / "candidate-contract.json"
+        contract = json.loads(contract_path.read_text())
+        changed_version = "changed-formulas"
+        contract["candidate"]["feature_transformation_version"] = changed_version
+        for member in ("neural_network", "xgboost"):
+            if member in contract["candidate"]["parameters"]:
+                contract["candidate"]["parameters"][member][
+                    "feature_transformation_version"
+                ] = changed_version
+        contract["feature_contract"]["transformation_version"] = changed_version
+
+        def refresh_specification(specification):
+            if specification["model_kind"] == "ensemble":
+                refresh_specification(specification["ensemble"]["neural_network"])
+                refresh_specification(specification["ensemble"]["xgboost"])
+            else:
+                specification["version"] = (
+                    f"minires-model-definition-v1:{changed_version}"
+                )
+            payload = {
+                key: value for key, value in specification.items()
+                if key != "stable_identity"
+            }
+            digest = sha256(json.dumps(
+                payload, sort_keys=True, separators=(",", ":"), allow_nan=False
+            ).encode()).hexdigest()[:16]
+            specification["stable_identity"] = (
+                f"model-{specification['model_kind']}-{digest}"
+            )
+
+        refresh_specification(contract["model_specification"])
+        contract_path.write_text(json.dumps(contract, sort_keys=True))
+        manifest_path = lock / "lock-manifest.json"
+        manifest = json.loads(manifest_path.read_text())
+        manifest["files"]["candidate-contract.json"] = sha256(
+            contract_path.read_bytes()
+        ).hexdigest()
+        manifest_path.write_text(json.dumps(manifest, sort_keys=True))
+
+        blockers, _, _ = verify_locked_candidate_files(
+            lock, runtime.dependency_versions
+        )
+
+        self.assertIn("locked_candidate_contract_mismatch", blockers)
 
     def test_geometry_regime_uses_only_richer_canonical_geometry_for_candidates(self):
         def canonical(row):
@@ -1666,7 +1902,7 @@ class CandidateTuningTests(unittest.TestCase):
                     self.assertEqual(len(plan["prediction_features"]), 16)
                     self.assertNotIn("anonymous_source_group", plan["prediction_features"])
 
-    def test_cross_fitted_gate_cli_rejects_unverified_development_artifacts(self):
+    def test_predeclared_geometry_cli_rejects_unverified_development_artifacts(self):
         dataset = Path(self.temp.name) / "dataset"
         dataset.mkdir()
         training = dataset / "train.jsonl"
@@ -1679,22 +1915,29 @@ class CandidateTuningTests(unittest.TestCase):
                 "validation.jsonl": sha256(validation.read_bytes()).hexdigest(),
             },
         }))
-        runtime = RecordingTuningRuntime()
 
-        with patch(
-            "minires.modeling.tuning.TensorflowXGBoostCandidateRuntime",
-            return_value=runtime,
-        ), self.assertRaisesRegex(SystemExit, "development_artifact_checksum_mismatch"):
-            tuning_main([
-                "--training-records", str(training),
-                "--validation-records", str(validation),
-                "--output-root", str(self.root),
-                "--volume-unit", "mm3", "--scope-confirmed", "--seed", "41",
-                "--plan-kind", "cross_fitted_geometry_gate",
-            ])
+        for plan_kind in (
+            "cross_fitted_geometry_gate", "legacy_geometry_augmentation",
+        ):
+            with self.subTest(plan_kind=plan_kind):
+                runtime = RecordingTuningRuntime()
+                output_root = self.root.parent / plan_kind
+                with patch(
+                    "minires.modeling.tuning.TensorflowXGBoostCandidateRuntime",
+                    return_value=runtime,
+                ), self.assertRaisesRegex(
+                    SystemExit, "development_artifact_checksum_mismatch"
+                ):
+                    tuning_main([
+                        "--training-records", str(training),
+                        "--validation-records", str(validation),
+                        "--output-root", str(output_root),
+                        "--volume-unit", "mm3", "--scope-confirmed", "--seed", "41",
+                        "--plan-kind", plan_kind,
+                    ])
 
-        self.assertEqual(runtime.fit_calls, [])
-        self.assertFalse(self.root.exists())
+                self.assertEqual(runtime.fit_calls, [])
+                self.assertFalse(output_root.exists())
 
     def test_invalid_unbounded_worker_plan_is_rejected_before_runtime_fitting(self):
         runtime = RecordingTuningRuntime()
