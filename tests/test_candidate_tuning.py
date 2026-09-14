@@ -258,6 +258,7 @@ class CandidateSearchPlanTests(unittest.TestCase):
             [rule["component_rank"] for rule in first.ensemble_rules], [1, 2, 3]
         )
         self.assertEqual(first.second_seed_rule["candidate_count"], 5)
+        self.assertTrue(first.second_seed_rule["both_seed_results_must_be_eligible"])
         self.assertEqual(first.eligibility_gates["pooled_above_5g_fraction_maximum"], 0.01)
         self.assertFalse(first.control["candidate_slot_consumed"])
         self.assertIn("layers", first.parameter_domains["neural_network"])
@@ -402,11 +403,11 @@ class CandidateSearchPlanTests(unittest.TestCase):
         self.assertEqual(plan.resource_limits["maximum_elapsed_seconds"], 14_400.0)
         self.assertEqual(plan.generator["plan_kind"], "large_batch_extended")
         self.assertIn("larger neural-network batches", plan.generator["hypothesis"])
-        neural = [
+        neural_candidates = [
             candidate for candidate in plan.component_trials
             if candidate.family == "neural_network"
         ]
-        trees = [
+        xgboost_candidates = [
             candidate for candidate in plan.component_trials
             if candidate.family == "xgboost"
         ]
@@ -415,11 +416,17 @@ class CandidateSearchPlanTests(unittest.TestCase):
             plan.parameter_domains["xgboost"]["n_estimators"],
             (1500, 1800, 2400),
         )
-        self.assertTrue(all(candidate.parameters["batch_size"] >= 512 for candidate in neural))
-        self.assertTrue(all(candidate.parameters["n_estimators"] >= 1500 for candidate in trees))
-        for family in (neural, trees):
+        self.assertTrue(all(
+            candidate.parameters["batch_size"] >= 512 for candidate in neural_candidates
+        ))
+        self.assertTrue(all(
+            candidate.parameters["n_estimators"] >= 1500
+            for candidate in xgboost_candidates
+        ))
+        for family_candidates in (neural_candidates, xgboost_candidates):
             configurations = [
-                json.dumps(candidate.parameters, sort_keys=True) for candidate in family
+                json.dumps(candidate.parameters, sort_keys=True)
+                for candidate in family_candidates
             ]
             self.assertEqual(len(configurations), len(set(configurations)))
 
@@ -962,10 +969,11 @@ class CandidateTuningTests(unittest.TestCase):
         self.assertEqual(len(result.combined_results), 5)
         for combined in result.combined_results:
             self.assertEqual(combined["seed_results"], [41, 42])
+            self.assertEqual(combined["seed_eligibility"], [True, True])
             self.assertEqual(combined["equal_seed_weight"], 0.5)
             self.assertAlmostEqual(combined["metrics"]["pooled_mae_g"], 1.0)
 
-    def test_combined_eligibility_is_recomputed_instead_of_requiring_each_seed_to_pass(self):
+    def test_final_candidate_must_pass_the_fixed_gates_under_both_seeds(self):
         records = [
             self.row(f"source-{source}", f"family-{source}-{row}", source * 200 + row)
             for source in range(3) for row in range(200)
@@ -977,12 +985,15 @@ class CandidateTuningTests(unittest.TestCase):
         )
 
         self.assertTrue(all(not run.eligible for run in result.second_seed_results))
-        self.assertTrue(all(item["eligible"] for item in result.combined_results))
+        self.assertTrue(all(not item["eligible"] for item in result.combined_results))
+        self.assertTrue(all(item["seed_eligibility"] == [True, False]
+                            for item in result.combined_results))
         self.assertTrue(all(
             0.0 < item["metrics"]["pooled_above_5g_fraction"] <= 0.01
             for item in result.combined_results
         ))
-        self.assertIsNotNone(result.locked_candidate)
+        self.assertEqual(result.status, "completed_no_candidate")
+        self.assertIsNone(result.locked_candidate)
 
     def test_combined_per_source_gate_retains_each_seed_before_taking_the_maximum(self):
         records = [
@@ -1185,67 +1196,46 @@ class CandidateTuningTests(unittest.TestCase):
         self.assertIn("--validation-records", help_text)
         self.assertNotIn("--test-records", help_text)
 
-    def test_cli_runs_the_predeclared_tail_aware_expanded_plan(self):
-        training = Path(self.temp.name) / "training-expanded.json"
-        validation = Path(self.temp.name) / "validation-expanded.json"
-        training.write_text(json.dumps([
-            dict(row, _id=f"training-{index}") for index, row in enumerate(self.records[:4])
-        ]))
-        validation.write_text(json.dumps([
-            dict(row, _id=f"validation-{index}") for index, row in enumerate(self.records[4:])
-        ]))
-        output_root = self.root.parent / "expanded"
-        output = io.StringIO()
+    def test_cli_runs_each_predeclared_expanded_plan(self):
+        cases = (
+            ("tail_aware_expanded", 40),
+            ("large_batch_extended", 80),
+        )
+        for plan_kind, maximum_runs in cases:
+            with self.subTest(plan_kind=plan_kind):
+                training = Path(self.temp.name) / f"training-{plan_kind}.json"
+                validation = Path(self.temp.name) / f"validation-{plan_kind}.json"
+                training.write_text(json.dumps([
+                    dict(row, _id=f"training-{index}")
+                    for index, row in enumerate(self.records[:4])
+                ]))
+                validation.write_text(json.dumps([
+                    dict(row, _id=f"validation-{index}")
+                    for index, row in enumerate(self.records[4:])
+                ]))
+                output_root = self.root.parent / plan_kind
+                output = io.StringIO()
 
-        with patch(
-            "minires.modeling.tuning.TensorflowXGBoostCandidateRuntime",
-            return_value=RecordingTuningRuntime(),
-        ), contextlib.redirect_stdout(output):
-            code = tuning_main([
-                "--training-records", str(training),
-                "--validation-records", str(validation),
-                "--output-root", str(output_root),
-                "--volume-unit", "mm3", "--scope-confirmed", "--seed", "41",
-                "--plan-kind", "tail_aware_expanded",
-            ])
+                with patch(
+                    "minires.modeling.tuning.TensorflowXGBoostCandidateRuntime",
+                    return_value=RecordingTuningRuntime(),
+                ), contextlib.redirect_stdout(output):
+                    code = tuning_main([
+                        "--training-records", str(training),
+                        "--validation-records", str(validation),
+                        "--output-root", str(output_root),
+                        "--volume-unit", "mm3", "--scope-confirmed", "--seed", "41",
+                        "--plan-kind", plan_kind,
+                    ])
 
-        status = json.loads(output.getvalue())
-        plan = json.loads((output_root / "search-plan.json").read_text())
-        self.assertEqual(code, 0)
-        self.assertEqual(status["run_count"], 40)
-        self.assertEqual(plan["generator"]["plan_kind"], "tail_aware_expanded")
-        self.assertEqual(plan["resource_limits"]["maximum_candidate_runs"], 40)
-
-    def test_cli_runs_the_predeclared_large_batch_extended_plan(self):
-        training = Path(self.temp.name) / "training-large-batch.json"
-        validation = Path(self.temp.name) / "validation-large-batch.json"
-        training.write_text(json.dumps([
-            dict(row, _id=f"training-{index}") for index, row in enumerate(self.records[:4])
-        ]))
-        validation.write_text(json.dumps([
-            dict(row, _id=f"validation-{index}") for index, row in enumerate(self.records[4:])
-        ]))
-        output_root = self.root.parent / "large-batch"
-        output = io.StringIO()
-
-        with patch(
-            "minires.modeling.tuning.TensorflowXGBoostCandidateRuntime",
-            return_value=RecordingTuningRuntime(),
-        ), contextlib.redirect_stdout(output):
-            code = tuning_main([
-                "--training-records", str(training),
-                "--validation-records", str(validation),
-                "--output-root", str(output_root),
-                "--volume-unit", "mm3", "--scope-confirmed", "--seed", "41",
-                "--plan-kind", "large_batch_extended",
-            ])
-
-        status = json.loads(output.getvalue())
-        plan = json.loads((output_root / "search-plan.json").read_text())
-        self.assertEqual(code, 0)
-        self.assertEqual(status["run_count"], 80)
-        self.assertEqual(plan["generator"]["plan_kind"], "large_batch_extended")
-        self.assertEqual(plan["resource_limits"]["maximum_candidate_runs"], 80)
+                status = json.loads(output.getvalue())
+                plan = json.loads((output_root / "search-plan.json").read_text())
+                self.assertEqual(code, 0)
+                self.assertEqual(status["run_count"], maximum_runs)
+                self.assertEqual(plan["generator"]["plan_kind"], plan_kind)
+                self.assertEqual(
+                    plan["resource_limits"]["maximum_candidate_runs"], maximum_runs
+                )
 
     def test_invalid_unbounded_worker_plan_is_rejected_before_runtime_fitting(self):
         runtime = RecordingTuningRuntime()

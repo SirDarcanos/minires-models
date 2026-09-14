@@ -725,6 +725,7 @@ def generate_search_plan(
             "selection": "best_eligible_initial_candidates_by_ranking_rule",
             "combination": "equal_seed_weight",
             "unfavorable_repetitions_retained": True,
+            "both_seed_results_must_be_eligible": True,
         },
         "resource_limits": {
             "maximum_candidate_runs": limits.maximum_candidate_runs,
@@ -1877,13 +1878,15 @@ def _combine_seed_results(initial: Sequence[CandidateRun], second: Sequence[Cand
     for repeated in second:
         first = by_id[repeated.candidate.candidate_id]
         metrics = _equal_seed_metrics(first, repeated)
-        eligible = _tail_eligible(metrics)
+        seed_eligibility = [first.eligible, repeated.eligible]
+        eligible = all(seed_eligibility) and _tail_eligible(metrics)
         combined.append({
             "candidate_id": first.candidate.candidate_id,
             "family": first.candidate.family,
             "eligible": eligible,
             "blockers": [] if eligible else ["development_serious_error_gate_failed"],
             "seed_results": [first.seed, repeated.seed],
+            "seed_eligibility": seed_eligibility,
             "equal_seed_weight": 0.5,
             "metrics": metrics,
         })
@@ -2470,6 +2473,7 @@ def _promotable_ranking(result: TuningResult) -> list[dict[str, Any]]:
             "metrics": dict(item["metrics"]),
             "rationale": list(result.plan.ranking_rule),
             "seed_results": list(item["seed_results"]),
+            "seed_eligibility": list(item["seed_eligibility"]),
             "equal_seed_weight": item["equal_seed_weight"],
         }
         for rank, item in enumerate(ranked, 1)

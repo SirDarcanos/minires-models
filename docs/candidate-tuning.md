@@ -331,9 +331,11 @@ source-balanced mean absolute error, pooled mean absolute error, within-2-g
 fraction, and stable candidate ID. The five highest-ranked eligible candidates,
 or every eligible candidate when fewer than five qualify, receive the second
 seed. First- and second-seed metrics receive equal weight, including unfavorable
-results; eligibility and `promotable_ranking` are then recomputed from those
-combined metrics. The report records both rankings, the finalist shortfall, and
-each ensemble's selected fold weights explicitly.
+results. A finalist must satisfy every fixed eligibility gate under each seed
+individually and under the combined metrics before it can enter
+`promotable_ranking`. The report records both seed eligibility outcomes, both
+rankings, the finalist shortfall, and each ensemble's selected fold weights
+explicitly.
 
 A complete repetition stage selects the best combined eligible result by the
 same deterministic rule. Epoch and tree counts are fixed from the validation
