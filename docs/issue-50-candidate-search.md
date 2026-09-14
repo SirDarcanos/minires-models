@@ -534,3 +534,83 @@ The one permitted execution will use the next fresh create-only directory:
   --seed 41 \
   --plan-kind tail_aligned_selection
 ```
+
+## Aggregate result
+
+The one permitted execution completed all 15 initial candidates: six neural
+networks, six XGBoost models, and three ensembles. No initial candidate satisfied
+every serious-error gate, so none advanced to second-seed repetition and the five
+reserved repetition slots remained unused.
+
+The best result under the unchanged development ranking was an ensemble:
+
+| Metric | Result |
+| --- | ---: |
+| Pooled mean absolute error | 0.5867 g |
+| Source-balanced mean absolute error | 0.6326 g |
+| Pooled within-2-g fraction | 95.72% |
+| Source-balanced within-2-g fraction | 94.68% |
+| Pooled above-5-g fraction | 0.90% |
+| Source-balanced above-5-g fraction | 1.16% |
+| Maximum qualifying-source above-5-g fraction | 2.77% |
+
+A different ensemble came closest to eligibility: it passed the pooled gate at
+0.77% and the source-balanced gate at 0.92%, while missing the qualifying-source
+gate at 2.42%. The fixed limits remain 1%, 1%, and 2%, respectively.
+
+The round used 1,635.38 seconds elapsed time, 1,995.04 process CPU seconds, and a
+process high-water resident-set measurement of 1,001,291,776 platform units. Its
+create-only manifest was checksum-verified after completion.
+
+## Decision
+
+The round ended as `completed_no_candidate` with `no_eligible_candidate`. Tail-
+aligned validation selection appeared to materially improve the serious-error
+results and produced an ensemble that passed both aggregate gates, but it did not
+satisfy the unchanged qualifying-source gate.
+
+Independent review then found that non-finite checkpoint predictions were not
+explicitly rejected before calculating the selection key. The selected final
+predictions were finite, but the private evidence does not retain every intermediate
+checkpoint vector and therefore cannot prove that the intended ordering was applied
+to every checkpoint. This completed run remains preserved and is not interpreted as
+a valid test of the predeclared selection hypothesis.
+
+No candidate was repeated or refitted, no checksum-verified lock was created, and
+the held-out assessment was not started. A corrected execution requires a new
+create-only directory and predeclaration. Private row-level results, source reports,
+paths, fingerprints, mappings, candidate configurations, and model artifacts remain
+unpublished.
+
+# Corrected tail-aligned selection search (predeclared)
+
+The first execution exposed one bounded implementation defect during independent
+review: non-finite checkpoint predictions could compare as eligible because IEEE
+NaN comparisons do not increment threshold counts. The completed run remains
+preserved and is not reinterpreted.
+
+The correction rejects any checkpoint prediction vector with the wrong length or a
+non-finite value before metric calculation. An invalid checkpoint ranks behind every
+finite checkpoint; if all checkpoints are invalid, final prediction validation
+blocks the candidate. Final source metrics also reject non-finite targets or
+predictions. Regression coverage binds this behavior.
+
+This corrected run tests the already documented hypothesis and changes nothing else:
+seven legacy inputs, Huber neural candidates, the same XGBoost domain, the versioned
+gate-first selection rule, seeds 41/42, six plus six components, three ensembles, at
+most five eligible repetitions, at most 20 runs, and 7,200 seconds. Gates, final
+ranking, checksum and environment verification, source-metadata isolation, and the
+held-out-test exclusion remain unchanged.
+
+The one permitted corrected execution will use the next fresh create-only directory:
+
+```bash
+.venv-candidates/bin/python -m minires.modeling.tuning \
+  --training-records data/train.jsonl \
+  --validation-records data/validation.jsonl \
+  --output-root private/candidate-tuning/run-011 \
+  --volume-unit mm3 \
+  --scope-confirmed \
+  --seed 41 \
+  --plan-kind tail_aligned_selection
+```

@@ -34,6 +34,7 @@ from minires.modeling.tuning import (
     verify_locked_candidate_files,
     _select_ensemble_weight,
     _selected_epoch_count,
+    _source_candidate_metrics,
     _tail_selection_key,
 )
 
@@ -495,6 +496,12 @@ class CandidateSearchPlanTests(unittest.TestCase):
         self.assertLess(
             _tail_selection_key(better_gate), _tail_selection_key(worse_gate)
         )
+        non_finite = {**better_gate, "pooled_mae_g": math.nan}
+        self.assertLess(
+            _tail_selection_key(better_gate), _tail_selection_key(non_finite)
+        )
+        with self.assertRaisesRegex(ValueError, "invalid_candidate_predictions"):
+            _source_candidate_metrics((1.0,), (math.nan,))
 
         selected = _select_ensemble_weight(
             (0.0, 10.0), (0.0, 10.0), (6.0, 16.0), (0.0, 1.0),

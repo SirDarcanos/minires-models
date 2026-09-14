@@ -1672,8 +1672,11 @@ def _tail_prediction_ranker(
     training_count: int, validation: Sequence[CanonicalRow],
 ) -> Callable[[Sequence[float]], tuple[Any, ...]]:
     def rank(predictions: Sequence[float]) -> tuple[Any, ...]:
+        values = tuple(float(value) for value in predictions)
+        if len(values) != len(validation) or not all(map(math.isfinite, values)):
+            return (2, math.inf, math.inf, math.inf, math.inf, 0.0)
         reports = _explicit_validation_source_reports(
-            training_count, validation, predictions
+            training_count, validation, values
         )
         return _tail_selection_key(_candidate_metrics(reports))
     return rank
@@ -2412,6 +2415,10 @@ def _explicit_validation_source_reports(
 def _source_candidate_metrics(
     actual: Sequence[float], predictions: Sequence[float]
 ) -> dict[str, float | int]:
+    if len(actual) != len(predictions) or not all(
+        math.isfinite(float(value)) for value in (*actual, *predictions)
+    ):
+        raise ValueError("invalid_candidate_predictions")
     errors = [abs(float(prediction) - float(target))
               for prediction, target in zip(predictions, actual)]
     return {
@@ -2509,8 +2516,17 @@ def _tail_selection_key(metrics: Mapping[str, Any]) -> tuple[Any, ...]:
     pooled = metrics.get("pooled_above_5g_fraction")
     balanced = metrics.get("source_balanced_above_5g_fraction")
     maximum = metrics.get("maximum_qualifying_source_above_5g_fraction")
-    if pooled is None or balanced is None:
-        return (1, math.inf, math.inf, math.inf, math.inf, 0.0)
+    ranked_values = (
+        pooled, balanced, maximum,
+        metrics.get("source_balanced_mae_g"), metrics.get("pooled_mae_g"),
+        metrics.get("pooled_within_2g_fraction"),
+    )
+    if (
+        pooled is None or balanced is None
+        or any(value is not None and not math.isfinite(float(value))
+               for value in ranked_values)
+    ):
+        return (2, math.inf, math.inf, math.inf, math.inf, 0.0)
     ratios = (
         float(pooled) / POOLED_ABOVE_5G_FRACTION_MAXIMUM,
         float(balanced) / SOURCE_BALANCED_ABOVE_5G_FRACTION_MAXIMUM,
