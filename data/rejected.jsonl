@@ -1,0 +1,9 @@
+{"origin":"new","reason":"slicing_timeout","record_identity":"20d7b4f62c4dd7e6c8ce3a673c629b70b48649d0965cb3a5d21dc78cd3e1e98d"}
+{"origin":"new","reason":"slicing_timeout","record_identity":"2e8bd79002de5d459064507095ae9618ec1bdf51b5e998cc1905f543a6cc636e"}
+{"origin":"new","reason":"invalid_measurements","record_identity":"be6585c25a97c294d63e991e540ec1c533041997e75863de7589e12160f51215"}
+{"origin":"new","reason":"slicing_timeout","record_identity":"c0043972c551804d632afa79d88c1d10081d457c207a96ba6716d3796427c438"}
+{"origin":"new","reason":"slicing_timeout","record_identity":"c28505954d3e15a07cf186d2b3ac40a1dc3e36afdd91b05a2758d95537736681"}
+{"origin":"new","reason":"slicing_timeout","record_identity":"c385131584703c4d3b2bb849a902c4349bc05e04a85e5c86c5e9c01f69936b34"}
+{"origin":"historical","reason":"invalid_target","record_identity":"cb9471af57559582a862cc2a773e314a852573d011f46e602c1e1330bbb17b0a"}
+{"origin":"historical","reason":"invalid_measurement","record_identity":"e37e4d231f3c478957719216179f4749068647e52a86da8f38c505eb51a9b069"}
+{"origin":"new","reason":"corrupt_geometry","record_identity":"ffebffcda2de9b197cb7b0729838b1422f1d5f0ae71ab425db7bdba1f3f3906e"}

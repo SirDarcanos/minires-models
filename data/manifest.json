@@ -1,0 +1,113 @@
+{
+  "allocation_policy": {
+    "membership_inputs": [
+      "stable_private_record_identity",
+      "seed",
+      "explicit_duplicate_group"
+    ],
+    "miniature_family_required": false,
+    "targets_and_geometry_affect_membership": false,
+    "within_each_anonymous_source_group": {
+      "test": 0.15,
+      "train": 0.7,
+      "validation": 0.15
+    }
+  },
+  "allocation_version": "source-balanced-70-15-15-v1",
+  "artifacts": {
+    "provenance.json": "57074629d1c49df4508612fd03007a11bf90510ef1d5c4fd9aafd2ce1ff7d43a",
+    "rejected.jsonl": "c4cad63c2062e5bf3ef7f8b885230210be7c7815ef0e0ef801221613b6015094",
+    "test.jsonl": "2178ccc28b50c5e8361af7d95a2c81878fe5848886af6a998eccf83fea152346",
+    "train.jsonl": "90b6285462ee7dca0267e6345530a423c394123b63b0485ca418f9cc55782386",
+    "validation.jsonl": "6d1c0b98b6f807d818202929d6e029af5327a29737d6a27d9b36e5e3f1bb49a5"
+  },
+  "assembly_version": "expanded-four-source-dataset-v1",
+  "claim_scope": [
+    "performance_on_held_out_stl_rows_drawn_from_retained_sources",
+    "not_family_independent_evidence"
+  ],
+  "feature_schema": {
+    "excluded_metadata": [
+      "_id",
+      "anonymous_source_group",
+      "artist",
+      "duplicate_group",
+      "miniature_family",
+      "outcome",
+      "partition",
+      "preparation_reasons",
+      "record_identity",
+      "sliced_resin_mass_g",
+      "source",
+      "weight"
+    ],
+    "feature_units": {
+      "bounding_box_volume_mm3": "mm3",
+      "bounding_box_x_mm": "mm",
+      "bounding_box_y_mm": "mm",
+      "bounding_box_z_mm": "mm",
+      "euler_number": "dimensionless",
+      "surface_area_mm2": "mm2",
+      "volume_mm3": "mm3"
+    },
+    "legacy_compatible_features": [
+      "kb",
+      "volume",
+      "surface_area",
+      "bbox_x",
+      "bbox_y",
+      "bbox_z",
+      "bbox_area",
+      "mass",
+      "euler_number",
+      "scale",
+      "surface_volume_ratio"
+    ],
+    "prediction_features": [
+      "volume_mm3",
+      "surface_area_mm2",
+      "bounding_box_x_mm",
+      "bounding_box_y_mm",
+      "bounding_box_z_mm",
+      "bounding_box_volume_mm3",
+      "euler_number"
+    ]
+  },
+  "retained_anonymous_source_count": 4,
+  "row_accounting": {
+    "eligible": 14810,
+    "historical_input": 12922,
+    "historical_source_excluded": 34,
+    "historical_unusable": 2,
+    "new_accepted": 1924,
+    "new_inventory": 1931,
+    "new_rejected": 7,
+    "rejected": 9,
+    "test": 2220,
+    "train": 10368,
+    "validation": 2222
+  },
+  "seed": 23,
+  "source_partition_counts": {
+    "9c915c369bbfee707c9608c1a641e575a8ac4264a1c2b6386080ed3d52f536dc": {
+      "test": 288,
+      "train": 1347,
+      "validation": 289
+    },
+    "b8d0936b224d1eef24444f9a043f78567f0b5fe4e12ef07af9c3d6733f491499": {
+      "test": 734,
+      "train": 3427,
+      "validation": 735
+    },
+    "dafc8585071b622f53e81112a2ced83b4ae587023a82a179c2f2ccb1b1e2fbb5": {
+      "test": 833,
+      "train": 3889,
+      "validation": 833
+    },
+    "fe65bc8814356f09a488a13d88ae3e1e5c9ff665fc3f96fee7b3aa3d6ec3ecb3": {
+      "test": 365,
+      "train": 1705,
+      "validation": 365
+    }
+  }
+}

@@ -3,9 +3,17 @@
 __pycache__/
 /temp
 
-# Local datasets and model downloads are private working data.
-# Ignore the directory itself so no data/ path can be staged.
-/data
+# Ignore local datasets and model downloads by default. Only the explicitly
+# anonymized combined-dataset artifacts below are versioned; data subfolders
+# and every other data file remain ignored.
+/data/*
+!/data/checksums.json
+!/data/manifest.json
+!/data/provenance.json
+!/data/rejected.jsonl
+!/data/test.jsonl
+!/data/train.jsonl
+!/data/validation.jsonl
 
 .DS_Store
 .venv/

@@ -1,0 +1,21 @@
+{
+  "assembly_version": "expanded-four-source-dataset-v1",
+  "historical_input_fingerprint": "1bd88d2a34af81690aa59557bd90c4d6ba8f82bd5d2c9f07bc264508d8e4185e",
+  "historical_measurements": "reused_as_authoritative_without_mesh_probing_or_slicing",
+  "new_batch_fingerprint": "42ee0e876d32734942852832adea1e2f5a768100e8b1309525542c01b9a6f84f",
+  "new_measurement_contract": {
+    "ebminimanager_revision": "1a841195813136ee3b380ab1d192727f385f7a55",
+    "label_source": "UVtools print-properties WeightG",
+    "layer_height_mm": 0.05,
+    "profile": "bundled/config-anycubic-mono.ini",
+    "profile_sha256": "06acac3fe2a3d762fb56ec2d1bde58fe9e15104556091438c81c4e90131d2d0e",
+    "resin_density_g_per_ml": 1.1,
+    "slicer_added_supports": false
+  },
+  "new_tool_versions": {
+    "geometry": "trimesh 4.10.1",
+    "prusaslicer": "PrusaSlicer-2.9.6 based on Slic3r (with GUI support)",
+    "python": "3.14.6",
+    "uvtools": "6.2.0"
+  }
+}

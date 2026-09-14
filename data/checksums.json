@@ -1,0 +1,11 @@
+{
+  "artifacts": {
+    "manifest.json": "5e86575261054726de158e884b8eb291305325ac7b730c418f18092fd296b0f9",
+    "provenance.json": "57074629d1c49df4508612fd03007a11bf90510ef1d5c4fd9aafd2ce1ff7d43a",
+    "rejected.jsonl": "c4cad63c2062e5bf3ef7f8b885230210be7c7815ef0e0ef801221613b6015094",
+    "test.jsonl": "2178ccc28b50c5e8361af7d95a2c81878fe5848886af6a998eccf83fea152346",
+    "train.jsonl": "90b6285462ee7dca0267e6345530a423c394123b63b0485ca418f9cc55782386",
+    "validation.jsonl": "6d1c0b98b6f807d818202929d6e029af5327a29737d6a27d9b36e5e3f1bb49a5"
+  },
+  "assembly_version": "expanded-four-source-dataset-v1"
+}
