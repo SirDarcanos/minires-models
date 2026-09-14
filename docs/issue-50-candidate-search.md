@@ -417,3 +417,39 @@ Ranking remains source-balanced mean absolute error, pooled mean absolute error,
 within-2-g fraction, and stable candidate identity. If no initial candidate is
 eligible, there is no second seed, refit, lock, held-out assessment, or automatic
 expansion.
+
+## Aggregate result
+
+The one permitted execution completed all 15 initial candidates: six neural
+networks, six XGBoost models, and three ensembles. No initial candidate satisfied
+every serious-error gate, so none advanced to second-seed repetition and the five
+reserved repetition slots remained unused.
+
+The best result was an ensemble with these source-neutral validation metrics:
+
+| Metric | Result |
+| --- | ---: |
+| Pooled mean absolute error | 0.6269 g |
+| Source-balanced mean absolute error | 0.6962 g |
+| Pooled within-2-g fraction | 95.27% |
+| Source-balanced within-2-g fraction | 94.24% |
+| Pooled above-5-g fraction | 1.35% |
+| Source-balanced above-5-g fraction | 1.76% |
+| Maximum qualifying-source above-5-g fraction | 4.84% |
+
+The round used 93.92 seconds elapsed time, 226.61 process CPU seconds, and a
+process high-water resident-set measurement of 1,001,029,632 platform units. Its
+create-only manifest was checksum-verified after completion.
+
+## Decision
+
+The round ended as `completed_no_candidate` with `no_eligible_candidate`. The
+hypothesis was falsified for this plan: augmenting the legacy matrix with the four
+predeclared geometry terms did not satisfy the fixed serious-error gates.
+
+No candidate was repeated or refitted, no checksum-verified lock was created, and
+the held-out assessment was not started. This round stops without automatic
+expansion. Issue #50 remains open for a future separately justified and
+predeclared hypothesis. Private row-level results, source reports, paths,
+fingerprints, mappings, candidate configurations, and model artifacts remain
+unpublished.
