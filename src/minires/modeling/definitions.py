@@ -70,6 +70,8 @@ class ModelSpecification:
     def validate(self) -> None:
         if (
             not self.ordered_prediction_features
+            or any(not isinstance(name, str) or not name
+                   for name in self.ordered_prediction_features)
             or len(set(self.ordered_prediction_features)) != len(self.ordered_prediction_features)
             or self.output_unit != "g"
             or not self.identity_namespace
@@ -303,7 +305,9 @@ class ModelRuntime:
 
 
 def candidate_model_specification(
-    model_kind: str | ModelKind, parameters: Mapping[str, Any]
+    model_kind: str | ModelKind, parameters: Mapping[str, Any], *,
+    ordered_prediction_features: Sequence[str] = LEGACY_FEATURES,
+    identity_namespace: str = MODEL_DEFINITION_VERSION,
 ) -> ModelSpecification:
     """Convert one search candidate into the explicit model-definition interface."""
     try:
@@ -311,6 +315,9 @@ def candidate_model_specification(
     except (TypeError, ValueError):
         raise ValueError("invalid_model_specification") from None
     copied = _plain_mapping(parameters)
+    if isinstance(ordered_prediction_features, (str, bytes)):
+        raise ValueError("invalid_model_specification")
+    features = tuple(ordered_prediction_features)
     if kind is ModelKind.NEURAL_NETWORK:
         _validate_neural_candidate(copied)
         architecture_keys = {"layers", "activation", "dropout", "optimizer", "loss", "l2"}
@@ -319,6 +326,8 @@ def candidate_model_specification(
             PreprocessingContract("float32", "fit_on_training_records"),
             {key: copied[key] for key in architecture_keys},
             {key: value for key, value in copied.items() if key not in architecture_keys},
+            features,
+            identity_namespace=identity_namespace,
         )
     if kind is ModelKind.XGBOOST:
         _validate_xgboost(copied)
@@ -328,6 +337,8 @@ def candidate_model_specification(
             PreprocessingContract("float32", "none"),
             {key: value for key, value in copied.items() if key not in training_keys},
             {key: copied[key] for key in training_keys if key in copied},
+            features,
+            identity_namespace=identity_namespace,
         )
     raise ValueError("invalid_model_specification")
 
@@ -357,10 +368,12 @@ def ensemble_model_specification(
     neural_network: ModelSpecification, xgboost: ModelSpecification,
     neural_network_weight: float,
 ) -> ModelSpecification:
+    if neural_network.ordered_prediction_features != xgboost.ordered_prediction_features:
+        raise ValueError("invalid_model_specification")
     return ModelSpecification(
         ModelKind.ENSEMBLE,
         PreprocessingContract("float32", "defined_by_members"),
-        {}, {},
+        {}, {}, neural_network.ordered_prediction_features,
         ensemble=EnsembleDefinition(neural_network, xgboost, neural_network_weight),
     )
 

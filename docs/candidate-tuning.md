@@ -312,6 +312,49 @@ eligibility, ranking, and locking rule remain unchanged. See
 [the issue #50 round ledger](issue-50-candidate-search.md) for the falsifiable
 hypothesis, dependency versions, and execution status.
 
+### Run the predeclared geometry-regime plan
+
+Use this plan only for the issue #50 round predeclared after the large-batch plan
+failed its fixed eligibility gates:
+
+```bash
+.venv-candidates/bin/python -m minires.modeling.tuning \
+  --training-records <training-artifact> \
+  --validation-records <validation-artifact> \
+  --output-root <new-private-run-directory> \
+  --volume-unit mm3 \
+  --scope-confirmed \
+  --seed 41 \
+  --plan-kind geometry_regime
+```
+
+The plan contains 12 neural-network trials, 12 XGBoost trials, six deterministic
+validation-selected ensembles, and second-seed repetition of at most ten eligible
+initial candidates. Its hard limits are 40 candidate runs and 7,200 seconds. It
+retains the preceding large-batch parameter domains and target-weighting choices,
+so the isolated intervention is the candidate feature representation.
+
+The representation replaces the seven legacy-compatible candidate inputs with 16
+source-neutral geometry features: raw mesh volume and surface area, sorted
+bounding-box dimensions, bounding-box volume, Euler number, logarithmic size
+features, mesh-volume and surface-area ratios, and a bounding-box aspect ratio.
+Feature construction is deterministic, versioned as
+`minires-geometry-regime-features-v1`, and uses only normalized canonical geometry.
+The plan rejects any seed pair other than the predeclared 41/42. The fixed control
+continues to use the legacy input order. Anonymous source groups,
+miniature families, partition and linkage evidence, identities, file-size proxies,
+legacy scale, and join keys remain outside every candidate feature matrix. Missing
+or invalid required geometry, including inputs that are not finite float32 values,
+blocks before fitting rather than triggering imputation or row removal. Size, area,
+and volume inputs must be positive; Euler number may be negative but must be finite
+and integral.
+
+The ordered feature contract is bound into the search plan, every candidate model
+specification and identity, and any resulting lock. All training/validation
+separation, eligibility, ranking, locking, and held-out-test exclusions remain
+unchanged. See [the issue #50 round ledger](issue-50-candidate-search.md) for the
+complete predeclared hypothesis and stop rule.
+
 Runtime failures, invalid plans, missing grouping evidence, deadline exhaustion,
 and the absence of eligible candidates remain bounded outcomes in
 `tuning-result.json`. The private `candidate_history` records the control, every

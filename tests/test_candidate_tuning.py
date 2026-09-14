@@ -430,6 +430,67 @@ class CandidateSearchPlanTests(unittest.TestCase):
             ]
             self.assertEqual(len(configurations), len(set(configurations)))
 
+    def test_geometry_regime_plan_predeclares_one_richer_source_neutral_representation(self):
+        limits = SearchLimits.for_plan(41, "geometry_regime")
+
+        first = generate_search_plan(
+            limits, input_fingerprint="input", code_fingerprint="code",
+            dependency_versions={"runtime": "synthetic-1"},
+        )
+        second = generate_search_plan(
+            limits, input_fingerprint="input", code_fingerprint="code",
+            dependency_versions={"runtime": "synthetic-1"},
+        )
+
+        expected_features = (
+            "volume_mm3", "surface_area_mm2", "bounding_box_short_mm",
+            "bounding_box_middle_mm", "bounding_box_long_mm",
+            "bounding_box_volume_mm3", "euler_number", "log1p_volume_mm3",
+            "log1p_surface_area_mm2", "log1p_bounding_box_volume_mm3",
+            "log1p_bounding_box_short_mm", "log1p_bounding_box_middle_mm",
+            "log1p_bounding_box_long_mm", "log_volume_to_bounding_box_volume_ratio",
+            "log_surface_to_volume_ratio_per_mm", "log_bounding_box_long_to_short_ratio",
+        )
+        self.assertEqual(first, second)
+        self.assertEqual(first.generator["plan_kind"], "geometry_regime")
+        self.assertIn("source-neutral geometry representation", first.generator["hypothesis"])
+        self.assertEqual(first.prediction_features, expected_features)
+        self.assertEqual(
+            first.feature_transformation_version,
+            "minires-geometry-regime-features-v1",
+        )
+        self.assertEqual(len(first.component_trials), 24)
+        self.assertEqual(len(first.ensemble_rules), 6)
+        self.assertEqual(first.second_seed_rule["candidate_count"], 10)
+        self.assertEqual(first.resource_limits["maximum_candidate_runs"], 40)
+        self.assertEqual(first.resource_limits["maximum_elapsed_seconds"], 7200.0)
+        self.assertEqual((first.seed, first.second_seed), (41, 42))
+        baseline = generate_search_plan(
+            SearchLimits(seed=41), input_fingerprint="input", code_fingerprint="code",
+            dependency_versions={"runtime": "synthetic-1"},
+        )
+        self.assertEqual(first.eligibility_gates, baseline.eligibility_gates)
+        self.assertEqual(
+            baseline.prediction_features,
+            ("kb", "volume", "surface_area", "bbox_area", "euler_number", "scale",
+             "surface_volume_ratio"),
+        )
+        self.assertTrue(all(
+            candidate.ordered_prediction_features == expected_features
+            for candidate in first.component_trials
+        ))
+        self.assertEqual(
+            len({candidate.candidate_id for candidate in first.component_trials}), 24
+        )
+
+    def test_geometry_regime_rejects_seeds_outside_its_predeclared_pair(self):
+        with self.assertRaisesRegex(ValueError, "invalid_search_plan"):
+            generate_search_plan(
+                SearchLimits.for_plan(99, "geometry_regime"),
+                input_fingerprint="input", code_fingerprint="code",
+                dependency_versions={"runtime": "synthetic-1"},
+            )
+
     def test_invalid_domains_and_resources_fail_at_the_plan_generation_interface(self):
         invalid = {
             "neural_network": {
@@ -667,6 +728,34 @@ class ValidationSensitiveRuntime(RecordingTuningRuntime):
         )
 
 
+class GeometryRecordingRuntime(RecordingTuningRuntime):
+    def __init__(self):
+        super().__init__()
+        self.feature_calls = []
+        self.loaded_feature_widths = []
+
+    def fit_fold(self, candidate, seed, train_features, train_targets,
+                 validation_features, validation_targets):
+        self.feature_calls.append((candidate.family, tuple(train_features),
+                                   tuple(validation_features)))
+        predictor = (
+            (lambda rows: [row[0] / 1000.0 for row in rows])
+            if candidate.family != "control"
+            else (lambda rows: [row[1] / 1000.0 for row in rows])
+        )
+        return CandidateFoldFit(
+            predictor=predictor,
+            metadata={"selected_epochs": 4, "selected_trees": 20},
+            fitted_state={"training_features": tuple(train_features)},
+        )
+
+    def load_locked(self, candidate, directory, contract):
+        def predict(rows):
+            self.loaded_feature_widths.extend(len(row) for row in rows)
+            return [row[1] / 1000.0 for row in rows]
+        return predict
+
+
 class ExplicitPartitionDevelopmentTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
@@ -807,6 +896,171 @@ class ExplicitPartitionDevelopmentTests(unittest.TestCase):
         )
 
         self.assertIn("locked_candidate_contract_mismatch", blockers)
+
+    def test_geometry_regime_uses_only_richer_canonical_geometry_for_candidates(self):
+        def canonical(row):
+            value = float(row["weight"])
+            return {
+                **row,
+                "kb": 900_000 + value,
+                "scale": 800_000 + value,
+                "surface_volume_ratio": 700_000 + value,
+                "volume_mm3": value * 1000,
+                "surface_area_mm2": value * 100,
+                "bounding_box_x_mm": value * 2, "bbox_x": value * 2,
+                "bounding_box_y_mm": value * 4, "bbox_y": value * 4,
+                "bounding_box_z_mm": value * 3, "bbox_z": value * 3,
+                "bounding_box_volume_mm3": value * 1100,
+            }
+
+        runtime = GeometryRecordingRuntime()
+        result = develop_candidates(
+            [canonical(row) for row in self.training],
+            [canonical(row) for row in self.validation],
+            self.config, runtime=runtime, output_root=self.root / "geometry",
+            limits=SearchLimits.for_plan(41, "geometry_regime"), clock=lambda: 0.0,
+        )
+
+        self.assertEqual(result.status, "completed")
+        control_calls = [call for call in runtime.feature_calls if call[0] == "control"]
+        candidate_calls = [call for call in runtime.feature_calls if call[0] != "control"]
+        self.assertTrue(control_calls)
+        self.assertTrue(candidate_calls)
+        self.assertTrue(all(len(row) == 7 for call in control_calls for rows in call[1:]
+                            for row in rows))
+        self.assertTrue(all(len(row) == 16 for call in candidate_calls for rows in call[1:]
+                            for row in rows))
+        first = candidate_calls[0][1][0]
+        self.assertEqual(first[:7], (1000.0, 100.0, 2.0, 3.0, 4.0, 1100.0, 1.0))
+        self.assertAlmostEqual(first[7], math.log1p(1000.0))
+        self.assertAlmostEqual(first[13], math.log(1000.0 / 1100.0))
+        self.assertAlmostEqual(first[14], math.log(100.0 / 1000.0))
+        self.assertAlmostEqual(first[15], math.log(4.0 / 2.0))
+        self.assertTrue(all(value < 700_000 for value in first))
+        self.assertEqual(
+            result.locked_candidate.contract["feature_contract"]["ordered_features"],
+            list(result.plan.prediction_features),
+        )
+        reloaded = load_locked_candidate(result.locked_candidate.directory, runtime)
+        self.assertEqual(reloaded.candidate, result.locked_candidate.candidate)
+        final = []
+        for source_index in range(3):
+            for index in range(200):
+                value = source_index * 200 + index + 1
+                row = canonical(CandidateTuningTests.row(
+                    f"unseen-{source_index}", f"family-{source_index}-{index}", value
+                ))
+                final.append({**row, "slicing_conditions": {"layer_height_mm": 0.05}})
+        legacy_predictor = lambda rows: [row[1] / 1000.0 for row in rows]
+        legacy = LegacyReference.from_predictors(
+            neural_network=legacy_predictor, xgboost=legacy_predictor,
+            neural_network_weight=0.2, provenance=LegacyProvenance.unknown(),
+        )
+        assessment = assess_locked_candidate(
+            final, EvaluationConfig(None, "mm3", True), reloaded, legacy,
+            output_root=self.root / "geometry-assessment", runtime=runtime,
+        )
+        self.assertNotEqual(assessment.status, "blocked")
+        self.assertEqual(set(runtime.loaded_feature_widths), {16})
+        serialized = json.dumps(result.to_dict(public=True), sort_keys=True)
+        self.assertNotIn("private-source", serialized)
+        self.assertNotIn("private-join", serialized)
+
+    def test_geometry_regime_lock_rejects_feature_transformation_version_tampering(self):
+        def canonical(row):
+            value = float(row["weight"])
+            return {
+                **row,
+                "volume_mm3": value * 1000,
+                "surface_area_mm2": value * 100,
+                "bounding_box_x_mm": value * 2, "bbox_x": value * 2,
+                "bounding_box_y_mm": value * 4, "bbox_y": value * 4,
+                "bounding_box_z_mm": value * 3, "bbox_z": value * 3,
+                "bounding_box_volume_mm3": value * 1100,
+            }
+
+        runtime = GeometryRecordingRuntime()
+        result = develop_candidates(
+            [canonical(row) for row in self.training],
+            [canonical(row) for row in self.validation],
+            self.config, runtime=runtime, output_root=self.root / "geometry-version",
+            limits=SearchLimits.for_plan(41, "geometry_regime"), clock=lambda: 0.0,
+        )
+        assert result.locked_candidate is not None
+        lock = result.locked_candidate.directory
+        contract_path = lock / "candidate-contract.json"
+        contract = json.loads(contract_path.read_text())
+        contract["feature_contract"]["transformation_version"] = "changed-formulas"
+        contract_path.write_text(json.dumps(contract, sort_keys=True))
+        manifest_path = lock / "lock-manifest.json"
+        manifest = json.loads(manifest_path.read_text())
+        manifest["files"]["candidate-contract.json"] = sha256(
+            contract_path.read_bytes()
+        ).hexdigest()
+        manifest_path.write_text(json.dumps(manifest, sort_keys=True))
+
+        blockers, _, _ = verify_locked_candidate_files(
+            lock, runtime.dependency_versions
+        )
+
+        self.assertIn("locked_candidate_contract_mismatch", blockers)
+
+    def test_geometry_regime_missing_measurement_blocks_before_fitting(self):
+        training = [dict(row) for row in self.training]
+        validation = [dict(row) for row in self.validation]
+        for rows in (training, validation):
+            for row in rows:
+                value = float(row["weight"])
+                row.update({
+                    "volume_mm3": value * 1000,
+                    "surface_area_mm2": value * 100,
+                    "bounding_box_x_mm": value * 2, "bbox_x": value * 2,
+                    "bounding_box_y_mm": value * 4, "bbox_y": value * 4,
+                    "bounding_box_z_mm": value * 3, "bbox_z": value * 3,
+                    "bounding_box_volume_mm3": value * 1100,
+                })
+        validation[0].pop("bounding_box_z_mm")
+        validation[0].pop("bbox_z")
+        runtime = GeometryRecordingRuntime()
+
+        result = develop_candidates(
+            training, validation, self.config, runtime=runtime,
+            output_root=self.root / "geometry-missing",
+            limits=SearchLimits.for_plan(41, "geometry_regime"),
+        )
+
+        self.assertEqual(result.status, "blocked")
+        self.assertEqual(result.blockers, ("invalid_candidate_feature_data",))
+        self.assertEqual(runtime.feature_calls, [])
+        self.assertEqual(runtime.refit_calls, [])
+
+    def test_geometry_regime_blocks_values_not_representable_as_float32(self):
+        training = [dict(row) for row in self.training]
+        validation = [dict(row) for row in self.validation]
+        for rows in (training, validation):
+            for row in rows:
+                value = float(row["weight"])
+                row.update({
+                    "volume_mm3": value * 1000,
+                    "surface_area_mm2": value * 100,
+                    "bounding_box_x_mm": value * 2, "bbox_x": value * 2,
+                    "bounding_box_y_mm": value * 4, "bbox_y": value * 4,
+                    "bounding_box_z_mm": value * 3, "bbox_z": value * 3,
+                    "bounding_box_volume_mm3": value * 1100,
+                })
+        validation[0]["volume_mm3"] = 1e100
+        validation[0]["volume"] = 1e100
+        runtime = GeometryRecordingRuntime()
+
+        result = develop_candidates(
+            training, validation, self.config, runtime=runtime,
+            output_root=self.root / "geometry-float32",
+            limits=SearchLimits.for_plan(41, "geometry_regime"),
+        )
+
+        self.assertEqual(result.status, "blocked")
+        self.assertEqual(result.blockers, ("invalid_candidate_feature_data",))
+        self.assertEqual(runtime.feature_calls, [])
 
     def test_invalid_or_overlapping_partition_identities_block_before_fitting(self):
         invalid_cases = {
@@ -1200,25 +1454,39 @@ class CandidateTuningTests(unittest.TestCase):
         cases = (
             ("tail_aware_expanded", 40),
             ("large_batch_extended", 80),
+            ("geometry_regime", 40),
         )
         for plan_kind, maximum_runs in cases:
             with self.subTest(plan_kind=plan_kind):
                 training = Path(self.temp.name) / f"training-{plan_kind}.json"
                 validation = Path(self.temp.name) / f"validation-{plan_kind}.json"
+                records = self.records
+                runtime = RecordingTuningRuntime()
+                if plan_kind == "geometry_regime":
+                    records = [
+                        {
+                            **row,
+                            "bbox_x": row["weight"] * 2,
+                            "bbox_y": row["weight"] * 4,
+                            "bbox_z": row["weight"] * 3,
+                        }
+                        for row in records
+                    ]
+                    runtime = GeometryRecordingRuntime()
                 training.write_text(json.dumps([
                     dict(row, _id=f"training-{index}")
-                    for index, row in enumerate(self.records[:4])
+                    for index, row in enumerate(records[:4])
                 ]))
                 validation.write_text(json.dumps([
                     dict(row, _id=f"validation-{index}")
-                    for index, row in enumerate(self.records[4:])
+                    for index, row in enumerate(records[4:])
                 ]))
                 output_root = self.root.parent / plan_kind
                 output = io.StringIO()
 
                 with patch(
                     "minires.modeling.tuning.TensorflowXGBoostCandidateRuntime",
-                    return_value=RecordingTuningRuntime(),
+                    return_value=runtime,
                 ), contextlib.redirect_stdout(output):
                     code = tuning_main([
                         "--training-records", str(training),
@@ -1236,6 +1504,9 @@ class CandidateTuningTests(unittest.TestCase):
                 self.assertEqual(
                     plan["resource_limits"]["maximum_candidate_runs"], maximum_runs
                 )
+                if plan_kind == "geometry_regime":
+                    self.assertEqual(len(plan["prediction_features"]), 16)
+                    self.assertNotIn("anonymous_source_group", plan["prediction_features"])
 
     def test_invalid_unbounded_worker_plan_is_rejected_before_runtime_fitting(self):
         runtime = RecordingTuningRuntime()

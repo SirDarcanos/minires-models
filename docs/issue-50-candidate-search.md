@@ -98,3 +98,84 @@ the held-out assessment was not started. This round stops without automatic
 expansion. Issue #50 remains open for a future separately justified and
 predeclared hypothesis. Private row-level results, source reports, paths,
 fingerprints, mappings, and model artifacts remain unpublished.
+
+# Geometry-regime candidate search (predeclared)
+
+## Falsifiable hypothesis
+
+The completed rounds varied model capacity while retaining the seven legacy-compatible
+inputs. Aggregate private diagnostics show that serious errors remain concentrated in
+a geometrically distinct input regime. This round tests one isolated change: a richer,
+deterministic, source-neutral geometry representation with raw, logarithmic, ratio,
+and orientation-invariant measurements can reduce serious absolute errors enough for
+at least one candidate to satisfy every unchanged validation gate.
+
+The hypothesis is falsified if no candidate satisfies every gate. The round will then
+stop without stacking, new model families, added seeds, changed weighting, altered
+gates, omitted rows, or an expanded plan.
+
+## Feature contract
+
+This round replaces, rather than augments, the legacy-compatible candidate inputs.
+Its ordered 16-feature representation is:
+
+1. mesh volume and surface area;
+2. shortest, middle, and longest bounding-box dimensions;
+3. bounding-box volume and Euler number;
+4. `log1p` transforms of volume, surface area, bounding-box volume, and the three
+   ordered bounding-box dimensions;
+5. log mesh-volume-to-bounding-box-volume ratio;
+6. log surface-area-to-mesh-volume ratio; and
+7. log longest-to-shortest bounding-box dimension ratio.
+
+All values are derived deterministically from the seven canonical geometry
+measurements already normalized for each record. Bounding-box dimensions are sorted
+to remove axis orientation. Missing or non-finite measurements block the round before
+fitting; size, area, and volume measurements must also be positive, while Euler number
+may be negative but must remain integral. Values that cannot be represented as finite
+float32 inputs also block. Anonymous source groups, miniature families, identities,
+linkage evidence, file-size proxies, legacy scale, partitions, and join keys never
+enter the feature matrix. The fixed clean control retains its legacy feature contract.
+
+## Fixed plan and budget
+
+The `geometry_regime` plan is fixed before fitting:
+
+- primary seed 41 and second seed 42, enforced by plan validation;
+- 12 neural-network candidates and 12 XGBoost candidates using the unchanged
+  large-batch parameter domains and existing target-weighting choices;
+- six deterministic validation-selected ensembles;
+- second-seed repetition of at most ten eligible initial candidates;
+- at most 40 candidate runs and 7,200 elapsed seconds; and
+- the pinned Python 3.13 environment with NumPy 2.2.6, Keras 3.15.0,
+  TensorFlow 2.20.0, scikit-learn 1.7.2, and XGBoost 3.1.2.
+
+Every candidate identity and model specification binds the new ordered feature
+contract and its `minires-geometry-regime-features-v1` transformation version. Lock
+verification rejects a missing or changed geometry transformation version before
+loading or assessment. The eligibility gates remain at most 1% above-5-g errors pooled, 1% under
+equal source weighting, and 2% for every anonymous source group with at least 200
+accepted validation records. Ranking remains source-balanced mean absolute error,
+pooled mean absolute error, within-2-g fraction, and stable candidate identity.
+
+Immediately before execution, the committed training and validation SHA-256 values
+must match `data/manifest.json`. Fitting and preprocessing may use training records
+only; validation remains limited to early stopping, unweighted ranking, eligibility,
+ensemble decisions, and locking. The held-out test artifact is not an argument to
+this development seam and must not be loaded, inspected, or fingerprinted.
+
+The one permitted execution will use the next fresh create-only directory:
+
+```bash
+.venv-candidates/bin/python -m minires.modeling.tuning \
+  --training-records data/train.jsonl \
+  --validation-records data/validation.jsonl \
+  --output-root private/candidate-tuning/run-007 \
+  --volume-unit mm3 \
+  --scope-confirmed \
+  --seed 41 \
+  --plan-kind geometry_regime
+```
+
+This section predeclares the round only. No execution result or candidate lock is
+claimed here.

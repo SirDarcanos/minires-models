@@ -21,7 +21,7 @@ from ..modeling.legacy import LegacyProvenance, LegacyReference, load_legacy_ref
 from ..private_io import write_private_json
 from ..modeling.tuning import (
     CandidateRuntime, LockedCandidate, TensorflowXGBoostCandidateRuntime,
-    load_locked_candidate, verify_locked_candidate_files,
+    candidate_prediction_matrix, load_locked_candidate, verify_locked_candidate_files,
 )
 
 
@@ -204,10 +204,15 @@ def assess_locked_candidate(
         return result
 
     try:
-        matrix, actual = _matrix(accepted)
-        candidate = _predict(candidate_predictor, matrix)
-        neural = _predict(legacy.neural_network, matrix)
-        xgboost = _predict(legacy.xgboost, matrix)
+        legacy_matrix, actual = _matrix(accepted)
+        candidate_matrix, candidate_actual = candidate_prediction_matrix(
+            accepted, locked.candidate
+        )
+        if candidate_actual != actual:
+            raise ValueError("target mismatch")
+        candidate = _predict(candidate_predictor, candidate_matrix)
+        neural = _predict(legacy.neural_network, legacy_matrix)
+        xgboost = _predict(legacy.xgboost, legacy_matrix)
         legacy_values = tuple(
             legacy.neural_network_weight * left + (1 - legacy.neural_network_weight) * right
             for left, right in zip(neural, xgboost)

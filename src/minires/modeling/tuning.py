@@ -48,6 +48,26 @@ SOURCE_BALANCED_ABOVE_5G_FRACTION_MAXIMUM = 0.01
 PER_SOURCE_ABOVE_5G_FRACTION_MAXIMUM = 0.02
 PER_SOURCE_MINIMUM_ACCEPTED_RECORDS = 200
 
+# This representation is deliberately source-neutral. Every value is derived from
+# canonical geometry; source, identity, family, linkage, and legacy proxy metadata
+# are unavailable to the feature builder.
+GEOMETRY_REGIME_FEATURES = (
+    "volume_mm3", "surface_area_mm2", "bounding_box_short_mm",
+    "bounding_box_middle_mm", "bounding_box_long_mm",
+    "bounding_box_volume_mm3", "euler_number", "log1p_volume_mm3",
+    "log1p_surface_area_mm2", "log1p_bounding_box_volume_mm3",
+    "log1p_bounding_box_short_mm", "log1p_bounding_box_middle_mm",
+    "log1p_bounding_box_long_mm", "log_volume_to_bounding_box_volume_ratio",
+    "log_surface_to_volume_ratio_per_mm", "log_bounding_box_long_to_short_ratio",
+)
+GEOMETRY_REGIME_INPUTS = (
+    "volume_mm3", "surface_area_mm2", "bounding_box_x_mm",
+    "bounding_box_y_mm", "bounding_box_z_mm", "bounding_box_volume_mm3",
+    "euler_number",
+)
+GEOMETRY_REGIME_TRANSFORMATION_VERSION = "minires-geometry-regime-features-v1"
+FLOAT32_MAXIMUM = 3.4028234663852886e38
+
 NEURAL_NETWORK_DOMAIN: dict[str, tuple[Any, ...]] = {
     "layers": ((64, 32), (128, 64), (128, 64, 32), (256, 128, 64),
                (384, 192, 96), (512, 256, 128, 64)),
@@ -118,6 +138,9 @@ CANDIDATE_RUNTIME_CONTRACT: dict[str, dict[str, Any]] = {
 @dataclass(frozen=True)
 class SearchPlanPolicy:
     plan_kind: str
+    prediction_features: tuple[str, ...]
+    feature_transformation_version: str
+    fixed_seeds: tuple[int, int] | None
     neural_network_trials: int
     xgboost_trials: int
     ensemble_trials: int
@@ -166,22 +189,34 @@ class SearchLimits:
 
 SEARCH_PLAN_POLICIES = {
     "baseline": SearchPlanPolicy(
-        "baseline", 6, 6, 3, 5, 20, 7200.0,
+        "baseline", LEGACY_FEATURES, TRANSFORMATION_VERSION, None,
+        6, 6, 3, 5, 20, 7200.0,
         NEURAL_NETWORK_DOMAIN, XGBOOST_DOMAIN,
         "baseline governed candidate search",
     ),
     "tail_aware_expanded": SearchPlanPolicy(
-        "tail_aware_expanded", 12, 12, 6, 10, 40, 7200.0,
+        "tail_aware_expanded", LEGACY_FEATURES, TRANSFORMATION_VERSION, None,
+        12, 12, 6, 10, 40, 7200.0,
         TAIL_AWARE_NEURAL_NETWORK_DOMAIN, TAIL_AWARE_XGBOOST_DOMAIN,
         "bounded sliced resin mass weighting and broader configuration coverage "
         "reduce serious absolute errors",
     ),
     "large_batch_extended": SearchPlanPolicy(
-        "large_batch_extended", 24, 24, 12, 20, 80, 14_400.0,
+        "large_batch_extended", LEGACY_FEATURES, TRANSFORMATION_VERSION, None,
+        24, 24, 12, 20, 80, 14_400.0,
         LARGE_BATCH_NEURAL_NETWORK_DOMAIN, LARGE_BATCH_XGBOOST_DOMAIN,
         "larger neural-network batches, longer neural-network training, and "
         "higher XGBoost tree ceilings with denser deterministic coverage reduce "
         "serious absolute errors",
+    ),
+    "geometry_regime": SearchPlanPolicy(
+        "geometry_regime", GEOMETRY_REGIME_FEATURES,
+        GEOMETRY_REGIME_TRANSFORMATION_VERSION, (41, 42),
+        12, 12, 6, 10, 40, 7200.0,
+        LARGE_BATCH_NEURAL_NETWORK_DOMAIN, LARGE_BATCH_XGBOOST_DOMAIN,
+        "a richer deterministic source-neutral geometry representation with "
+        "logarithmic, ratio, and orientation-invariant features reduces serious "
+        "absolute errors",
     ),
 }
 
@@ -198,6 +233,8 @@ class Candidate:
     candidate_id: str
     family: str
     parameters: dict[str, Any]
+    ordered_prediction_features: tuple[str, ...] = LEGACY_FEATURES
+    feature_transformation_version: str = TRANSFORMATION_VERSION
 
     @property
     def model_kind(self) -> ModelKind | None:
@@ -211,7 +248,15 @@ class Candidate:
     def specification(self):
         if self.family not in {"neural_network", "xgboost"}:
             return None
-        return candidate_model_specification(self.family, self.parameters)
+        return candidate_model_specification(
+            self.family, self.parameters,
+            ordered_prediction_features=self.ordered_prediction_features,
+            identity_namespace=(
+                f"minires-model-definition-v1:{self.feature_transformation_version}"
+                if self.ordered_prediction_features != LEGACY_FEATURES
+                else "minires-model-definition-v1"
+            ),
+        )
 
 
 @dataclass(frozen=True)
@@ -296,6 +341,8 @@ class SearchPlan:
     version: str
     generator_version: str
     plan_id: str
+    prediction_features: tuple[str, ...]
+    feature_transformation_version: str
     seed: int
     second_seed: int
     input_fingerprint: str
@@ -655,10 +702,11 @@ def generate_search_plan(
     domains = _validated_parameter_domains(parameter_domains, policy)
     neural = _space_filling_candidates(
         "neural_network", domains["neural_network"], limits.neural_network_trials,
-        limits.seed,
+        limits.seed, policy.prediction_features, policy.feature_transformation_version,
     )
     xgboost = _space_filling_candidates(
-        "xgboost", domains["xgboost"], limits.xgboost_trials, limits.seed ^ 0x5EED
+        "xgboost", domains["xgboost"], limits.xgboost_trials, limits.seed ^ 0x5EED,
+        policy.prediction_features, policy.feature_transformation_version,
     )
     components = neural + xgboost
     if len({candidate.candidate_id for candidate in components}) != len(components):
@@ -687,6 +735,8 @@ def generate_search_plan(
     plan_payload: dict[str, Any] = {
         "version": TUNING_VERSION,
         "generator_version": TUNING_VERSION,
+        "prediction_features": policy.prediction_features,
+        "feature_transformation_version": policy.feature_transformation_version,
         "seed": limits.seed,
         "second_seed": limits.resolved_second_seed,
         "input_fingerprint": input_fingerprint,
@@ -830,7 +880,9 @@ def _search_plan_identities(
 
 
 def _space_filling_candidates(
-    family: str, domain: Mapping[str, tuple[Any, ...]], count: int, seed: int
+    family: str, domain: Mapping[str, tuple[Any, ...]], count: int, seed: int,
+    ordered_prediction_features: tuple[str, ...] = LEGACY_FEATURES,
+    feature_transformation_version: str = TRANSFORMATION_VERSION,
 ) -> tuple[Candidate, ...]:
     rng = random.Random(seed)
     keys = tuple(sorted(domain))
@@ -849,11 +901,20 @@ def _space_filling_candidates(
             choices = domain[key]
             parameters[key] = choices[encoded % len(choices)]
             encoded //= len(choices)
-        identity = json.dumps([family, parameters], sort_keys=True, separators=(",", ":"))
+        identity_payload = [family, parameters]
+        if ordered_prediction_features != LEGACY_FEATURES:
+            identity_payload.extend(
+                (ordered_prediction_features, feature_transformation_version)
+            )
+        identity = json.dumps(
+            identity_payload, sort_keys=True, separators=(",", ":"),
+        )
         candidates.append(Candidate(
             candidate_id=f"{family[:3]}-{trial + 1:02d}-{sha256(identity.encode()).hexdigest()[:8]}",
             family=family,
             parameters=parameters,
+            ordered_prediction_features=ordered_prediction_features,
+            feature_transformation_version=feature_transformation_version,
         ))
     return tuple(candidates)
 
@@ -1053,6 +1114,18 @@ def develop_candidates(
         _write_tuning_outputs(output, result)
         return result
 
+    if not _valid_candidate_feature_data(
+        (*training_rows, *validation_rows), plan.prediction_features
+    ):
+        result = TuningResult(
+            "blocked", ("invalid_candidate_feature_data",), 0,
+            {"neural_network": 0, "xgboost": 0, "ensemble": 0,
+             "second_seed": 0, "control": 0},
+            plan, None, (), (), (), None, _resources(0.0, 0.0),
+        )
+        _write_tuning_outputs(output, result)
+        return result
+
     startup_blockers = tuple(sorted(set(getattr(runtime, "startup_blockers", ()))))
     if startup_blockers:
         result = TuningResult(
@@ -1231,6 +1304,12 @@ def _valid_explicit_partitions(
 def _explicit_ensemble_candidate(
     index: int, neural: Candidate, xgboost: Candidate, weights: Sequence[float],
 ) -> Candidate:
+    if (
+        neural.ordered_prediction_features != xgboost.ordered_prediction_features
+        or neural.feature_transformation_version
+        != xgboost.feature_transformation_version
+    ):
+        raise ValueError("invalid_candidate_feature_contract")
     parameters = {
         "component_rank": index + 1,
         "selection_partition": "validation_records_only",
@@ -1239,7 +1318,74 @@ def _explicit_ensemble_candidate(
         "neural_network_weight_grid": tuple(weights),
     }
     digest = sha256(json.dumps(parameters, sort_keys=True).encode()).hexdigest()[:8]
-    return Candidate(f"ens-{index + 1:02d}-{digest}", "ensemble", parameters)
+    return Candidate(
+        f"ens-{index + 1:02d}-{digest}", "ensemble", parameters,
+        neural.ordered_prediction_features, neural.feature_transformation_version,
+    )
+
+
+def candidate_prediction_matrix(
+    rows: Sequence[CanonicalRow], candidate: Candidate,
+) -> tuple[tuple[tuple[float, ...], ...], tuple[float, ...]]:
+    """Build the matrix bound to a candidate without exposing evaluation metadata."""
+    if candidate.family == "control" or candidate.ordered_prediction_features == LEGACY_FEATURES:
+        return _matrix(rows)
+    if (
+        candidate.ordered_prediction_features != GEOMETRY_REGIME_FEATURES
+        or candidate.feature_transformation_version
+        != GEOMETRY_REGIME_TRANSFORMATION_VERSION
+    ):
+        raise ValueError("invalid_candidate_feature_contract")
+    features = tuple(_geometry_regime_row(row) for row in rows)
+    targets = tuple(
+        float(row.sliced_resin_mass_g) for row in rows
+        if row.sliced_resin_mass_g is not None
+    )
+    if len(features) != len(targets) or not features:
+        raise ValueError("invalid_candidate_feature_data")
+    return features, targets
+
+
+def _geometry_regime_row(row: CanonicalRow) -> tuple[float, ...]:
+    try:
+        raw = tuple(float(row.features[name]) for name in GEOMETRY_REGIME_INPUTS)
+    except (KeyError, TypeError, ValueError):
+        raise ValueError("invalid_candidate_feature_data") from None
+    if not all(math.isfinite(value) for value in raw):
+        raise ValueError("invalid_candidate_feature_data")
+    volume, surface, x, y, z, bbox_volume, euler = raw
+    if any(value <= 0.0 for value in (volume, surface, x, y, z, bbox_volume)):
+        raise ValueError("invalid_candidate_feature_data")
+    short, middle, long = sorted((x, y, z))
+    values = (
+        volume, surface, short, middle, long, bbox_volume, euler,
+        math.log1p(volume), math.log1p(surface), math.log1p(bbox_volume),
+        math.log1p(short), math.log1p(middle), math.log1p(long),
+        math.log(volume) - math.log(bbox_volume),
+        math.log(surface) - math.log(volume),
+        math.log(long) - math.log(short),
+    )
+    if not all(
+        math.isfinite(value) and abs(value) <= FLOAT32_MAXIMUM for value in values
+    ):
+        raise ValueError("invalid_candidate_feature_data")
+    return values
+
+
+def _valid_candidate_feature_data(
+    rows: Sequence[CanonicalRow], prediction_features: tuple[str, ...],
+) -> bool:
+    if prediction_features == LEGACY_FEATURES:
+        return True
+    if prediction_features != GEOMETRY_REGIME_FEATURES or not rows:
+        return False
+    try:
+        return all(
+            row.sliced_resin_mass_g is not None and bool(_geometry_regime_row(row))
+            for row in rows
+        )
+    except ValueError:
+        return False
 
 
 def _evaluate_explicit_candidate(
@@ -1250,8 +1396,8 @@ def _evaluate_explicit_candidate(
     started = time.perf_counter()
     cpu_started = time.process_time()
     try:
-        train_x, train_y = _matrix(training)
-        validation_x, validation_y = _matrix(validation)
+        train_x, train_y = candidate_prediction_matrix(training, candidate)
+        validation_x, validation_y = candidate_prediction_matrix(validation, candidate)
         if candidate.family == "ensemble":
             neural = _candidate_from_dict(candidate.parameters["neural_network"])
             xgboost = _candidate_from_dict(candidate.parameters["xgboost"])
@@ -1379,7 +1525,20 @@ def tune_candidates(
         _write_tuning_outputs(output, result)
         return result
 
-    by_index = {row.row_index: row for row in rows if row.outcome == "included"}
+    included_rows = tuple(row for row in rows if row.outcome == "included")
+    if not _valid_candidate_feature_data(
+        included_rows, selected_plan.prediction_features
+    ):
+        result = TuningResult(
+            "blocked", ("invalid_candidate_feature_data",), 0,
+            {"neural_network": 0, "xgboost": 0, "ensemble": 0,
+             "second_seed": 0, "control": 0},
+            selected_plan, None, (), (), (), None, _resources(0.0, 0.0),
+        )
+        _write_tuning_outputs(output, result)
+        return result
+
+    by_index = {row.row_index: row for row in included_rows}
     started = clock()
     cpu_started = time.process_time()
     deadline = started + limits.maximum_elapsed_seconds
@@ -1518,9 +1677,15 @@ def _evaluate_candidate(
     cpu_started = time.process_time()
     try:
         for fold_number, fold in enumerate(manifest["folds"]):
-            train_x, train_y = _matrix([by_index[index] for index in fold["train"]])
-            validation_x, validation_y = _matrix([by_index[index] for index in fold["validation"]])
-            test_x, test_y = _matrix([by_index[index] for index in fold["test"]])
+            train_x, train_y = candidate_prediction_matrix(
+                [by_index[index] for index in fold["train"]], candidate
+            )
+            validation_x, validation_y = candidate_prediction_matrix(
+                [by_index[index] for index in fold["validation"]], candidate
+            )
+            test_x, test_y = candidate_prediction_matrix(
+                [by_index[index] for index in fold["test"]], candidate
+            )
             if candidate.family == "ensemble":
                 fold_components = next(
                     item for item in candidate.parameters["components_by_fold"]
@@ -1544,13 +1709,7 @@ def _evaluate_candidate(
                 weight = _select_ensemble_weight(validation_y, validation_neural,
                                                  validation_xgboost, weight_grid)
                 ensemble_specification = ensemble_model_specification(
-                    candidate_model_specification(
-                        neural.family, neural.parameters
-                    ),
-                    candidate_model_specification(
-                        xgboost.family, xgboost.parameters
-                    ),
-                    weight,
+                    neural.specification, xgboost.specification, weight,
                 )
                 fitted_state_fingerprint = fingerprint({
                     "neural_network": _fingerprintable_state(neural_fit.fitted_state),
@@ -1795,6 +1954,14 @@ def _ensemble_candidate(
     index: int, neural: Sequence[CandidateRun], xgboost: Sequence[CandidateRun],
     weights: Sequence[float],
 ) -> Candidate:
+    features = neural[0].candidate.ordered_prediction_features
+    transformation = neural[0].candidate.feature_transformation_version
+    if any(
+        run.candidate.ordered_prediction_features != features
+        or run.candidate.feature_transformation_version != transformation
+        for run in (*neural, *xgboost)
+    ):
+        raise ValueError("invalid_candidate_feature_contract")
     sources = sorted({report["source"] for run in neural for report in run.source_reports})
     components_by_fold = []
     for source in sources:
@@ -1812,7 +1979,10 @@ def _ensemble_candidate(
         "neural_network_weight_grid": tuple(weights),
     }
     digest = sha256(json.dumps(parameters, sort_keys=True).encode()).hexdigest()[:8]
-    return Candidate(f"ens-{index + 1:02d}-{digest}", "ensemble", parameters)
+    return Candidate(
+        f"ens-{index + 1:02d}-{digest}", "ensemble", parameters, features,
+        neural[0].candidate.feature_transformation_version,
+    )
 
 
 def _validation_rank_key(run: CandidateRun, source: str) -> tuple[float, str]:
@@ -1842,14 +2012,22 @@ def _resolve_final_candidate(candidate: Candidate) -> Candidate:
         "development_components_by_fold": candidate.parameters["components_by_fold"],
         "neural_network_weight_grid": candidate.parameters["neural_network_weight_grid"],
         "component_resolution": "most_frequent_fold_validation_pair_then_stable_id",
-    })
+    }, candidate.ordered_prediction_features, candidate.feature_transformation_version)
 
 
 def _candidate_from_dict(value: Mapping[str, Any]) -> Candidate:
     parameters = _freeze_json_lists(value["parameters"])
-    if not isinstance(parameters, dict):
+    features = _freeze_json_lists(value.get("ordered_prediction_features", LEGACY_FEATURES))
+    transformation = value.get("feature_transformation_version", TRANSFORMATION_VERSION)
+    if (
+        not isinstance(parameters, dict) or not isinstance(features, tuple)
+        or not isinstance(transformation, str) or not transformation
+    ):
         raise ValueError("invalid candidate parameters")
-    return Candidate(str(value["candidate_id"]), str(value["family"]), parameters)
+    return Candidate(
+        str(value["candidate_id"]), str(value["family"]), parameters, features,
+        transformation,
+    )
 
 
 def _freeze_json_lists(value: Any) -> Any:
@@ -1964,7 +2142,7 @@ def _refit_and_lock_explicit(
     fixed_counts = _derive_training_counts(candidate, related)
     if not _valid_fixed_training_counts(candidate, fixed_counts):
         raise InputError("invalid_locked_candidate_training_counts")
-    features, targets = _matrix(training)
+    features, targets = candidate_prediction_matrix(training, candidate)
     fitted = runtime.refit(candidate, plan.second_seed, features, targets, fixed_counts)
     if not isinstance(fitted.preprocessing_state, Mapping) or not fitted.artifacts:
         raise InputError("invalid_locked_candidate_artifact")
@@ -2006,14 +2184,16 @@ def _refit_and_lock_explicit(
         "code_fingerprint": plan.code_fingerprint,
         "transformation_version": TRANSFORMATION_VERSION,
         "feature_contract": {
-            "ordered_features": list(LEGACY_FEATURES),
+            "ordered_features": list(candidate.ordered_prediction_features),
+            "transformation_version": candidate.feature_transformation_version,
             "dtype": "float32",
             "excluded_fields": [
-                "anonymous_source_group", "partition", "duplicate_group",
-                "geometry_fingerprint", "record_identity", "_id", "join_key",
+                "anonymous_source_group", "miniature_family", "partition",
+                "duplicate_group", "geometry_fingerprint", "record_identity",
+                "location_evidence", "_id", "join_key",
             ],
         },
-        "features": list(LEGACY_FEATURES),
+        "features": list(candidate.ordered_prediction_features),
         "preprocessing": "locked_fit_on_training_records_only",
         "preprocessing_state_file": "preprocessing-state.json",
         "eligibility_rule": _eligibility_gates(),
@@ -2065,7 +2245,7 @@ def _refit_and_lock(
     fixed_counts = _derive_training_counts(candidate, related)
     if not _valid_fixed_training_counts(candidate, fixed_counts):
         raise InputError("invalid_locked_candidate_training_counts")
-    features, targets = _matrix(rows)
+    features, targets = candidate_prediction_matrix(rows, candidate)
     fitted = runtime.refit(candidate, plan.second_seed, features, targets, fixed_counts)
     if not isinstance(fitted.preprocessing_state, Mapping) or not fitted.artifacts:
         raise InputError("invalid_locked_candidate_artifact")
@@ -2096,8 +2276,12 @@ def _refit_and_lock(
         },
         "code_fingerprint": plan.code_fingerprint,
         "transformation_version": TRANSFORMATION_VERSION,
-        "feature_contract": {"ordered_features": list(LEGACY_FEATURES), "dtype": "float32"},
-        "features": list(LEGACY_FEATURES),
+        "feature_contract": {
+            "ordered_features": list(candidate.ordered_prediction_features),
+            "transformation_version": candidate.feature_transformation_version,
+            "dtype": "float32",
+        },
+        "features": list(candidate.ordered_prediction_features),
         "preprocessing": "locked_fit_on_all_included_development_records_only",
         "preprocessing_state_file": "preprocessing-state.json",
         "eligibility_rule": _eligibility_gates(),
@@ -2239,7 +2423,14 @@ def _valid_locked_contract(contract: Mapping[str, Any]) -> bool:
             and all(isinstance(source, str) and source for source in development_sources)
             and development_usage == required_usage
             and isinstance(feature_contract, Mapping)
-            and feature_contract.get("ordered_features") == list(LEGACY_FEATURES)
+            and feature_contract.get("ordered_features")
+            == list(candidate.ordered_prediction_features)
+            and contract.get("features") == list(candidate.ordered_prediction_features)
+            and feature_contract.get(
+                "transformation_version",
+                TRANSFORMATION_VERSION
+                if candidate.ordered_prediction_features == LEGACY_FEATURES else None,
+            ) == candidate.feature_transformation_version
             and feature_contract.get("dtype") == "float32"
             and isinstance(fixed_counts, Mapping)
             and _valid_fixed_training_counts(candidate, fixed_counts)
@@ -2269,7 +2460,14 @@ def _valid_locked_contract(contract: Mapping[str, Any]) -> bool:
         and all(value == "development_records_only"
                 for value in development_usage.values())
         and isinstance(feature_contract, Mapping)
-        and feature_contract.get("ordered_features") == list(LEGACY_FEATURES)
+        and feature_contract.get("ordered_features")
+        == list(candidate.ordered_prediction_features)
+        and contract.get("features") == list(candidate.ordered_prediction_features)
+        and feature_contract.get(
+            "transformation_version",
+            TRANSFORMATION_VERSION
+            if candidate.ordered_prediction_features == LEGACY_FEATURES else None,
+        ) == candidate.feature_transformation_version
         and feature_contract.get("dtype") == "float32"
         and isinstance(fixed_counts, Mapping)
         and _valid_fixed_training_counts(candidate, fixed_counts)
@@ -2287,12 +2485,18 @@ def _valid_locked_contract(contract: Mapping[str, Any]) -> bool:
 def _validate_declared_candidate(candidate: Candidate) -> None:
     # The deep model-definition module owns structural and semantic validation;
     # this additional check limits governed search candidates to the declared domain.
-    candidate_model_specification(candidate.family, candidate.parameters)
+    candidate_model_specification(
+        candidate.family, candidate.parameters,
+        ordered_prediction_features=candidate.ordered_prediction_features,
+    )
     matching_domains = [
         domain
         for policy in SEARCH_PLAN_POLICIES.values()
         for family, domain in _supported_domains(policy).items()
         if family == candidate.family
+        and candidate.ordered_prediction_features == policy.prediction_features
+        and candidate.feature_transformation_version
+        == policy.feature_transformation_version
         and set(candidate.parameters) == set(domain)
         and all(
             _supported_domain_value(value, domain[key])
@@ -2582,7 +2786,9 @@ class TensorflowXGBoostCandidateRuntime:
                 fixed_model_specification(), training, validation, seed=seed
             )
             return _candidate_fold_fit(fitted)
-        specification = candidate_model_specification(candidate.family, candidate.parameters)
+        specification = candidate.specification
+        if specification is None:
+            raise ValueError("invalid candidate specification")
         fitted = self.models.fit(specification, training, validation, seed=seed)
         return _candidate_fold_fit(fitted)
 
@@ -2663,8 +2869,24 @@ def _locked_model_specification(
         xgboost_parameters = dict(xgboost_candidate.parameters)
         xgboost_parameters["n_estimators"] = fixed_training_counts["xgboost_trees"]
         return ensemble_model_specification(
-            candidate_model_specification("neural_network", neural_parameters),
-            candidate_model_specification("xgboost", xgboost_parameters),
+            candidate_model_specification(
+                "neural_network", neural_parameters,
+                ordered_prediction_features=neural_candidate.ordered_prediction_features,
+                identity_namespace=(
+                    f"minires-model-definition-v1:{neural_candidate.feature_transformation_version}"
+                    if neural_candidate.ordered_prediction_features != LEGACY_FEATURES
+                    else "minires-model-definition-v1"
+                ),
+            ),
+            candidate_model_specification(
+                "xgboost", xgboost_parameters,
+                ordered_prediction_features=xgboost_candidate.ordered_prediction_features,
+                identity_namespace=(
+                    f"minires-model-definition-v1:{xgboost_candidate.feature_transformation_version}"
+                    if xgboost_candidate.ordered_prediction_features != LEGACY_FEATURES
+                    else "minires-model-definition-v1"
+                ),
+            ),
             float(fixed_training_counts["ensemble_neural_network_weight"]),
         )
     parameters = dict(candidate.parameters)
@@ -2672,7 +2894,15 @@ def _locked_model_specification(
         parameters["maximum_epochs"] = fixed_training_counts["neural_network_epochs"]
     elif candidate.family == "xgboost":
         parameters["n_estimators"] = fixed_training_counts["xgboost_trees"]
-    return candidate_model_specification(candidate.family, parameters)
+    return candidate_model_specification(
+        candidate.family, parameters,
+        ordered_prediction_features=candidate.ordered_prediction_features,
+        identity_namespace=(
+            f"minires-model-definition-v1:{candidate.feature_transformation_version}"
+            if candidate.ordered_prediction_features != LEGACY_FEATURES
+            else "minires-model-definition-v1"
+        ),
+    )
 
 
 def _selected_epoch_count(
@@ -2760,6 +2990,10 @@ def _validate_limits(limits: SearchLimits) -> None:
     ):
         raise ValueError("invalid_search_plan")
     policy = _plan_policy(limits.plan_kind)
+    if policy.fixed_seeds is not None and (
+        limits.seed, limits.resolved_second_seed
+    ) != policy.fixed_seeds:
+        raise ValueError("invalid_search_plan")
     expected = (
         policy.neural_network_trials, policy.xgboost_trials, policy.ensemble_trials,
         policy.second_seed_candidates, policy.maximum_candidate_runs,
