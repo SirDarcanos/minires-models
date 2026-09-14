@@ -614,3 +614,44 @@ The one permitted corrected execution will use the next fresh create-only direct
   --seed 41 \
   --plan-kind tail_aligned_selection
 ```
+
+## Corrected aggregate result
+
+The corrected execution completed all 15 initial candidates: six neural networks,
+six XGBoost models, and three ensembles. No initial candidate satisfied every gate,
+so none advanced to second-seed repetition and the five reserved slots remained
+unused.
+
+The best result under the unchanged development ranking was an ensemble:
+
+| Metric | Result |
+| --- | ---: |
+| Pooled mean absolute error | 0.5867 g |
+| Source-balanced mean absolute error | 0.6326 g |
+| Pooled within-2-g fraction | 95.72% |
+| Source-balanced within-2-g fraction | 94.68% |
+| Pooled above-5-g fraction | 0.90% |
+| Source-balanced above-5-g fraction | 1.16% |
+| Maximum qualifying-source above-5-g fraction | 2.77% |
+
+A different ensemble was closest to eligibility. It passed the pooled gate at
+0.77% and the source-balanced gate at 0.92%, but its maximum qualifying-source
+rate was 2.42% against the unchanged 2% limit.
+
+The run used 1,639.57 seconds elapsed time, 1,992.96 process CPU seconds, and a
+process high-water resident-set measurement of 1,018,101,760 platform units. Its
+create-only manifest and all four recorded artifact checksums were independently
+verified after completion.
+
+## Corrected decision
+
+The corrected round ended as `completed_no_candidate` with
+`no_eligible_candidate`. The selection hypothesis improved tail performance enough
+for one ensemble to pass both aggregate gates, but not the qualifying-source gate.
+It is therefore falsified for this fixed plan.
+
+No candidate was repeated or refitted, no lock was created, and held-out assessment
+was not started. The round stops without automatic expansion. Issue #50 remains
+open for a separately justified, predeclared hypothesis. Private row-level results,
+source reports, paths, fingerprints, mappings, candidate configurations, and model
+artifacts remain unpublished.

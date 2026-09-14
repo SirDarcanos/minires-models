@@ -16,7 +16,7 @@ MiniRes estimates sliced resin mass under validated slicing conditions. It does 
 
 ## Repository status
 
-The current code supports data preparation and governed model development. The latest issue #50 execution aligned validation-based checkpoint, component-pair, and ensemble-weight selection with the fixed serious-error gates without adding features or reslicing data, but independent review found a non-finite-checkpoint handling defect. That run remains preserved and is not treated as a valid test; the corrected finite round is predeclared, and no lock or final assessment exists.
+The current code supports data preparation and governed model development. The corrected issue #50 round aligned validation-based checkpoint, component-pair, and ensemble-weight selection with the fixed serious-error gates without adding features or reslicing data. Its closest ensemble passed both aggregate gates but missed the qualifying-source gate, so no lock was created and final assessment was not started.
 
 Start with:
 
