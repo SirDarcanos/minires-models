@@ -715,6 +715,50 @@ class CandidateSearchPlanTests(unittest.TestCase):
                 dependency_versions={"runtime": "synthetic-1"},
             )
 
+    def test_guarded_residual_stacking_plan_is_finite_anchored_and_source_neutral(self):
+        limits = SearchLimits.for_plan(41, "guarded_residual_stacking")
+        first = generate_search_plan(
+            limits, input_fingerprint="input", code_fingerprint="code",
+            dependency_versions={"runtime": "synthetic-1"},
+        )
+        second = generate_search_plan(
+            limits, input_fingerprint="input", code_fingerprint="code",
+            dependency_versions={"runtime": "synthetic-1"},
+        )
+
+        self.assertEqual(first, second)
+        self.assertEqual((first.seed, first.second_seed), (41, 42))
+        self.assertEqual([item.family for item in first.component_trials],
+                         ["neural_network", "neural_network", "xgboost", "xgboost"])
+        self.assertEqual(first.parameter_domains,
+                         {"neural_network": {}, "xgboost": {}})
+        self.assertEqual(first.resource_limits["maximum_candidate_runs"], 6)
+        self.assertEqual(first.resource_limits["maximum_model_fits"], 50)
+        self.assertEqual(first.resource_limits["oof_base_fits"], 40)
+        self.assertEqual(first.resource_limits["full_training_base_fits"], 8)
+        self.assertEqual(first.resource_limits["residual_fits"], 2)
+        self.assertEqual(first.second_seed_rule["selection"],
+                         "all_predeclared_residual_candidates")
+        self.assertEqual(len(first.ensemble_rules), 3)
+        self.assertEqual([rule["correction_scale"] for rule in first.ensemble_rules],
+                         [0.0, 0.5, 1.0])
+        self.assertTrue(all(
+            rule["construction"] == "guarded_residual_stacking"
+            and rule["anchor_formula"] == "float64_arithmetic_mean_of_four_bases"
+            and rule["residual_fit_partition"] == "training_oof_predictions_only"
+            and rule["cross_fit_folds"] == 5
+            for rule in first.ensemble_rules
+        ))
+        serialized = json.dumps(first.to_dict(), sort_keys=True)
+        self.assertNotIn("anonymous_source_group", serialized)
+        self.assertNotIn("miniature_family", serialized)
+        with self.assertRaisesRegex(ValueError, "invalid_search_plan"):
+            generate_search_plan(
+                SearchLimits.for_plan(99, "guarded_residual_stacking"),
+                input_fingerprint="input", code_fingerprint="code",
+                dependency_versions={"runtime": "synthetic-1"},
+            )
+
     def test_stack_fold_assignment_is_deterministic_and_ignores_source_and_target(self):
         raw = [
             {**CandidateTuningTests.row("source-a", f"family-{index}", index + 1),
@@ -1400,6 +1444,79 @@ class ExplicitPartitionDevelopmentTests(unittest.TestCase):
             result.locked_candidate.directory, runtime.dependency_versions
         )
         self.assertIn("locked_candidate_checksum_mismatch", blockers)
+
+    def test_guarded_residual_stack_cross_fits_bounds_corrections_and_locks_shift_evidence(self):
+        runtime = StackRecordingRuntime()
+        result = develop_candidates(
+            self.training, self.validation, self.config, runtime=runtime,
+            output_root=self.root / "guarded-residual-stack",
+            limits=SearchLimits.for_plan(41, "guarded_residual_stacking"),
+            clock=lambda: 0.0,
+        )
+
+        self.assertEqual(result.status, "completed")
+        self.assertEqual(result.run_count, 6)
+        self.assertEqual(result.resource_use["model_fits"], 50)
+        self.assertEqual(len(runtime.refit_calls), 48)
+        self.assertTrue(result.to_dict()["second_seed_comparison"]["complete"])
+        self.assertTrue(all(
+            run.fit_metadata[0]["residual_training"] == {
+                "partition": "training_oof_predictions_only",
+                "oof_prediction_count_per_base": [len(self.training)] * 4,
+                "source_metadata_used": False,
+                "validation_labels_used": False,
+            }
+            for run in (*result.initial_results, *result.second_seed_results)
+        ))
+        self.assertEqual(
+            [run.fit_metadata[0]["correction_scale"]
+             for run in result.initial_results],
+            [0.0, 0.5, 1.0],
+        )
+        self.assertTrue(all(
+            run.fit_metadata[0]["maximum_absolute_correction_g"]
+            <= run.fit_metadata[0]["correction_bound_g"]
+            for run in (*result.initial_results, *result.second_seed_results)
+        ))
+        assert result.locked_candidate is not None
+        contract = result.locked_candidate.contract
+        self.assertEqual(contract["candidate"]["family"], "guarded_residual_stack")
+        self.assertEqual(contract["development_data_usage"]["residual_fitting"],
+                         "training_oof_predictions_only")
+        self.assertEqual(contract["runtime_configuration"]["combination"],
+                         "fixed_mean_anchor_plus_bounded_training_oof_residual")
+        self.assertEqual(contract["model_specification"]["model_kind"],
+                         "guarded_residual_stack")
+        self.assertIn("oof_full_fit_shift", contract["development_evidence"])
+        self.assertIn("guarded-residual-state.json",
+                      result.locked_candidate.manifest["files"])
+        blockers, _, _ = verify_locked_candidate_files(
+            result.locked_candidate.directory, runtime.dependency_versions
+        )
+        self.assertEqual(blockers, ())
+        reloaded = load_locked_candidate(result.locked_candidate.directory, runtime)
+        self.assertEqual(reloaded.candidate, result.locked_candidate.candidate)
+
+        run_manifest = json.loads(
+            (self.root / "guarded-residual-stack" / "manifest.json").read_text()
+        )
+        self.assertTrue(run_manifest["create_only"])
+        self.assertFalse(run_manifest["publication_performed"])
+        self.assertIn("locked-candidate/lock-manifest.json", run_manifest["artifacts"])
+
+        directory = result.locked_candidate.directory
+        state_path = directory / "guarded-residual-state.json"
+        state = json.loads(state_path.read_text())
+        state["correction_scale"] = 9.0
+        state_path.write_text(json.dumps(state, sort_keys=True))
+        manifest_path = directory / "lock-manifest.json"
+        manifest = json.loads(manifest_path.read_text())
+        manifest["files"][state_path.name] = sha256(state_path.read_bytes()).hexdigest()
+        manifest_path.write_text(json.dumps(manifest, sort_keys=True))
+        blockers, _, _ = verify_locked_candidate_files(
+            directory, runtime.dependency_versions
+        )
+        self.assertIn("locked_candidate_contract_mismatch", blockers)
 
     def test_nonlinear_stack_rejects_coordinated_oof_fingerprint_tampering(self):
         runtime = StackRecordingRuntime()

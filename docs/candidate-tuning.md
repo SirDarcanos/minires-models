@@ -585,6 +585,87 @@ is recorded in [the issue #50 round ledger](issue-50-candidate-search.md).
   --plan-kind nonlinear_oof_stacking
 ```
 
+## Predeclared guarded residual-stacking plan
+
+Issue #50's next bounded round is `guarded_residual_stacking`. The preceding
+nonlinear stack replaced already-strong base predictions with piecewise-constant
+direct target estimates and compressed the prediction range. This round tests a
+materially distinct hypothesis: a small, bounded additive residual correction,
+fitted only from training out-of-fold predictions, can improve a fixed base anchor
+without being able to replace or collapse it.
+
+The four base contracts, their order, fixed epoch/tree counts, five-fold
+identity-hash assignment, and seeds 41/42 are exactly those declared for
+`nonlinear_oof_stacking`. Identity affects fold assignment only. Anonymous source
+groups, miniature families, targets, linkage evidence, paths, partitions, and
+identities do not affect fold assignment and never enter a prediction matrix.
+Every training row must receive exactly one finite OOF prediction from every base.
+
+For each row, the fixed anchor is the float64 arithmetic mean of the four ordered
+base predictions, cast to finite float32. The residual feature vector is exactly:
+
+1. the anchor;
+2. each of the four base predictions minus the anchor, in base order; and
+3. the maximum base prediction minus the minimum base prediction.
+
+Training-OOF means and population standard deviations standardize these six
+features. A standard deviation no greater than `1e-12` becomes `1.0`; standardized
+values are clipped to `[-4, 4]`. One deterministic NumPy least-squares ridge model
+per seed fits the training residual target `target - OOF anchor`, clipped to
+`[-2 g, 2 g]`, with penalty 1.0 and an unpenalized intercept. Validation labels do
+not fit the anchor, preprocessing, coefficients, bounds, or scales.
+
+Exactly three candidates reuse each seed's one fitted residual state:
+
+| Slot | Scale | Maximum additive correction | Identity behavior |
+| --- | ---: | ---: | --- |
+| 1 | 0.0 | 0 g | returns the anchor directly |
+| 2 | 0.5 | 1 g | anchor plus half the clipped residual |
+| 3 | 1.0 | 2 g | anchor plus the clipped residual |
+
+Wrong-length, non-finite, or out-of-float32 base predictions, features, state,
+corrections, or final predictions block the round. There is no fallback, omitted
+row, substitute candidate, added seed, changed fold, recycled budget, or automatic
+expansion.
+
+The finite allocation is three candidate evaluations under each seed, 40 OOF base
+fits, eight full-training base fits, and two analytical residual fits: six
+candidate evaluations and 50 fits total, with a 7,200-second ceiling checked before
+every fit. All three candidates run under both seeds, including unfavorable ones.
+Eligibility remains at most 1% above-5-g errors pooled, 1% source-balanced, and 2%
+for every qualifying anonymous source group. Ranking remains source-balanced MAE,
+pooled MAE, within-2-g fraction, and stable candidate identity. A lock requires
+eligibility under seed 41, seed 42, and their equal combination.
+
+Private aggregate `oof-full-fit-shift.json` evidence compares each base and the
+anchor under training OOF and full-training fitting, records validation anchor and
+bounded-correction distributions without validation labels, and contains no row,
+source, family, or identity values. Its fingerprint is bound into any lock. The
+create-only lock also binds the analytical residual state, exact anchor and feature
+contracts, bound and scale, base order and artifacts, fixed counts, recomputable
+fold assignments and fingerprints, seeds, dependencies, development identities,
+unchanged gates/ranking, and the no-test-access attestation. The top-level run
+manifest explicitly records create-only output and checksums the complete lock
+tree.
+
+The implementation and predeclaration do not authorize fitting by themselves. The
+one permitted execution requires the committed change and a source-neutral Issue
+#50 predeclaration comment, then uses fresh directory `run-013`:
+
+```bash
+.venv-candidates/bin/python -m minires.modeling.tuning \
+  --training-records data/train.jsonl \
+  --validation-records data/validation.jsonl \
+  --output-root private/candidate-tuning/run-013 \
+  --volume-unit mm3 --scope-confirmed --seed 41 \
+  --plan-kind guarded_residual_stacking
+```
+
+The command verifies only the committed training and validation checksums and the
+pinned Python 3.13 environment: NumPy 2.2.6, Keras 3.15.0, TensorFlow 2.20.0,
+scikit-learn 1.7.2, and XGBoost 3.1.2. It has no held-out assessment argument and
+must not read or fingerprint held-out evidence.
+
 ## Locked candidate
 
 A successful search creates `locked-candidate/` with:

@@ -710,3 +710,34 @@ The nonlinear stacking hypothesis is falsified for this fixed plan. This round
 stops without automatic expansion, and Issue #50 remains open for a separately
 justified and predeclared hypothesis. Private row-level results, source reports,
 paths, fingerprints, mappings, and model artifacts remain unpublished.
+
+## Predeclaration: guarded training-OOF residual stacking (not executed)
+
+The failed direct-target stack strongly compressed its prediction range and
+replaced already-strong continuous base predictions with shallow tree plateaus.
+The next materially distinct hypothesis is that one deterministic ridge residual
+learner, constrained to make only a small additive correction to a fixed four-base
+mean anchor, can improve serious validation errors without being able to collapse
+the anchor.
+
+The complete contract is declared in
+[`candidate-tuning.md`](candidate-tuning.md#predeclared-guarded-residual-stacking-plan)
+and enforced by `minires.modeling.tuning`. It freezes the same four base contracts,
+five identity-only training folds, and seeds 41/42. The anchor is the arithmetic
+mean of the four base predictions. The residual learner receives only that anchor,
+the four base-minus-anchor differences, and base spread. Training-OOF statistics
+standardize and clip those inputs; ridge penalty 1.0 fits a target residual clipped
+to ±2 g. The three fixed variants are exact identity, half-strength correction
+bounded to ±1 g, and full correction bounded to ±2 g.
+
+All three candidates run under both seeds. The finite ceiling is six candidate
+evaluations, 50 fits, and 7,200 seconds. Existing serious-error gates and ranking
+are unchanged. Aggregate private evidence records OOF-versus-full-fit prediction
+shift without row, source, family, or identity values. No source metadata,
+miniature family, identity, linkage, partition, path, or held-out information enters
+model fitting or fold assignment beyond deterministic identity-only assignment.
+
+The round must stop without substitution or expansion if incomplete or
+unsuccessful. It may execute once in fresh create-only `run-013` only after this
+implementation/predeclaration commit and a source-neutral Issue #50 comment. This
+predeclaration did not fit a model, access held-out evidence, or start Issue #33.

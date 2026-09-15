@@ -26,6 +26,19 @@ from ..ingestion import (
 )
 from .learned import LearnedBaselineConfig, _matrix, _predict
 from .legacy import LEGACY_FEATURES
+from .guarded_residual import (
+    CORRECTION_SCALES as GUARDED_RESIDUAL_CORRECTION_SCALES,
+    FEATURES as GUARDED_RESIDUAL_FEATURES,
+    FEATURE_CLIP as GUARDED_RESIDUAL_FEATURE_CLIP,
+    RESIDUAL_BOUND_G as GUARDED_RESIDUAL_BOUND_G,
+    RIDGE_PENALTY as GUARDED_RESIDUAL_RIDGE_PENALTY,
+    VERSION as GUARDED_RESIDUAL_STACKING_VERSION,
+    fit_state as _fit_guarded_residual_numeric_state,
+    predict as _guarded_residual_numeric_predict,
+    residual_features as _guarded_residual_features,
+    shift_summary as _guarded_residual_shift_summary,
+    valid_numeric_state as _valid_guarded_residual_numeric_state,
+)
 from .definitions import (
     FittedModel, ModelKind, ModelRuntime, ModelSpecification,
     TensorflowXGBoostBackend, TrainingData,
@@ -98,6 +111,7 @@ NONLINEAR_OOF_META_FEATURES = (
     "mean_g", "min_g", "max_g", "spread_g",
 )
 NONLINEAR_OOF_MAXIMUM_FITS = 54
+GUARDED_RESIDUAL_MAXIMUM_FITS = 50
 NONLINEAR_OOF_META_VARIANTS: tuple[dict[str, Any], ...] = (
     {"n_estimators": 64, "max_depth": 1, "learning_rate": 0.03,
      "subsample": 0.80, "colsample_bytree": 1.00, "min_child_weight": 20.0,
@@ -305,6 +319,14 @@ SEARCH_PLAN_POLICIES = {
         "predictions from four frozen structurally diverse base contracts reduces "
         "serious absolute errors without adding raw prediction features",
     ),
+    "guarded_residual_stacking": SearchPlanPolicy(
+        "guarded_residual_stacking", LEGACY_FEATURES, TRANSFORMATION_VERSION,
+        (41, 42), 2, 2, 3, 3, 6, 7200.0,
+        TAIL_ALIGNED_NEURAL_NETWORK_DOMAIN, TAIL_ALIGNED_XGBOOST_DOMAIN,
+        "a bounded additive residual correction fitted only from deterministic "
+        "training out-of-fold predictions improves a fixed four-base mean anchor "
+        "without replacing its sliced resin mass prediction",
+    ),
 }
 
 
@@ -374,6 +396,30 @@ def _nonlinear_oof_stack_candidate(index: int) -> Candidate:
     return Candidate(
         f"stack-{index + 1:02d}-{digest}", "nonlinear_oof_stack", parameters,
         LEGACY_FEATURES, NONLINEAR_OOF_STACKING_VERSION,
+    )
+
+
+def _guarded_residual_candidate(index: int) -> Candidate:
+    bases = _nonlinear_oof_base_candidates()
+    parameters = {
+        "residual_slot": index + 1,
+        "base_candidates": tuple(asdict(base) for base in bases),
+        "anchor_formula": "float64_arithmetic_mean_of_four_bases",
+        "residual_features": GUARDED_RESIDUAL_FEATURES,
+        "ridge_penalty": GUARDED_RESIDUAL_RIDGE_PENALTY,
+        "feature_clip": GUARDED_RESIDUAL_FEATURE_CLIP,
+        "residual_bound_g": GUARDED_RESIDUAL_BOUND_G,
+        "correction_scale": GUARDED_RESIDUAL_CORRECTION_SCALES[index],
+        "cross_fit_folds": CROSS_FIT_FOLDS,
+        "cross_fit_assignment_version": NONLINEAR_OOF_ASSIGNMENT_VERSION,
+        "residual_fit_partition": "training_oof_predictions_only",
+        "base_refit_partition": "training_records_only",
+        "validation_use": "scoring_eligibility_ranking_and_locking_only",
+    }
+    digest = sha256(json.dumps(parameters, sort_keys=True).encode()).hexdigest()[:16]
+    return Candidate(
+        f"residual-{index + 1:02d}-{digest}", "guarded_residual_stack", parameters,
+        LEGACY_FEATURES, GUARDED_RESIDUAL_STACKING_VERSION,
     )
 
 
@@ -715,6 +761,54 @@ class NonlinearOOFStackModelSpecification:
 
 
 @dataclass(frozen=True)
+class GuardedResidualStackModelSpecification:
+    bases: tuple[ModelSpecification, ...]
+    correction_scale: float
+    ordered_prediction_features: tuple[str, ...] = LEGACY_FEATURES
+    identity_namespace: str = GUARDED_RESIDUAL_STACKING_VERSION
+
+    @property
+    def stable_identity(self) -> str:
+        encoded = json.dumps(
+            self.to_dict(include_identity=False), sort_keys=True,
+            separators=(",", ":"), allow_nan=False,
+        ).encode()
+        return f"model-guarded_residual_stack-{sha256(encoded).hexdigest()[:16]}"
+
+    def to_dict(self, *, include_identity: bool = True) -> dict[str, Any]:
+        result = {
+            "version": self.identity_namespace,
+            "model_kind": "guarded_residual_stack",
+            "ordered_prediction_features": list(self.ordered_prediction_features),
+            "preprocessing": {
+                "feature_dtype": "float32",
+                "base_normalization": "defined_by_frozen_members",
+                "residual_transformation": "training_oof_standardize_clip_v1",
+            },
+            "architecture_parameters": {
+                "anchor_formula": "float64_arithmetic_mean_of_four_bases",
+                "residual_features": list(GUARDED_RESIDUAL_FEATURES),
+                "ridge_penalty": GUARDED_RESIDUAL_RIDGE_PENALTY,
+                "feature_clip": GUARDED_RESIDUAL_FEATURE_CLIP,
+                "residual_bound_g": GUARDED_RESIDUAL_BOUND_G,
+                "correction_scale": self.correction_scale,
+                "cross_fit_folds": CROSS_FIT_FOLDS,
+                "cross_fit_assignment_version": NONLINEAR_OOF_ASSIGNMENT_VERSION,
+            },
+            "training_parameters": {
+                "residual_fit_partition": "training_oof_predictions_only",
+                "base_refit_partition": "training_records_only",
+                "validation_fit_access": False,
+            },
+            "members": {"bases": [base.to_dict() for base in self.bases]},
+            "output_unit": "g",
+        }
+        if include_identity:
+            result["stable_identity"] = self.stable_identity
+        return result
+
+
+@dataclass(frozen=True)
 class LockedCandidate:
     candidate: Candidate
     predictor: Callable[[Sequence[tuple[float, ...]]], Sequence[float]]
@@ -725,7 +819,7 @@ class LockedCandidate:
     @property
     def specification(self) -> (
         ModelSpecification | GeometryGateModelSpecification
-        | NonlinearOOFStackModelSpecification
+        | NonlinearOOFStackModelSpecification | GuardedResidualStackModelSpecification
     ):
         return _locked_model_specification(
             self.candidate, self.contract["fixed_training_counts"]
@@ -816,6 +910,46 @@ def _valid_nonlinear_stack_state(state: Mapping[str, Any]) -> bool:
     )
 
 
+def _valid_guarded_residual_state(state: Mapping[str, Any]) -> bool:
+    try:
+        candidate = _guarded_residual_candidate(int(state["residual_slot"]) - 1)
+    except (KeyError, TypeError, ValueError, IndexError):
+        return False
+    return (
+        set(state) == {
+            "version", "candidate_id", "residual_slot", "base_order",
+            "anchor_formula", "residual_features", "correction_scale",
+            "numeric_state", "cross_fit_folds", "cross_fit_assignment_version",
+            "oof_assignment_fingerprints", "oof_full_fit_shift_fingerprint",
+            "fixed_training_counts",
+        }
+        and state.get("version") == GUARDED_RESIDUAL_STACKING_VERSION
+        and state.get("candidate_id") == candidate.candidate_id
+        and state.get("base_order") == [
+            item.candidate_id for item in _nonlinear_oof_base_candidates()
+        ]
+        and state.get("anchor_formula") == "float64_arithmetic_mean_of_four_bases"
+        and state.get("residual_features") == list(GUARDED_RESIDUAL_FEATURES)
+        and state.get("correction_scale") == candidate.parameters["correction_scale"]
+        and isinstance(state.get("numeric_state"), Mapping)
+        and _valid_guarded_residual_numeric_state(state["numeric_state"])
+        and state.get("cross_fit_folds") == CROSS_FIT_FOLDS
+        and state.get("cross_fit_assignment_version")
+        == NONLINEAR_OOF_ASSIGNMENT_VERSION
+        and isinstance(state.get("oof_assignment_fingerprints"), Mapping)
+        and set(state["oof_assignment_fingerprints"]) == {"41", "42"}
+        and all(
+            isinstance(value, str) and len(value) == 64
+            and all(character in "0123456789abcdef" for character in value)
+            for value in state["oof_assignment_fingerprints"].values()
+        )
+        and isinstance(state.get("oof_full_fit_shift_fingerprint"), str)
+        and len(state["oof_full_fit_shift_fingerprint"]) == 64
+        and isinstance(state.get("fixed_training_counts"), Mapping)
+        and state["fixed_training_counts"] == _guarded_residual_fixed_counts(candidate)
+    )
+
+
 def verify_locked_candidate_files(
     directory: str | Path,
     dependency_versions: Mapping[str, str],
@@ -887,6 +1021,30 @@ def verify_locked_candidate_files(
                 != contract.get("fixed_training_counts")
                 or stack_state.get("oof_assignment_fingerprints")
                 != contract.get("oof_assignment", {}).get("fingerprints_by_seed")
+            ):
+                blockers.add("locked_candidate_contract_mismatch")
+        if family == "guarded_residual_stack":
+            state = json.loads((root / "guarded-residual-state.json").read_text())
+            shift_evidence = json.loads((root / "oof-full-fit-shift.json").read_text())
+            if (
+                set(preprocessing) != {
+                    "base_1", "base_2", "base_3", "base_4", "residual_numeric",
+                    "guarded_residual_state",
+                }
+                or not isinstance(state, Mapping)
+                or not _valid_guarded_residual_state(state)
+                or preprocessing.get("guarded_residual_state") != state
+                or preprocessing.get("residual_numeric") != state.get("numeric_state")
+                or state.get("candidate_id")
+                != contract.get("candidate", {}).get("candidate_id")
+                or state.get("fixed_training_counts")
+                != contract.get("fixed_training_counts")
+                or state.get("oof_assignment_fingerprints")
+                != contract.get("oof_assignment", {}).get("fingerprints_by_seed")
+                or shift_evidence
+                != contract.get("development_evidence", {}).get("oof_full_fit_shift")
+                or state.get("oof_full_fit_shift_fingerprint")
+                != fingerprint(shift_evidence)
             ):
                 blockers.add("locked_candidate_contract_mismatch")
     except (AttributeError, OSError, ValueError, TypeError, json.JSONDecodeError):
@@ -1004,7 +1162,7 @@ def generate_search_plan(
     ):
         raise ValueError("invalid_search_plan")
     policy = _plan_policy(limits.plan_kind)
-    if policy.plan_kind == "nonlinear_oof_stacking":
+    if policy.plan_kind in {"nonlinear_oof_stacking", "guarded_residual_stacking"}:
         if parameter_domains is not None:
             raise ValueError("invalid_search_plan")
         domains: dict[str, dict[str, tuple[Any, ...]]] = {
@@ -1036,7 +1194,37 @@ def generate_search_plan(
         "code": code_fingerprint, "configuration": configuration_identity,
     })
     dependencies = dict(sorted(dependency_versions.items()))
-    if policy.plan_kind == "nonlinear_oof_stacking":
+    if policy.plan_kind == "guarded_residual_stacking":
+        ensemble_rules = tuple({
+            "residual_slot": index + 1,
+            "residual_candidate_id": _guarded_residual_candidate(index).candidate_id,
+            "construction": "guarded_residual_stacking",
+            "base_candidates": tuple(asdict(item) for item in components),
+            "base_order": tuple(item.candidate_id for item in components),
+            "fixed_training_counts": tuple(
+                int(item.parameters["maximum_epochs"])
+                if item.family == "neural_network"
+                else int(item.parameters["n_estimators"])
+                for item in components
+            ),
+            "cross_fit_folds": CROSS_FIT_FOLDS,
+            "cross_fit_partition": "training_records_only",
+            "cross_fit_assignment_version": NONLINEAR_OOF_ASSIGNMENT_VERSION,
+            "oof_coverage": "exactly_one_prediction_per_training_row_per_base",
+            "anchor_formula": "float64_arithmetic_mean_of_four_bases",
+            "residual_features": GUARDED_RESIDUAL_FEATURES,
+            "residual_target": "clip_sliced_resin_mass_minus_anchor_to_2g",
+            "ridge_penalty": GUARDED_RESIDUAL_RIDGE_PENALTY,
+            "feature_clip": GUARDED_RESIDUAL_FEATURE_CLIP,
+            "residual_bound_g": GUARDED_RESIDUAL_BOUND_G,
+            "correction_scale": GUARDED_RESIDUAL_CORRECTION_SCALES[index],
+            "residual_fit_partition": "training_oof_predictions_only",
+            "base_refit_partition": "training_records_only",
+            "validation_use": "scoring_eligibility_ranking_and_locking_only",
+            "source_groups": "evaluation_only",
+            "stable_tie_breaker": "candidate_id_ascending",
+        } for index in range(limits.ensemble_trials))
+    elif policy.plan_kind == "nonlinear_oof_stacking":
         ensemble_rules = tuple({
             "stack_slot": index + 1,
             "stack_candidate_id": _nonlinear_oof_stack_candidate(index).candidate_id,
@@ -1144,6 +1332,8 @@ def generate_search_plan(
             "selection": (
                 "all_predeclared_meta_candidates"
                 if policy.plan_kind == "nonlinear_oof_stacking"
+                else "all_predeclared_residual_candidates"
+                if policy.plan_kind == "guarded_residual_stacking"
                 else "best_eligible_initial_candidates_by_ranking_rule"
             ),
             "combination": "equal_seed_weight",
@@ -1160,7 +1350,14 @@ def generate_search_plan(
                 "meta_fits": 6,
                 "budget_recycling": False,
                 "automatic_expansion": False,
-            } if policy.plan_kind == "nonlinear_oof_stacking" else {}),
+            } if policy.plan_kind == "nonlinear_oof_stacking" else {
+                "maximum_model_fits": GUARDED_RESIDUAL_MAXIMUM_FITS,
+                "oof_base_fits": 40,
+                "full_training_base_fits": 8,
+                "residual_fits": 2,
+                "budget_recycling": False,
+                "automatic_expansion": False,
+            } if policy.plan_kind == "guarded_residual_stacking" else {}),
             "initial_neural_network_trials": limits.neural_network_trials,
             "initial_xgboost_trials": limits.xgboost_trials,
             "initial_ensemble_trials": limits.ensemble_trials,
@@ -1532,6 +1729,12 @@ def develop_candidates(
             training_fingerprint, validation_fingerprint, started, cpu_started,
             deadline, clock,
         )
+    if limits.plan_kind == "guarded_residual_stacking":
+        return _develop_guarded_residual_stacking(
+            output, plan, runtime, training_rows, validation_rows,
+            training_fingerprint, validation_fingerprint, started, cpu_started,
+            deadline, clock,
+        )
     allocation = {"neural_network": 0, "xgboost": 0, "ensemble": 0,
                   "second_seed": 0, "control": 0}
     blockers: list[str] = []
@@ -1742,6 +1945,77 @@ def _stack_fixed_counts(candidate: Candidate) -> dict[str, int]:
     }
     result["meta_trees"] = int(candidate.parameters["meta_parameters"]["n_estimators"])
     return result
+
+
+def _validate_guarded_residual_candidate(candidate: Candidate) -> None:
+    try:
+        slot = candidate.parameters["residual_slot"]
+        bases = tuple(_candidate_from_dict(item) for item in candidate.parameters["base_candidates"])
+    except (KeyError, TypeError, ValueError):
+        raise ValueError("invalid_candidate_configuration") from None
+    expected_keys = {
+        "residual_slot", "base_candidates", "anchor_formula", "residual_features",
+        "ridge_penalty", "feature_clip", "residual_bound_g", "correction_scale",
+        "cross_fit_folds", "cross_fit_assignment_version", "residual_fit_partition",
+        "base_refit_partition", "validation_use",
+    }
+    if (
+        candidate.family != "guarded_residual_stack"
+        or candidate.ordered_prediction_features != LEGACY_FEATURES
+        or candidate.feature_transformation_version != GUARDED_RESIDUAL_STACKING_VERSION
+        or set(candidate.parameters) != expected_keys
+        or slot not in (1, 2, 3)
+        or candidate != _guarded_residual_candidate(slot - 1)
+        or bases != _nonlinear_oof_base_candidates()
+        or candidate.parameters["anchor_formula"]
+        != "float64_arithmetic_mean_of_four_bases"
+        or tuple(candidate.parameters["residual_features"]) != GUARDED_RESIDUAL_FEATURES
+        or candidate.parameters["ridge_penalty"] != GUARDED_RESIDUAL_RIDGE_PENALTY
+        or candidate.parameters["feature_clip"] != GUARDED_RESIDUAL_FEATURE_CLIP
+        or candidate.parameters["residual_bound_g"] != GUARDED_RESIDUAL_BOUND_G
+        or candidate.parameters["correction_scale"]
+        != GUARDED_RESIDUAL_CORRECTION_SCALES[slot - 1]
+        or candidate.parameters["cross_fit_folds"] != CROSS_FIT_FOLDS
+        or candidate.parameters["cross_fit_assignment_version"]
+        != NONLINEAR_OOF_ASSIGNMENT_VERSION
+        or candidate.parameters["residual_fit_partition"]
+        != "training_oof_predictions_only"
+        or candidate.parameters["base_refit_partition"] != "training_records_only"
+        or candidate.parameters["validation_use"]
+        != "scoring_eligibility_ranking_and_locking_only"
+    ):
+        raise ValueError("invalid_candidate_configuration")
+
+
+def _guarded_residual_fixed_counts(candidate: Candidate) -> dict[str, int]:
+    _validate_guarded_residual_candidate(candidate)
+    bases = tuple(_candidate_from_dict(item) for item in candidate.parameters["base_candidates"])
+    result = {
+        f"base_{index}_{'epochs' if base.family == 'neural_network' else 'trees'}": int(
+            base.parameters["maximum_epochs" if base.family == "neural_network" else "n_estimators"]
+        )
+        for index, base in enumerate(bases, 1)
+    }
+    result["residual_ridge_fits"] = 1
+    return result
+
+
+def _guarded_residual_predictor(
+    base_predictors: Sequence[Callable[[Sequence[tuple[float, ...]]], Sequence[float]]],
+    numeric_state: Mapping[str, Any], correction_scale: float,
+) -> Callable[[Sequence[tuple[float, ...]]], Sequence[float]]:
+    if len(base_predictors) != 4 or not _valid_guarded_residual_numeric_state(numeric_state):
+        raise ValueError("invalid_guarded_residual_state")
+
+    def predict(rows: Sequence[tuple[float, ...]]) -> Sequence[float]:
+        columns = tuple(_predict(base, rows) for base in base_predictors)
+        anchors, features = _guarded_residual_features(columns, len(rows))
+        predictions, _ = _guarded_residual_numeric_predict(
+            numeric_state, features, anchors, correction_scale,
+        )
+        return predictions
+
+    return predict
 
 
 def _stack_refit(
@@ -2054,6 +2328,410 @@ def _lock_prefitted_nonlinear_stack(
                 "files": {path.name: sha256(path.read_bytes()).hexdigest() for path in files},
                 "create_only": True, "locked_before_final_assessment": True,
                 "test_input_accessed": False}
+    write_private_json(directory / "lock-manifest.json", manifest)
+    return LockedCandidate(candidate, fitted.predictor, directory, manifest, contract)
+
+
+def _prediction_summary(values: Sequence[float]) -> dict[str, float | int]:
+    ordered = sorted(float(value) for value in values)
+    if not ordered or not all(math.isfinite(value) for value in ordered):
+        raise ValueError("invalid_guarded_residual_shift_evidence")
+    return {
+        "count": len(ordered),
+        "mean_g": math.fsum(ordered) / len(ordered),
+        "standard_deviation_g": statistics.pstdev(ordered),
+        "minimum_g": ordered[0],
+        "median_g": statistics.median(ordered),
+        "maximum_g": ordered[-1],
+    }
+
+
+def _fit_guarded_residual_seed(
+    candidates: Sequence[Candidate], seed: int, runtime: CandidateRuntime,
+    training: Sequence[CanonicalRow], validation: Sequence[CanonicalRow],
+    before_fit: Callable[[], None], runs: list[CandidateRun],
+    lock_fits: dict[str, LockedFit],
+) -> dict[str, Any]:
+    bases = _nonlinear_oof_base_candidates()
+    assignments = _cross_fit_assignments(training, seed, CROSS_FIT_FOLDS)
+    oof_columns: list[tuple[float, ...]] = []
+    fold_metadata: list[dict[str, Any]] = []
+    for base_index, base in enumerate(bases, 1):
+        oof = [math.nan] * len(training)
+        for fold in range(CROSS_FIT_FOLDS):
+            held = [index for index, value in enumerate(assignments) if value == fold]
+            fitted_indices = [index for index, value in enumerate(assignments) if value != fold]
+            if not held or not fitted_indices:
+                raise ValueError("invalid_cross_fit_partition")
+            fit_rows = [training[index] for index in fitted_indices]
+            held_rows = [training[index] for index in held]
+            fit_x, fit_y = candidate_prediction_matrix(fit_rows, base)
+            held_x, _ = candidate_prediction_matrix(held_rows, base)
+            count = int(base.parameters[
+                "maximum_epochs" if base.family == "neural_network" else "n_estimators"
+            ])
+            before_fit()
+            fitted = _stack_refit(runtime, base, seed, fit_x, fit_y, count)
+            predictions = _predict(fitted.predictor, held_x)
+            for row_index, prediction in zip(held, predictions):
+                if math.isfinite(oof[row_index]):
+                    raise ValueError("invalid_guarded_residual_oof_coverage")
+                oof[row_index] = prediction
+            fold_metadata.append({
+                "base_index": base_index,
+                "fold": fold,
+                "training_record_count": len(fitted_indices),
+                "held_out_record_count": len(held),
+            })
+        if not all(math.isfinite(value) for value in oof):
+            raise ValueError("invalid_guarded_residual_oof_coverage")
+        oof_columns.append(tuple(oof))
+
+    _, train_y = candidate_prediction_matrix(training, bases[0])
+    oof_anchors, oof_features = _guarded_residual_features(oof_columns, len(training))
+    before_fit()
+    numeric_state = _fit_guarded_residual_numeric_state(oof_features, train_y, oof_anchors)
+
+    base_fits: list[LockedFit] = []
+    full_training_columns: list[tuple[float, ...]] = []
+    validation_columns: list[tuple[float, ...]] = []
+    for base in bases:
+        train_x, base_y = candidate_prediction_matrix(training, base)
+        validation_x, _ = candidate_prediction_matrix(validation, base)
+        if base_y != train_y:
+            raise ValueError("invalid_candidate_feature_data")
+        count = int(base.parameters[
+            "maximum_epochs" if base.family == "neural_network" else "n_estimators"
+        ])
+        before_fit()
+        fitted = _stack_refit(runtime, base, seed, train_x, train_y, count)
+        base_fits.append(fitted)
+        full_training_columns.append(_predict(fitted.predictor, train_x))
+        validation_columns.append(_predict(fitted.predictor, validation_x))
+    full_anchors, full_features = _guarded_residual_features(
+        full_training_columns, len(training)
+    )
+    validation_anchors, validation_features = _guarded_residual_features(
+        validation_columns, len(validation)
+    )
+    shift_evidence: dict[str, Any] = {
+        "version": GUARDED_RESIDUAL_STACKING_VERSION,
+        "seed": seed,
+        "validation_labels_used": False,
+        "base_prediction_shift": {
+            f"base_{index}": _guarded_residual_shift_summary(oof, full)
+            for index, (oof, full) in enumerate(
+                zip(oof_columns, full_training_columns), 1
+            )
+        },
+        "anchor_shift": _guarded_residual_shift_summary(oof_anchors, full_anchors),
+        "anchor_distributions": {
+            "training_oof": _prediction_summary(oof_anchors),
+            "full_fit_training": _prediction_summary(full_anchors),
+            "validation": _prediction_summary(validation_anchors),
+        },
+        "corrections": {},
+    }
+    for candidate in candidates:
+        started, cpu_started = time.perf_counter(), time.process_time()
+        try:
+            _validate_guarded_residual_candidate(candidate)
+            scale = float(candidate.parameters["correction_scale"])
+            predictions, corrections = _guarded_residual_numeric_predict(
+                numeric_state, validation_features, validation_anchors, scale,
+            )
+            reports = _explicit_validation_source_reports(
+                len(training), validation, predictions
+            )
+            metrics = _candidate_metrics(reports)
+            eligible = _tail_eligible(metrics)
+            maximum_correction = max(abs(value) for value in corrections)
+            metadata = {
+                "residual_training": {
+                    "partition": "training_oof_predictions_only",
+                    "oof_prediction_count_per_base": [len(training)] * 4,
+                    "source_metadata_used": False,
+                    "validation_labels_used": False,
+                },
+                "cross_fit_assignment_version": NONLINEAR_OOF_ASSIGNMENT_VERSION,
+                "cross_fit_metadata": copy.deepcopy(fold_metadata),
+                "correction_scale": scale,
+                "correction_bound_g": scale * GUARDED_RESIDUAL_BOUND_G,
+                "maximum_absolute_correction_g": maximum_correction,
+                "fixed_training_counts": _guarded_residual_fixed_counts(candidate),
+            }
+            runs.append(CandidateRun(
+                candidate, seed, "completed",
+                () if eligible else ("development_serious_error_gate_failed",),
+                eligible, metrics, reports, (metadata,),
+                _resources(time.perf_counter() - started, time.process_time() - cpu_started),
+            ))
+            shift_evidence["corrections"][candidate.candidate_id] = {
+                "correction_scale": scale,
+                "maximum_absolute_correction_g": maximum_correction,
+                "correction_distribution": _prediction_summary(corrections),
+            }
+            artifacts: dict[str, bytes] = {}
+            preprocessing: dict[str, Any] = {"residual_numeric": copy.deepcopy(numeric_state)}
+            for index, fitted in enumerate(base_fits, 1):
+                preprocessing[f"base_{index}"] = dict(fitted.preprocessing_state)
+                artifacts.update({
+                    f"base-{index:02d}-{name}": content
+                    for name, content in fitted.artifacts.items()
+                })
+            lock_fits[candidate.candidate_id] = LockedFit(
+                _guarded_residual_predictor(
+                    tuple(fitted.predictor for fitted in base_fits), numeric_state, scale
+                ),
+                preprocessing,
+                artifacts,
+                {
+                    "seed": seed,
+                    "residual_training": metadata["residual_training"],
+                    "cross_fit_metadata": fold_metadata,
+                },
+            )
+        except Exception:
+            runs.append(CandidateRun(
+                candidate, seed, "failed", ("candidate_runtime_failed",), False,
+                _empty_metrics(), (), (),
+                _resources(time.perf_counter() - started, time.process_time() - cpu_started),
+            ))
+            raise
+    return shift_evidence
+
+
+def _develop_guarded_residual_stacking(
+    output: Path, plan: SearchPlan, runtime: CandidateRuntime,
+    training: Sequence[CanonicalRow], validation: Sequence[CanonicalRow],
+    training_fingerprint: str, validation_fingerprint: str,
+    started: float, cpu_started: float, deadline: float, clock: Callable[[], float],
+) -> TuningResult:
+    candidates = tuple(_guarded_residual_candidate(index) for index in range(3))
+    fit_count = 0
+
+    def before_fit() -> None:
+        nonlocal fit_count
+        if fit_count >= GUARDED_RESIDUAL_MAXIMUM_FITS:
+            raise RuntimeError("candidate_fit_limit_reached")
+        if clock() >= deadline:
+            raise RuntimeError("candidate_search_deadline_reached")
+        fit_count += 1
+
+    blockers: list[str] = []
+    first: list[CandidateRun] = []
+    second: list[CandidateRun] = []
+    second_fits: dict[str, LockedFit] = {}
+    shift_evidence: dict[str, Any] = {
+        "version": GUARDED_RESIDUAL_STACKING_VERSION,
+        "seeds": {},
+    }
+    try:
+        first_shift = _fit_guarded_residual_seed(
+            candidates, plan.seed, runtime, training, validation, before_fit, first, {}
+        )
+        shift_evidence["seeds"][str(plan.seed)] = first_shift
+        second_shift = _fit_guarded_residual_seed(
+            candidates, plan.second_seed, runtime, training, validation, before_fit,
+            second, second_fits,
+        )
+        shift_evidence["seeds"][str(plan.second_seed)] = second_shift
+    except Exception as error:
+        reason = str(error)
+        blockers.append(reason if reason in {
+            "candidate_fit_limit_reached", "candidate_search_deadline_reached"
+        } else "candidate_runtime_failed")
+    write_private_json(output / "oof-full-fit-shift.json", shift_evidence)
+    combined = _combine_seed_results(first, second)
+    locked = None
+    complete = len(first) == len(candidates) and len(second) == len(candidates) and not blockers
+    if complete:
+        eligible = [item for item in combined if item["eligible"]]
+        if not eligible:
+            blockers.append("no_eligible_candidate")
+        else:
+            selected = min(eligible, key=_combined_rank_key)
+            candidate = next(
+                item for item in candidates if item.candidate_id == selected["candidate_id"]
+            )
+            try:
+                locked = _lock_prefitted_guarded_residual_stack(
+                    output / "locked-candidate", candidate,
+                    second_fits[candidate.candidate_id], selected, plan,
+                    training, validation, training_fingerprint, validation_fingerprint,
+                    shift_evidence,
+                )
+            except Exception:
+                blockers.append("candidate_refit_or_lock_failed")
+    status = (
+        "completed" if locked else "completed_no_candidate"
+        if complete and "no_eligible_candidate" in blockers else "blocked"
+    )
+    result = TuningResult(
+        status, tuple(sorted(set(blockers))), len(first) + len(second),
+        {"neural_network": 0, "xgboost": 0, "ensemble": len(first),
+         "second_seed": len(second), "control": 0},
+        plan, None, tuple(first), tuple(second), tuple(combined), locked,
+        {**_resources(max(0.0, clock() - started), time.process_time() - cpu_started),
+         "model_fits": fit_count,
+         "maximum_model_fits": GUARDED_RESIDUAL_MAXIMUM_FITS},
+    )
+    _write_tuning_outputs(output, result)
+    return result
+
+
+def _lock_prefitted_guarded_residual_stack(
+    directory: Path, candidate: Candidate, fitted: LockedFit,
+    selected: Mapping[str, Any], plan: SearchPlan,
+    training: Sequence[CanonicalRow], validation: Sequence[CanonicalRow],
+    training_fingerprint: str, validation_fingerprint: str,
+    shift_evidence: Mapping[str, Any],
+) -> LockedCandidate:
+    directory.mkdir(parents=True, exist_ok=False, mode=0o700)
+    counts = _guarded_residual_fixed_counts(candidate)
+    training_record_identities = [
+        str(row.metadata["record_identity"]) for row in training
+    ]
+    oof_fold_assignments = {
+        str(seed): list(_cross_fit_assignments(training, seed, CROSS_FIT_FOLDS))
+        for seed in (plan.seed, plan.second_seed)
+    }
+    oof_assignment_fingerprints = {
+        str(seed): fingerprint({
+            "version": NONLINEAR_OOF_ASSIGNMENT_VERSION,
+            "record_identities": training_record_identities,
+            "fold_assignments": oof_fold_assignments[str(seed)],
+        })
+        for seed in (plan.seed, plan.second_seed)
+    }
+    shift_fingerprint = fingerprint(shift_evidence)
+    numeric_state = fitted.preprocessing_state["residual_numeric"]
+    state = {
+        "version": GUARDED_RESIDUAL_STACKING_VERSION,
+        "candidate_id": candidate.candidate_id,
+        "residual_slot": candidate.parameters["residual_slot"],
+        "base_order": [item.candidate_id for item in _nonlinear_oof_base_candidates()],
+        "anchor_formula": "float64_arithmetic_mean_of_four_bases",
+        "residual_features": list(GUARDED_RESIDUAL_FEATURES),
+        "correction_scale": candidate.parameters["correction_scale"],
+        "numeric_state": copy.deepcopy(numeric_state),
+        "cross_fit_folds": CROSS_FIT_FOLDS,
+        "cross_fit_assignment_version": NONLINEAR_OOF_ASSIGNMENT_VERSION,
+        "oof_assignment_fingerprints": oof_assignment_fingerprints,
+        "oof_full_fit_shift_fingerprint": shift_fingerprint,
+        "fixed_training_counts": counts,
+    }
+    contract = {
+        "version": TUNING_VERSION,
+        "development_contract": "explicit_train_validation",
+        "candidate": asdict(candidate),
+        "model_specification": _locked_model_specification(candidate, counts).to_dict(),
+        "runtime_configuration": _locked_runtime_configuration(candidate),
+        "selection_seeds": [plan.seed, plan.second_seed],
+        "seed_weighting": "equal_weight_each_seed",
+        "selected_combined_development_evidence": copy.deepcopy(dict(selected)),
+        "development_evidence": {
+            "search_plan_id": plan.plan_id,
+            "training_input_fingerprint": training_fingerprint,
+            "validation_input_fingerprint": validation_fingerprint,
+            "normalized_training_fingerprint": fingerprint([asdict(row) for row in training]),
+            "normalized_validation_fingerprint": fingerprint([asdict(row) for row in validation]),
+            "training_record_identity_fingerprint": fingerprint([
+                row.metadata["record_identity"] for row in training
+            ]),
+            "validation_record_identity_fingerprint": fingerprint([
+                row.metadata["record_identity"] for row in validation
+            ]),
+            "partition_identity_fingerprint": plan.source_allocation_fingerprint,
+            "search_plan_fingerprint": fingerprint(plan.to_dict()),
+            "test_input_attestation": "no_test_argument_or_path_available",
+            "validation_grouping_contract": EXPLICIT_DEVELOPMENT_EVIDENCE_VERSION,
+            "oof_full_fit_shift": copy.deepcopy(dict(shift_evidence)),
+            "oof_full_fit_shift_fingerprint": shift_fingerprint,
+        },
+        "development_source_groups": sorted({
+            str(row.metadata["anonymous_source_group"])
+            for row in (*training, *validation)
+        }),
+        "development_data_usage": {
+            "fitting": "training_records_only",
+            "preprocessing": "training_records_only",
+            "early_stopping": "not_used_fixed_training_counts",
+            "ensemble_selection": "not_used",
+            "threshold_selection": "validation_records_only",
+            "candidate_selection": "validation_records_only",
+            "candidate_locking": "training_and_validation_contract_only",
+            "residual_fitting": "training_oof_predictions_only",
+        },
+        "code_fingerprint": plan.code_fingerprint,
+        "transformation_version": TRANSFORMATION_VERSION,
+        "feature_contract": {
+            "ordered_features": list(LEGACY_FEATURES),
+            "transformation_version": GUARDED_RESIDUAL_STACKING_VERSION,
+            "dtype": "float32",
+            "anchor_formula": "float64_arithmetic_mean_of_four_bases",
+            "residual_features": list(GUARDED_RESIDUAL_FEATURES),
+            "excluded_fields": [
+                "anonymous_source_group", "miniature_family", "partition",
+                "duplicate_group", "geometry_fingerprint", "record_identity",
+                "location_evidence", "_id", "join_key",
+            ],
+        },
+        "features": list(LEGACY_FEATURES),
+        "preprocessing": "locked_fit_on_training_records_only",
+        "preprocessing_state_file": "preprocessing-state.json",
+        "eligibility_rule": _eligibility_gates(),
+        "ranking_rule": list(plan.ranking_rule),
+        "dependency_versions": dict(plan.dependency_versions),
+        "dependency_environment": {
+            "python": platform.python_version(),
+            "platform": platform.platform(),
+            "versions": dict(plan.dependency_versions),
+        },
+        "fixed_training_counts": counts,
+        "training_count_rule": "predeclared_fixed_counts",
+        "oof_assignment": {
+            "version": NONLINEAR_OOF_ASSIGNMENT_VERSION,
+            "fold_count": CROSS_FIT_FOLDS,
+            "training_record_identities": training_record_identities,
+            "fold_assignments_by_seed": oof_fold_assignments,
+            "fingerprints_by_seed": oof_assignment_fingerprints,
+        },
+        "refit_partition": "training_records_only",
+        "refit_record_count": len(training),
+        "validation_record_count": len(validation),
+        "test_input_accessed": False,
+        "final_test_access": False,
+        "classification": "internal_advisory_human_review_required",
+        "output_unit": "g",
+        "runtime_metadata": fitted.metadata,
+    }
+    preprocessing_state = {**fitted.preprocessing_state, "guarded_residual_state": state}
+    artifacts = {
+        **fitted.artifacts,
+        "guarded-residual-state.json": (
+            json.dumps(state, sort_keys=True, separators=(",", ":"), allow_nan=False) + "\n"
+        ).encode(),
+        "oof-full-fit-shift.json": (
+            json.dumps(shift_evidence, sort_keys=True, separators=(",", ":"), allow_nan=False)
+            + "\n"
+        ).encode(),
+    }
+    write_private_json(directory / "candidate-contract.json", contract)
+    write_private_json(directory / "preprocessing-state.json", preprocessing_state)
+    for name, content in sorted(artifacts.items()):
+        if not name or Path(name).name != name or not isinstance(content, bytes):
+            raise InputError("invalid_locked_candidate_artifact")
+        with create_private_file(directory / name) as stream:
+            stream.write(content)
+    files = sorted(path for path in directory.iterdir() if path.is_file())
+    manifest = {
+        "version": TUNING_VERSION,
+        "files": {path.name: sha256(path.read_bytes()).hexdigest() for path in files},
+        "create_only": True,
+        "locked_before_final_assessment": True,
+        "test_input_accessed": False,
+    }
     write_private_json(directory / "lock-manifest.json", manifest)
     return LockedCandidate(candidate, fitted.predictor, directory, manifest, contract)
 
@@ -3782,6 +4460,16 @@ def _rounded_median_count(values: Sequence[int]) -> int:
 
 
 def _locked_runtime_configuration(candidate: Candidate) -> dict[str, Any]:
+    if candidate.family == "guarded_residual_stack":
+        _validate_guarded_residual_candidate(candidate)
+        return {
+            "bases": [copy.deepcopy(CANDIDATE_RUNTIME_CONTRACT[item.family])
+                      for item in _nonlinear_oof_base_candidates()],
+            "combination": "fixed_mean_anchor_plus_bounded_training_oof_residual",
+            "residual_fit_partition": "training_oof_predictions_only",
+            "cross_fit_folds": CROSS_FIT_FOLDS,
+            "cross_fit_assignment_version": NONLINEAR_OOF_ASSIGNMENT_VERSION,
+        }
     if candidate.family == "nonlinear_oof_stack":
         _validate_nonlinear_oof_stack_candidate(candidate)
         return {
@@ -3823,6 +4511,11 @@ def _valid_fixed_training_counts(
             return dict(fixed_counts) == _stack_fixed_counts(candidate)
         except ValueError:
             return False
+    if candidate.family == "guarded_residual_stack":
+        try:
+            return dict(fixed_counts) == _guarded_residual_fixed_counts(candidate)
+        except ValueError:
+            return False
     return (
         candidate.family == "neural_network"
         and isinstance(epochs, int) and not isinstance(epochs, bool) and epochs > 0
@@ -3840,6 +4533,12 @@ def _valid_fixed_training_counts(
 
 
 def _valid_locked_feature_contract(candidate: Candidate) -> bool:
+    if candidate.family == "guarded_residual_stack":
+        try:
+            _validate_guarded_residual_candidate(candidate)
+            return True
+        except ValueError:
+            return False
     if candidate.family == "nonlinear_oof_stack":
         try:
             _validate_nonlinear_oof_stack_candidate(candidate)
@@ -3961,6 +4660,76 @@ def _valid_nonlinear_stack_lock_fields(
     )
 
 
+def _valid_guarded_residual_lock_fields(
+    contract: Mapping[str, Any], candidate: Candidate,
+) -> bool:
+    if candidate.family != "guarded_residual_stack":
+        return True
+    evidence = contract.get("development_evidence")
+    selected = contract.get("selected_combined_development_evidence")
+    feature_contract = contract.get("feature_contract")
+    oof_assignment = contract.get("oof_assignment")
+    if not isinstance(evidence, Mapping) or not isinstance(oof_assignment, Mapping):
+        return False
+    try:
+        identities = oof_assignment["training_record_identities"]
+        assignments = oof_assignment["fold_assignments_by_seed"]
+        assignment_fingerprints = oof_assignment["fingerprints_by_seed"]
+        expected_assignments = {
+            str(seed): list(_cross_fit_assignments_for_identities(
+                identities, seed, CROSS_FIT_FOLDS
+            ))
+            for seed in (41, 42)
+        }
+        expected_fingerprints = {
+            str(seed): fingerprint({
+                "version": NONLINEAR_OOF_ASSIGNMENT_VERSION,
+                "record_identities": identities,
+                "fold_assignments": expected_assignments[str(seed)],
+            })
+            for seed in (41, 42)
+        }
+        shift_evidence = evidence["oof_full_fit_shift"]
+    except (KeyError, TypeError, ValueError):
+        return False
+    return (
+        contract.get("selection_seeds") == [41, 42]
+        and contract.get("seed_weighting") == "equal_weight_each_seed"
+        and contract.get("training_count_rule") == "predeclared_fixed_counts"
+        and oof_assignment.get("version") == NONLINEAR_OOF_ASSIGNMENT_VERSION
+        and oof_assignment.get("fold_count") == CROSS_FIT_FOLDS
+        and isinstance(identities, list) and bool(identities)
+        and len(identities) == len(set(identities))
+        and fingerprint(identities)
+        == evidence.get("training_record_identity_fingerprint")
+        and assignments == expected_assignments
+        and assignment_fingerprints == expected_fingerprints
+        and isinstance(selected, Mapping)
+        and selected.get("candidate_id") == candidate.candidate_id
+        and selected.get("family") == candidate.family
+        and selected.get("eligible") is True
+        and selected.get("blockers") == []
+        and selected.get("seed_results") == [41, 42]
+        and selected.get("seed_eligibility") == [True, True]
+        and selected.get("equal_seed_weight") == 0.5
+        and isinstance(selected.get("metrics"), Mapping)
+        and _valid_candidate_metrics(selected["metrics"])
+        and _tail_eligible(selected["metrics"])
+        and isinstance(shift_evidence, Mapping)
+        and evidence.get("oof_full_fit_shift_fingerprint")
+        == fingerprint(shift_evidence)
+        and shift_evidence.get("version") == GUARDED_RESIDUAL_STACKING_VERSION
+        and set(shift_evidence.get("seeds", {})) == {"41", "42"}
+        and isinstance(feature_contract, Mapping)
+        and feature_contract.get("anchor_formula")
+        == "float64_arithmetic_mean_of_four_bases"
+        and feature_contract.get("residual_features")
+        == list(GUARDED_RESIDUAL_FEATURES)
+        and feature_contract.get("transformation_version")
+        == GUARDED_RESIDUAL_STACKING_VERSION
+    )
+
+
 def _valid_locked_contract(contract: Mapping[str, Any]) -> bool:
     evidence = contract.get("development_evidence")
     feature_contract = contract.get("feature_contract")
@@ -3982,11 +4751,12 @@ def _valid_locked_contract(contract: Mapping[str, Any]) -> bool:
             "preprocessing": "training_records_only",
             "early_stopping": (
                 "not_used_fixed_training_counts"
-                if candidate.family == "nonlinear_oof_stack"
+                if candidate.family in {"nonlinear_oof_stack", "guarded_residual_stack"}
                 else "validation_records_only"
             ),
             "ensemble_selection": (
-                "not_used" if candidate.family == "nonlinear_oof_stack"
+                "not_used"
+                if candidate.family in {"nonlinear_oof_stack", "guarded_residual_stack"}
                 else "validation_records_only"
             ),
             "threshold_selection": "validation_records_only",
@@ -3996,6 +4766,8 @@ def _valid_locked_contract(contract: Mapping[str, Any]) -> bool:
                if candidate.family == "geometry_gate" else {}),
             **({"stack_fitting": "training_oof_predictions_only"}
                if candidate.family == "nonlinear_oof_stack" else {}),
+            **({"residual_fitting": "training_oof_predictions_only"}
+               if candidate.family == "guarded_residual_stack" else {}),
         }
         return (
             contract.get("version") == TUNING_VERSION
@@ -4005,6 +4777,7 @@ def _valid_locked_contract(contract: Mapping[str, Any]) -> bool:
             and contract.get("refit_partition") == "training_records_only"
             and contract.get("runtime_configuration") == _locked_runtime_configuration(candidate)
             and _valid_nonlinear_stack_lock_fields(contract, candidate)
+            and _valid_guarded_residual_lock_fields(contract, candidate)
             and isinstance(evidence, Mapping)
             and all(isinstance(evidence.get(key), str) and evidence.get(key) for key in (
                 "search_plan_id", "training_input_fingerprint",
@@ -4194,7 +4967,7 @@ def _validate_plan(
         limits.neural_network_trials + limits.xgboost_trials
     ):
         raise ValueError("invalid_search_plan")
-    if limits.plan_kind == "nonlinear_oof_stacking":
+    if limits.plan_kind in {"nonlinear_oof_stacking", "guarded_residual_stacking"}:
         if plan.component_trials != _nonlinear_oof_base_candidates():
             raise ValueError("invalid_search_plan")
         return
@@ -4227,6 +5000,7 @@ def _write_tuning_outputs(output: Path, result: TuningResult) -> None:
     write_private_json(output / "manifest.json", {
         "version": TUNING_VERSION,
         "artifacts": inventory,
+        "create_only": True,
         "publication_performed": False,
     })
 
@@ -4236,8 +5010,11 @@ def _search_stop_reason(result: TuningResult) -> str:
 
 
 def _planned_initial_candidate_ids(plan: SearchPlan) -> tuple[str, ...]:
-    if plan.generator.get("plan_kind") == "nonlinear_oof_stacking":
+    plan_kind = plan.generator.get("plan_kind")
+    if plan_kind == "nonlinear_oof_stacking":
         return tuple(str(rule["stack_candidate_id"]) for rule in plan.ensemble_rules)
+    if plan_kind == "guarded_residual_stacking":
+        return tuple(str(rule["residual_candidate_id"]) for rule in plan.ensemble_rules)
     return (
         *(candidate.candidate_id for candidate in plan.component_trials),
         *(f"ensemble-slot-{index + 1:02d}" for index in range(len(plan.ensemble_rules))),
@@ -4248,7 +5025,10 @@ def _skipped_candidates(result: TuningResult) -> list[dict[str, Any]]:
     attempted = {run.candidate.candidate_id for run in result.initial_results}
     reason = _search_stop_reason(result)
     planned_initial_ids = _planned_initial_candidate_ids(result.plan)
-    if result.plan.generator.get("plan_kind") == "nonlinear_oof_stacking":
+    mandatory_two_seed = result.plan.generator.get("plan_kind") in {
+        "nonlinear_oof_stacking", "guarded_residual_stacking",
+    }
+    if mandatory_two_seed:
         skipped = [
             {"candidate_id": candidate_id, "phase": "initial", "reason": reason}
             for candidate_id in planned_initial_ids if candidate_id not in attempted
@@ -4269,7 +5049,7 @@ def _skipped_candidates(result: TuningResult) -> list[dict[str, Any]]:
     eligible_count = sum(run.eligible for run in result.initial_results)
     initial_candidate_count = len(planned_initial_ids)
     second_seed_count = int(result.plan.second_seed_rule["candidate_count"])
-    if result.plan.generator.get("plan_kind") == "nonlinear_oof_stacking":
+    if mandatory_two_seed:
         second_attempted = {
             run.candidate.candidate_id for run in result.second_seed_results
         }
@@ -4299,12 +5079,16 @@ def _second_seed_comparison(result: TuningResult) -> dict[str, Any]:
     )
     target = (
         int(result.plan.second_seed_rule["candidate_count"])
-        if result.plan.generator.get("plan_kind") == "nonlinear_oof_stacking"
+        if result.plan.generator.get("plan_kind") in {
+            "nonlinear_oof_stacking", "guarded_residual_stacking",
+        }
         else min(result.plan.second_seed_rule["candidate_count"], eligible_count)
     )
     shortfall = max(0, int(result.plan.second_seed_rule["candidate_count"]) - (
         len(result.second_seed_results)
-        if result.plan.generator.get("plan_kind") == "nonlinear_oof_stacking"
+        if result.plan.generator.get("plan_kind") in {
+            "nonlinear_oof_stacking", "guarded_residual_stacking",
+        }
         else eligible_count
     ))
     return {
@@ -4488,6 +5272,31 @@ class TensorflowXGBoostCandidateRuntime:
             candidate, contract["fixed_training_counts"]
         )
         preprocessing = json.loads((directory / "preprocessing-state.json").read_text())
+        if candidate.family == "guarded_residual_stack":
+            assert isinstance(specification, GuardedResidualStackModelSpecification)
+            bases = []
+            for index, base_specification in enumerate(specification.bases, 1):
+                artifact = (
+                    "model.keras"
+                    if base_specification.model_kind is ModelKind.NEURAL_NETWORK
+                    else "model.json"
+                )
+                bases.append(self.models.load(
+                    base_specification,
+                    {artifact: (directory / f"base-{index:02d}-{artifact}").read_bytes()},
+                    preprocessing[f"base_{index}"],
+                ))
+            state = json.loads((directory / "guarded-residual-state.json").read_text())
+            if (
+                not _valid_guarded_residual_state(state)
+                or preprocessing.get("guarded_residual_state") != state
+                or preprocessing.get("residual_numeric") != state.get("numeric_state")
+            ):
+                raise ValueError("invalid_guarded_residual_state")
+            return _guarded_residual_predictor(
+                tuple(bases), state["numeric_state"],
+                float(candidate.parameters["correction_scale"]),
+            )
         if candidate.family == "nonlinear_oof_stack":
             assert isinstance(specification, NonlinearOOFStackModelSpecification)
             bases = []
@@ -4571,6 +5380,20 @@ def _component_fit_metadata(fitted: FittedModel) -> dict[str, Any]:
 def _locked_model_specification(
     candidate: Candidate, fixed_training_counts: Mapping[str, int | float],
 ):
+    if candidate.family == "guarded_residual_stack":
+        _validate_guarded_residual_candidate(candidate)
+        if dict(fixed_training_counts) != _guarded_residual_fixed_counts(candidate):
+            raise ValueError("invalid_locked_candidate_training_counts")
+        bases = []
+        for item in candidate.parameters["base_candidates"]:
+            base = _candidate_from_dict(item)
+            specification = base.specification
+            if specification is None:
+                raise ValueError("invalid_candidate_configuration")
+            bases.append(specification)
+        return GuardedResidualStackModelSpecification(
+            tuple(bases), float(candidate.parameters["correction_scale"])
+        )
     if candidate.family == "nonlinear_oof_stack":
         _validate_nonlinear_oof_stack_candidate(candidate)
         if dict(fixed_training_counts) != _stack_fixed_counts(candidate):
@@ -4704,6 +5527,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         governed_predeclared_plans = {
             "cross_fitted_geometry_gate", "legacy_geometry_augmentation",
             "tail_aligned_selection", "nonlinear_oof_stacking",
+            "guarded_residual_stacking",
         }
         if args.plan_kind in governed_predeclared_plans:
             _verify_development_artifact_manifest(
