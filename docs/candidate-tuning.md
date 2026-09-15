@@ -1730,3 +1730,31 @@ There is no retry, reslicing, row review/removal/replacement, validation or held
 access, predictor/candidate run, gate change, locking, promotion, or automatic
 continuation into Issue #33. Synthetic implementation tests do not create or inspect
 `run-020` and are not model or dataset evidence.
+
+### Completed outcome
+
+The separately authorized source-neutral investigation completed all four synthetic
+cases under trimesh 4.10.1 with no blockers. The closed box measured 1 mm³ against a
+1 mm³ axis-aligned bounding box. Two partially overlapping, watertight and winding-
+consistent unit-box shells measured 2 mm³ against a 1.5 mm³ global bounding box.
+Reversing one box's winding changed its measured volume to -1 mm³ without changing
+the 1 mm³ box, and the open box still returned a finite 0.75 mm³ result while being
+identified as non-watertight. Both create-only artifact checksums were independently
+recomputed and matched.
+
+The fixed decision is `audit_invariant: invalid`: the new-STL measurement is a
+signed, additive surface integral rather than occupied union volume, so volume above
+bounding-box volume is not by itself a canonical data-contract contradiction. The
+completed `run-019` route remains an accurate historical application of its
+predeclared rule, but its 1,346-row trigger cannot be used as defect evidence under
+the clarified semantics.
+
+This result does not establish that any triggered row has overlapping shells, valid
+topology, or the new measurement origin. Historical measurement semantics remain
+unresolved, and assembled records lack topology and per-row measurement-origin
+evidence. Classifying malformed geometry or historical/new inconsistency therefore
+requires better geometry or provenance inputs; fill ratio alone is insufficient.
+The investigation read no dataset, source, validation, or held-out artifact,
+performed zero model fits, changed no row, and created no candidate or lock. It
+stops without retry, reslicing, predictor work, automatic continuation, or Issue
+#33 work.

@@ -1488,3 +1488,31 @@ Implementation uses synthetic tests only and does not execute that run. Separate
 authorization is required after this commit and a source-neutral Issue #50 comment.
 The attempt stops without retries, data changes, reslicing, predictor work,
 selection, locking, promotion, or Issue #33 continuation.
+
+## Source-neutral geometry-contract investigation result
+
+The separately authorized investigation completed all four fixed synthetic STL
+cases under trimesh 4.10.1 without blockers. The closed box measured volume/box
+1/1 mm³. Two partially overlapping watertight, winding-consistent shells measured
+2/1.5 mm³. Reversed winding produced -1/1 mm³, and the non-watertight open box still
+returned a finite 0.75/1 mm³ measurement. Both create-only artifact checksums were
+independently recomputed and matched.
+
+The predeclared decision is `audit_invariant: invalid`. The new preparation path's
+mesh volume is signed and additive across triangle shells, not boolean-union
+occupancy. Mesh volume above the global axis-aligned bounding-box extent product is
+therefore not by itself a canonical contradiction. The prior audit remains preserved
+and its route remains faithful to its fixed rule, but the 1,346-row mechanical
+trigger does not establish a data defect under the clarified measurement semantics.
+
+No existing row was classified. Historical measurement semantics remain unresolved,
+and canonical rows do not retain topology or per-row measurement origin. Distinguishing
+overlap, malformed/non-watertight geometry, or historical/new inconsistency requires
+better private geometry or provenance; the recorded fill ratio cannot answer those
+questions.
+
+The investigation accessed no train, validation, held-out-test, source, or row
+artifact, performed zero model fits, changed no row, and created no candidate or
+lock. It stops without retry, reslicing, predictor work, gate changes, promotion,
+automatic continuation, or Issue #33 work. Issue #50 remains open for a separately
+justified next step.
