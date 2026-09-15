@@ -1638,3 +1638,47 @@ repair/removal, retry, threshold tuning, candidate search, correction, seed/loss
 feature/ensemble search, gate relaxation, validation access, lock, promotion,
 automatic continuation, or Issue #33 work. Implementation used synthetic tests
 only; `run-019` was not created or inspected and no private model fitting occurred.
+
+### Completed outcome
+
+The separately authorized `run-019` audit completed all four cells and all eight
+fixed base fits without blockers. It used 28.06 elapsed seconds and 79.60 process
+CPU seconds. Both create-only artifact checksums were independently recomputed and
+matched; all 20 per-cell view partitions conserved row counts, serious-error counts,
+and MAE contributions. Validation and held-out-test evidence were not accessed,
+source groups were not used, no rows were changed, and no candidate or lock was
+created.
+
+The no-fitting contract stage reconciled 10,368 training rows. Every canonical/
+legacy alias pair matched, as did every bounding-box dimension product,
+surface-to-volume ratio, and explicit unit, density, scope, and slicing declaration.
+It nevertheless found 1,346 rows whose recorded mesh volume was greater than their
+recorded axis-aligned bounding-box volume. Under the predeclared rule this is an
+explicit geometry-contract contradiction and therefore triggers the first-priority
+`investigate_data_contracts` route. This is a mechanical routing result, **not** a
+finding that 1,346 labels or rows are defective. Overlapping shells, topology, or
+historical measurement semantics could make the assumed reconciliation rule
+inapplicable; that question must be resolved before considering repair. Harmonized
+per-row declarations also cannot prove the actual historical slicing conditions.
+
+Target heterogeneity did not trigger its fixed rule. There were 793 repeated exact-
+geometry groups containing 1,870 rows and none had sliced resin mass spread above
+5 g. Of 6,606 fixed similar-geometry relationships, 566 had target differences above
+5 g (8.57%), below the predeclared 10% trigger. These results do not prove targets
+are interchangeable or complete; they only fail this bounded descriptive screen.
+
+Every cell evaluated 2,074 outer-held training rows. Anchor MAE was 0.8953, 0.8838,
+0.8988, and 0.9501 g, with respectively 34, 34, 35, and 42 strict-above-5-g errors.
+The highest relative mesh-volume quintile and highest bounding-box-fill quintile
+were both supported and enriched under the fixed rule in all four cells. The
+mesh-volume quintile held 23–38 serious errors among 420–423 rows (5.48%–8.98%,
+3.34–4.48 times each cell rate); the fill quintile held 15–19 among 378–386 rows
+(3.89%–5.03%, 2.37–2.98 times each cell rate). These stable descriptive regimes are
+retained but do not override the higher-priority contract route, prove causality,
+or authorize predictor work.
+
+The audit therefore stops at `investigate_data_contracts`. It does not authorize
+row repair/removal, reslicing, further fitting, validation access, candidate search,
+selection, locking, promotion, or Issue #33. Any follow-up must first specify how to
+check the geometry measurement contract without identifying sources or changing the
+canonical artifacts, and requires a separate decision and authorization.

@@ -1419,3 +1419,36 @@ This commit does not execute it. One execution requires separate authorization
 after the committed plan and a source-neutral Issue #50 predeclaration comment.
 The attempt stops regardless of outcome without validation/test access, selection,
 locking, promotion, or Issue #33 work.
+
+## Training-only data and feature audit result
+
+The separately authorized audit completed all four cells and all eight fixed fits
+without blockers. It used 28.06 elapsed seconds and 79.60 process CPU seconds. Both
+create-only artifact checksums and all aggregate view partitions were independently
+verified. No validation/test evidence was accessed, no source groups were used, no
+rows were changed, and no candidate or lock was created.
+
+The predeclared result route is `investigate_data_contracts`. All canonical/legacy
+aliases, bounding-box products, surface-volume ratios, and explicit slicing
+attributes reconciled across 10,368 rows. However, 1,346 recorded mesh volumes were
+greater than their recorded axis-aligned bounding-box volumes, mechanically
+triggering the first-priority geometry-contract rule. This is not a defect or label
+claim: the assumed reconciliation rule may not hold for overlapping shells,
+topology, or historical measurement semantics, and harmonized declarations do not
+verify actual historical slicing conditions. Every row remains canonical and
+unchanged.
+
+Target heterogeneity did not meet its fixed threshold. Exact repeated-geometry
+groups contained 1,870 rows with no group spread above 5 g. Of 6,606 fixed similar-
+geometry relationships, 566 (8.57%) differed by more than 5 g, below the declared
+10% trigger.
+
+The highest mesh-volume and bounding-box-fill quintiles were supported and serious-
+error enriched in all four frozen-anchor cells. Overall cell MAE ranged 0.8838–
+0.9501 g with 34–42 strict-above-5-g errors among 2,074 rows per cell. The stable
+regimes remain descriptive secondary evidence; they do not override the contract
+route or authorize predictor work.
+
+The audit stops without repair, reslicing, further fitting, validation access,
+selection, locking, promotion, or Issue #33. A source-neutral geometry-contract
+investigation requires a separate predeclared decision and authorization.
