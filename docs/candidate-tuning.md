@@ -1995,3 +1995,32 @@ No honest metric, validation score, candidate selection, lock, or held-out-test 
 occurred. The blocked run remains preserved. It stops without retry, budget recycling,
 replacement, gate change, or Issue #33 continuation. Any execution of the corrected
 implementation requires a new fresh output directory and separate authorization.
+
+### Corrected execution outcome
+
+The separately authorized corrected `run-023` also stopped as `blocked` with the
+bounded reason `candidate_runtime_failed`. All 16 honest-stage base fits completed;
+none failed. Three cells completed gram reconstruction and metric accounting. In the
+fourth cell (outer split seed 202, model seed 42), all four fits completed but the
+post-fit prediction/reconstruction path violated the fixed finite-nonnegative
+prediction contract, so that cell produced no metrics and the route decision was not
+calculated.
+
+| Split / model seed | Decomposed MAE | Decomposed above 5 g | Anchor MAE | Anchor above 5 g |
+| --- | ---: | ---: | ---: | ---: |
+| 101 / 41 | 2.7385 g | 249 / 2,074 | 0.8953 g | 34 / 2,074 |
+| 101 / 42 | 2.8532 g | 295 / 2,074 | 0.8838 g | 34 / 2,074 |
+| 202 / 41 | 2.8766 g | 233 / 2,074 | 0.8988 g | 35 / 2,074 |
+
+Across the three completed cells only, the decomposed candidate had 777 strict
+above-5-g errors and 2.8228 g provisional pooled MAE, versus 103 and 0.8926 g for the
+anchor. These completed-cell metrics are unfavorable descriptive evidence from an
+incomplete four-cell evaluation, not a qualification result and not permission to
+reinterpret the missing fourth cell.
+
+The run used 52.31 elapsed seconds, 155.63 process CPU seconds, and a process
+high-water resident-set measurement of 869,744,640 platform units. All five
+create-only artifact checksums independently matched. Validation evaluations were
+zero, remaining capacity was not recycled, and no candidate or lock was created.
+Held-out evidence was not accessed. `run-023` stops without retry, clipping, changed
+invalid-prediction handling, replacement, gate changes, or Issue #33 continuation.

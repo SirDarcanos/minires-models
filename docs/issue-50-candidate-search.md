@@ -1680,3 +1680,29 @@ All five create-only artifact checksums independently matched. No honest compari
 validation scoring, candidate selection, lock, test access, or Issue #33 work
 occurred. `run-022` stops without retry, recycling, substitution, or changed gates.
 A corrected execution requires a fresh run directory and separate authorization.
+
+## Corrected bounding-box target-decomposition result
+
+The separately authorized corrected `run-023` stopped as `blocked` with
+`candidate_runtime_failed`. All 16 honest base fits completed successfully. Three of
+four cells completed reconstruction and metrics; after all four fits in cell 202/42,
+the post-fit prediction/reconstruction path violated the predeclared finite-
+nonnegative contract. That cell emitted no metrics, so no route decision was made.
+
+| Split / model seed | Decomposed MAE | Decomposed above 5 g | Anchor MAE | Anchor above 5 g |
+| --- | ---: | ---: | ---: | ---: |
+| 101 / 41 | 2.7385 g | 249 / 2,074 | 0.8953 g | 34 / 2,074 |
+| 101 / 42 | 2.8532 g | 295 / 2,074 | 0.8838 g | 34 / 2,074 |
+| 202 / 41 | 2.8766 g | 233 / 2,074 | 0.8988 g | 35 / 2,074 |
+
+Across the three completed cells, decomposition had 777 strict above-5-g errors and
+2.8228 g provisional pooled MAE, versus 103 and 0.8926 g for the anchor. These are
+unfavorable completed-cell metrics from an incomplete four-cell evaluation, not a
+qualification result; the missing cell is not inferred or replaced.
+
+Resources were 52.31 elapsed seconds, 155.63 process CPU seconds, and 869,744,640
+platform peak-RSS units. All five create-only checksums independently matched.
+Validation evaluations: zero. Candidate selected: none. Lock: none. Held-out-test
+access: none. Remaining capacity was not recycled. The attempt stops without retry,
+clipping, relaxed invalid-prediction handling, substitution, gate changes, or Issue
+#33 continuation. Issue #50 remains open.
