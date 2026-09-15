@@ -27,6 +27,7 @@ from ..ingestion import (
 from .learned import LearnedBaselineConfig, _matrix, _predict
 from .legacy import LEGACY_FEATURES
 from . import bounded_tail_risk
+from . import target_decomposition_search
 from . import tail_focused_search
 from .guarded_residual import (
     CORRECTION_SCALES as GUARDED_RESIDUAL_CORRECTION_SCALES,
@@ -262,6 +263,14 @@ class SearchLimits:
 
 
 SEARCH_PLAN_POLICIES = {
+    "bounding_box_target_decomposition": SearchPlanPolicy(
+        "bounding_box_target_decomposition", LEGACY_FEATURES, TRANSFORMATION_VERSION,
+        (41, 42), 2, 2, 2, 2, 4, 7200.0,
+        TAIL_ALIGNED_NEURAL_NETWORK_DOMAIN, TAIL_ALIGNED_XGBOOST_DOMAIN,
+        "factoring bounding-box scale out of the target lets the exact closest "
+        "model learn a source-neutral occupancy-like factor with fewer strict "
+        "above-5-g errors than its unchanged raw-grams anchor",
+    ),
     "bounded_tail_risk": SearchPlanPolicy(
         "bounded_tail_risk", LEGACY_FEATURES, TRANSFORMATION_VERSION,
         (41, 42), 2, 1, 3, 3, 6, 7200.0,
@@ -1024,6 +1033,13 @@ def verify_locked_candidate_files(
             root, contract, preprocessing
         ):
             blockers.add("locked_candidate_contract_mismatch")
+        if (
+            family == target_decomposition_search.FAMILY
+            and not target_decomposition_search.verify_state_files(
+                root, contract, preprocessing
+            )
+        ):
+            blockers.add("locked_candidate_contract_mismatch")
         if family == "tail_focused_correction" and not tail_focused_search.verify_state_files(
             root, contract, preprocessing
         ):
@@ -1194,8 +1210,9 @@ def generate_search_plan(
         raise ValueError("invalid_search_plan")
     policy = _plan_policy(limits.plan_kind)
     if policy.plan_kind in {
-        "bounded_tail_risk", "nonlinear_oof_stacking",
-        "guarded_residual_stacking", "tail_focused_correction",
+        "bounded_tail_risk", "bounding_box_target_decomposition",
+        "nonlinear_oof_stacking", "guarded_residual_stacking",
+        "tail_focused_correction",
     }:
         if parameter_domains is not None:
             raise ValueError("invalid_search_plan")
@@ -1205,6 +1222,8 @@ def generate_search_plan(
         components = (
             bounded_tail_risk.base_candidates()
             if policy.plan_kind == "bounded_tail_risk"
+            else target_decomposition_search.base_candidates()
+            if policy.plan_kind == "bounding_box_target_decomposition"
             else tail_focused_search.base_candidates()
             if policy.plan_kind == "tail_focused_correction"
             else _nonlinear_oof_base_candidates()
@@ -1236,6 +1255,8 @@ def generate_search_plan(
     dependencies = dict(sorted(dependency_versions.items()))
     if policy.plan_kind == "bounded_tail_risk":
         ensemble_rules = bounded_tail_risk.rules()
+    elif policy.plan_kind == "bounding_box_target_decomposition":
+        ensemble_rules = target_decomposition_search.rules()
     elif policy.plan_kind == "tail_focused_correction":
         ensemble_rules = tail_focused_search.rules()
     elif policy.plan_kind == "guarded_residual_stacking":
@@ -1353,6 +1374,8 @@ def generate_search_plan(
             "strategy": (
                 "fixed_end_to_end_tail_loss_with_training_only_route_gate"
                 if policy.plan_kind == "bounded_tail_risk"
+                else "fixed_bounding_box_target_decomposition_with_training_only_route_gate"
+                if policy.plan_kind == "bounding_box_target_decomposition"
                 else "fixed_closest_anchor_with_honest_training_gate"
                 if policy.plan_kind == "tail_focused_correction"
                 else "seeded_mixed_radix_space_filling"
@@ -1364,7 +1387,9 @@ def generate_search_plan(
             "hypothesis": policy.hypothesis,
             "validation_selection": (
                 "not_used_fixed_training_counts"
-                if policy.plan_kind == "bounded_tail_risk"
+                if policy.plan_kind in {
+                    "bounded_tail_risk", "bounding_box_target_decomposition"
+                }
                 else TAIL_ALIGNED_VALIDATION_SELECTION
                 if policy.plan_kind == "tail_aligned_selection" else "pooled_mae"
             ),
@@ -1384,6 +1409,8 @@ def generate_search_plan(
             "selection": (
                 "all_three_fixed_candidates"
                 if policy.plan_kind == "bounded_tail_risk"
+                else "both_fixed_target_candidates"
+                if policy.plan_kind == "bounding_box_target_decomposition"
                 else "all_predeclared_tail_candidates_after_both_honest_seeds_qualify"
                 if policy.plan_kind == "tail_focused_correction"
                 else "all_predeclared_meta_candidates"
@@ -1409,6 +1436,15 @@ def generate_search_plan(
                 "budget_recycling": False,
                 "automatic_expansion": False,
             } if policy.plan_kind == "bounded_tail_risk" else {
+                "maximum_model_fits": target_decomposition_search.MAXIMUM_FITS,
+                "maximum_validation_candidate_evaluations": (
+                    target_decomposition_search.MAXIMUM_VALIDATION_CANDIDATE_EVALUATIONS
+                ),
+                "honest_stage_base_fits": 16,
+                "conditional_production_base_fits": 8,
+                "budget_recycling": False,
+                "automatic_expansion": False,
+            } if policy.plan_kind == "bounding_box_target_decomposition" else {
                 "maximum_model_fits": tail_focused_search.MAXIMUM_FITS,
                 "honest_stage_fits": 26,
                 "conditional_production_stage_fits": 26,
@@ -1796,6 +1832,12 @@ def develop_candidates(
     deadline = started + limits.maximum_elapsed_seconds
     if limits.plan_kind == "bounded_tail_risk":
         return bounded_tail_risk.develop(
+            output, plan, runtime, training_rows, validation_rows,
+            training_fingerprint, validation_fingerprint, started, cpu_started,
+            deadline, clock,
+        )
+    if limits.plan_kind == "bounding_box_target_decomposition":
+        return target_decomposition_search.develop(
             output, plan, runtime, training_rows, validation_rows,
             training_fingerprint, validation_fingerprint, started, cpu_started,
             deadline, clock,
@@ -3445,7 +3487,10 @@ def tune_candidates(
     plan: SearchPlan | None = None,
 ) -> TuningResult:
     """Run the complete bounded search and lock one development-only candidate."""
-    if limits.plan_kind in {"bounded_tail_risk", "tail_focused_correction"}:
+    if limits.plan_kind in {
+        "bounded_tail_risk", "bounding_box_target_decomposition",
+        "tail_focused_correction",
+    }:
         raise InputError("explicit_train_validation_required")
     output = Path(output_root)
     if "private" not in output.resolve().parts:
@@ -4818,6 +4863,11 @@ def _valid_guarded_residual_lock_fields(
 def _valid_locked_contract(contract: Mapping[str, Any]) -> bool:
     if contract.get("candidate", {}).get("family") == bounded_tail_risk.FAMILY:
         return bounded_tail_risk.valid_contract(contract)
+    if (
+        contract.get("candidate", {}).get("family")
+        == target_decomposition_search.FAMILY
+    ):
+        return target_decomposition_search.valid_contract(contract)
     if contract.get("candidate", {}).get("family") == "tail_focused_correction":
         return tail_focused_search.valid_contract(contract)
     evidence = contract.get("development_evidence")
@@ -5063,6 +5113,13 @@ def _validate_plan(
         ):
             raise ValueError("invalid_search_plan")
         return
+    if limits.plan_kind == "bounding_box_target_decomposition":
+        if (
+            plan.component_trials != target_decomposition_search.base_candidates()
+            or plan.ensemble_rules != target_decomposition_search.rules()
+        ):
+            raise ValueError("invalid_search_plan")
+        return
     if limits.plan_kind == "tail_focused_correction":
         if plan.component_trials != tail_focused_search.base_candidates():
             raise ValueError("invalid_search_plan")
@@ -5111,7 +5168,7 @@ def _search_stop_reason(result: TuningResult) -> str:
 
 def _planned_initial_candidate_ids(plan: SearchPlan) -> tuple[str, ...]:
     plan_kind = plan.generator.get("plan_kind")
-    if plan_kind == "bounded_tail_risk":
+    if plan_kind in {"bounded_tail_risk", "bounding_box_target_decomposition"}:
         return tuple(str(rule["candidate_id"]) for rule in plan.ensemble_rules)
     if plan_kind == "tail_focused_correction":
         return tuple(str(rule["candidate_id"]) for rule in plan.ensemble_rules)
@@ -5130,8 +5187,9 @@ def _skipped_candidates(result: TuningResult) -> list[dict[str, Any]]:
     reason = _search_stop_reason(result)
     planned_initial_ids = _planned_initial_candidate_ids(result.plan)
     mandatory_two_seed = result.plan.generator.get("plan_kind") in {
-        "bounded_tail_risk", "nonlinear_oof_stacking",
-        "guarded_residual_stacking", "tail_focused_correction",
+        "bounded_tail_risk", "bounding_box_target_decomposition",
+        "nonlinear_oof_stacking", "guarded_residual_stacking",
+        "tail_focused_correction",
     }
     if mandatory_two_seed:
         skipped = [
@@ -5185,16 +5243,18 @@ def _second_seed_comparison(result: TuningResult) -> dict[str, Any]:
     target = (
         int(result.plan.second_seed_rule["candidate_count"])
         if result.plan.generator.get("plan_kind") in {
-            "bounded_tail_risk", "nonlinear_oof_stacking",
-            "guarded_residual_stacking", "tail_focused_correction",
+            "bounded_tail_risk", "bounding_box_target_decomposition",
+            "nonlinear_oof_stacking", "guarded_residual_stacking",
+            "tail_focused_correction",
         }
         else min(result.plan.second_seed_rule["candidate_count"], eligible_count)
     )
     shortfall = max(0, int(result.plan.second_seed_rule["candidate_count"]) - (
         len(result.second_seed_results)
         if result.plan.generator.get("plan_kind") in {
-            "bounded_tail_risk", "nonlinear_oof_stacking",
-            "guarded_residual_stacking", "tail_focused_correction",
+            "bounded_tail_risk", "bounding_box_target_decomposition",
+            "nonlinear_oof_stacking", "guarded_residual_stacking",
+            "tail_focused_correction",
         }
         else eligible_count
     ))
@@ -5377,6 +5437,8 @@ class TensorflowXGBoostCandidateRuntime:
     def load_locked(self, candidate, directory, contract):
         if candidate.family == bounded_tail_risk.FAMILY:
             return bounded_tail_risk.load(self.models, directory, contract)
+        if candidate.family == target_decomposition_search.FAMILY:
+            return target_decomposition_search.load(self.models, directory, contract)
         if candidate.family == "tail_focused_correction":
             return tail_focused_search.load(self.models, directory, contract)
         specification = _locked_model_specification(
@@ -5491,10 +5553,21 @@ def _component_fit_metadata(fitted: FittedModel) -> dict[str, Any]:
 def _locked_model_specification(
     candidate: Candidate, fixed_training_counts: Mapping[str, int | float],
 ):
+    if (
+        candidate.parameters.get("target_representation")
+        == target_decomposition_search.TARGET_CONTRACT["representation"]
+    ):
+        if dict(fixed_training_counts) != target_decomposition_search.FIXED_COUNTS:
+            raise ValueError("invalid_locked_candidate_training_counts")
+        return target_decomposition_search._fixed_base_specification(candidate)
     if candidate.family == bounded_tail_risk.FAMILY:
         if dict(fixed_training_counts) != bounded_tail_risk.FIXED_COUNTS:
             raise ValueError("invalid_locked_candidate_training_counts")
         return bounded_tail_risk.specification(candidate)
+    if candidate.family == target_decomposition_search.FAMILY:
+        if dict(fixed_training_counts) != target_decomposition_search.FIXED_COUNTS:
+            raise ValueError("invalid_locked_candidate_training_counts")
+        return target_decomposition_search.specification(candidate)
     if candidate.family == "tail_focused_correction":
         return tail_focused_search.specification(candidate, fixed_training_counts)
     if candidate.family == "guarded_residual_stack":
@@ -5643,15 +5716,16 @@ def main(argv: Sequence[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     try:
         governed_predeclared_plans = {
-            "bounded_tail_risk", "cross_fitted_geometry_gate",
+            "bounded_tail_risk", "bounding_box_target_decomposition",
+            "cross_fitted_geometry_gate",
             "legacy_geometry_augmentation", "tail_aligned_selection",
             "nonlinear_oof_stacking", "guarded_residual_stacking",
             "tail_focused_correction",
         }
         if args.plan_kind in governed_predeclared_plans:
             if args.plan_kind in {
-                "bounded_tail_risk", "guarded_residual_stacking",
-                "tail_focused_correction",
+                "bounded_tail_risk", "bounding_box_target_decomposition",
+                "guarded_residual_stacking", "tail_focused_correction",
             }:
                 _verify_guarded_residual_development_artifacts(
                     args.training_records, args.validation_records

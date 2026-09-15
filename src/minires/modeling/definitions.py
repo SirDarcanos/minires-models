@@ -27,6 +27,7 @@ BatchPredictor = Callable[[Sequence[tuple[float, ...]]], Sequence[float]]
 PredictionRanker = Callable[[Sequence[float]], tuple[Any, ...]]
 MODEL_DEFINITION_VERSION = "minires-model-definition-v1"
 COMPONENT_PREPROCESSING_VERSION = "normalization-vectors-and-unnormalized-xgboost-v1"
+MODEL_OUTPUT_UNITS = ("g", "bounding_box_occupancy_factor")
 
 
 class ModelKind(str, Enum):
@@ -76,7 +77,8 @@ class ModelSpecification:
             or any(not isinstance(name, str) or not name
                    for name in self.ordered_prediction_features)
             or len(set(self.ordered_prediction_features)) != len(self.ordered_prediction_features)
-            or self.output_unit != "g"
+            or not isinstance(self.output_unit, str)
+            or self.output_unit not in MODEL_OUTPUT_UNITS
             or not self.identity_namespace
             or self.preprocessing.feature_dtype != "float32"
         ):
@@ -405,6 +407,7 @@ def candidate_model_specification(
     model_kind: str | ModelKind, parameters: Mapping[str, Any], *,
     ordered_prediction_features: Sequence[str] = LEGACY_FEATURES,
     identity_namespace: str = MODEL_DEFINITION_VERSION,
+    output_unit: str = "g",
 ) -> ModelSpecification:
     """Convert one search candidate into the explicit model-definition interface."""
     try:
@@ -424,6 +427,7 @@ def candidate_model_specification(
             {key: copied[key] for key in architecture_keys},
             {key: value for key, value in copied.items() if key not in architecture_keys},
             features,
+            output_unit=output_unit,
             identity_namespace=identity_namespace,
         )
     if kind is ModelKind.XGBOOST:
@@ -437,6 +441,7 @@ def candidate_model_specification(
             {key: value for key, value in copied.items() if key not in training_keys},
             {key: copied[key] for key in training_keys if key in copied},
             features,
+            output_unit=output_unit,
             identity_namespace=identity_namespace,
         )
     raise ValueError("invalid_model_specification")
@@ -467,12 +472,16 @@ def ensemble_model_specification(
     neural_network: ModelSpecification, xgboost: ModelSpecification,
     neural_network_weight: float,
 ) -> ModelSpecification:
-    if neural_network.ordered_prediction_features != xgboost.ordered_prediction_features:
+    if (
+        neural_network.ordered_prediction_features != xgboost.ordered_prediction_features
+        or neural_network.output_unit != xgboost.output_unit
+    ):
         raise ValueError("invalid_model_specification")
     return ModelSpecification(
         ModelKind.ENSEMBLE,
         PreprocessingContract("float32", "defined_by_members"),
         {}, {}, neural_network.ordered_prediction_features,
+        output_unit=neural_network.output_unit,
         ensemble=EnsembleDefinition(neural_network, xgboost, neural_network_weight),
     )
 

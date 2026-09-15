@@ -1896,3 +1896,80 @@ this fixed plan. No production fit, validation scoring, candidate selection, loc
 or held-out assessment occurred. The run stops without retry, changed loss constants,
 replacement candidates, budget recycling, or automatic expansion. Issue #50 remains
 open for another separately justified hypothesis.
+
+## Predeclared bounding-box target decomposition
+
+Status: **IMPLEMENTED NOT EXECUTED**. This round changes the internal target rather
+than the loss, architecture, inputs, rows, or gates. Its hypothesis is that factoring
+the known axis-aligned bounding-box scale out of sliced resin mass lets the exact
+closest model learn a source-neutral occupancy-like factor with fewer strict
+above-5-g errors than its unchanged raw-grams anchor.
+
+For each included row, with density fixed by the recorded development contract at
+`1.1 g/ml = 0.0011 g/mm³`, the direct target and inverse are:
+
+```text
+bounding_box_occupancy_factor = sliced_resin_mass_g
+                                / (bounding_box_volume_mm3 * 0.0011 g/mm3)
+predicted_sliced_resin_mass_g = predicted_factor
+                                * bounding_box_volume_mm3 * 0.0011 g/mm3
+```
+
+The factor is a label-derived training representation, not occupied-union volume.
+It is nonnegative but not bounded to one. Zero mass maps to zero. Bounding-box
+volume and density must be finite and positive, and every declaration must equal
+the fixed density. Predictions and reconstruction use float64. A negative or
+non-finite factor, scale, or reconstructed mass blocks without clipping; unfavorable
+evidence is never replaced by a favorable boundary value.
+
+Exactly two candidate identities are scored: one 80% neural/20% XGBoost ensemble
+whose two bases train on the factor, and the exact run-011 closest 80/20 ensemble
+trained on grams. Both retain the fixed Mish 256/128/64 neural contract at 87 epochs
+and the fixed depth-9 XGBoost contract at 1,091 trees. Inputs remain the seven legacy-
+compatible source-neutral measurements. There is no direct/log/bounded target sweep,
+architecture sweep, density sweep, weight sweep, threshold change, or standalone
+component candidate.
+
+Before validation, stable identity-only five-fold assignments cross outer seeds
+101/202 with model seeds 41/42. Each cell fits all four bases on the other four folds
+and evaluates reconstructed grams on fold zero. The decomposition route qualifies
+only if it has no more strict above-5-g errors than the raw anchor in every cell,
+fewer across all cells, and no greater pooled aggregate MAE. Startup verifies and
+normalizes the declared validation artifact only to bind checksums and enforce
+partition/feature contracts; no validation prediction, label-derived metric, or
+selection occurs before qualification. Failure stops before validation scoring.
+Passing routes both fixed candidates; training evidence does not select between them.
+
+Conditional production fits all four bases on all training rows under both seeds,
+with no early stopping or validation fitting, then scores both candidates under both
+seeds. Existing 1% pooled, 1% source-balanced, and 2% qualifying-source gates and the
+existing ranking remain unchanged. A lock requires both seeds and their equal
+combination to pass and serializes the exact seed-42 state already scored, with no
+refit. The lock binds each component's candidate identity, seed, fixed selected
+count, fitted-parameter fingerprint, and artifact digest to the seed-42 scoring
+metadata, seed-42 gram-prediction commitment, and seed-42 metric commitment.
+Semantic verification rejects internally inconsistent contract changes even when a
+manifest checksum is recomputed. The preserved create-only run and its independently
+checked manifest remain the integrity root; mutable local files cannot by themselves
+cryptographically prove historical execution after wholesale coordinated replacement.
+The hard ceilings are 16 honest fits plus eight production fits, four validation
+evaluations, and 7,200 seconds. Started/completed/failed attempts remain distinct.
+There is no retry, budget recycling, candidate substitution, row change, validation
+scoring before qualification, held-out-test access, automatic expansion,
+or Issue #33 continuation.
+
+The sole prospective command verifies the unchanged development checksums and pinned
+candidate environment, then writes fresh create-only `run-022`:
+
+```bash
+.venv-candidates/bin/python -m minires.modeling.tuning \
+  --training-records data/train.jsonl \
+  --validation-records data/validation.jsonl \
+  --output-root private/candidate-tuning/run-022 \
+  --volume-unit mm3 --scope-confirmed --seed 41 \
+  --plan-kind bounding_box_target_decomposition
+```
+
+This implementation and its synthetic tests do not authorize or execute the run.
+Execution requires a committed source-neutral Issue #50 predeclaration and separate
+authorization, and must stop after one completed, rejected, or blocked attempt.

@@ -1607,3 +1607,55 @@ was created, and held-out evidence was not read or fingerprinted. The attempt st
 without retry, loss/threshold changes, replacement candidates, automatic expansion,
 or Issue #33 continuation. Issue #50 remains open for a separately justified next
 step; deferred raw-geometry work remains tracked in Issue #53.
+
+## Predeclaration: bounding-box target decomposition
+
+Status: **IMPLEMENTED NOT EXECUTED**. This materially distinct round holds the exact
+closest architecture, seven legacy-compatible inputs, training counts, 80/20
+ensemble arithmetic, seeds, eligibility gates, and ranking fixed while changing only
+the modeled target. The hypothesis is that explicitly factoring axis-aligned bounding-
+box scale out of sliced resin mass lets the model learn a source-neutral occupancy-
+like factor with lower strict above-5-g error than the unchanged raw-grams anchor.
+
+The direct unbounded target is
+`sliced_resin_mass_g / (bounding_box_volume_mm3 * 0.0011 g/mm³)`, using the fixed
+recorded density `1.1 g/ml`. The inverse multiplies the predicted factor by that same
+row scale in float64. This bounding-box occupancy factor is label-derived and is not
+physical occupied-union volume; it is not assumed to be at most one. Zero mass maps
+to zero. Invalid density, box volume, factor, overflow, or negative reconstructed
+mass blocks without clipping.
+
+Exactly two ensembles are candidates: the factor-target closest 80/20 ensemble and
+the exact raw-grams closest 80/20 control. Each uses the fixed Mish 256/128/64 neural
+network for exactly 87 epochs and fixed depth-9 XGBoost for exactly 1,091 trees, with
+no early stopping. No target representation, model, weight, density, seed, loss, or
+threshold sweep is permitted.
+
+Four honest training cells cross split seeds 101/202 and model seeds 41/42. Stable
+identity-only assignment fits all four bases on 80% of training rows and evaluates
+reconstructed grams on the held fold. The decomposition qualifies only if its strict
+above-5-g count does not increase in any cell, decreases in aggregate, and aggregate
+MAE does not increase relative to the raw anchor. Startup checksum, normalization,
+and partition checks bind the declared validation artifact but do not predict, derive
+validation metrics, or select with it. A failure stops before validation scoring; a
+pass routes both candidates without using training evidence to select between them.
+
+Conditional production fits all four bases on all training rows under both seeds and
+scores both candidates on validation under both seeds. The unchanged 1% pooled, 1%
+source-balanced, and 2% qualifying-source gates and ranking apply. Locking requires
+both seeds and their equal combination to pass and reuses the exact seed-42 scored
+state without refitting. Component candidate identity, seed, fixed selected count,
+fitted-parameter fingerprint, artifact digest, gram-prediction commitment, and metrics
+commitment are bound to the seed-42 scoring metadata and checked semantically. The
+preserved create-only package and independently checked manifest are the integrity
+root; wholesale coordinated replacement of mutable local evidence is outside what a
+self-contained lock can prove. Hard ceilings are 24 started fits (16 honest,
+eight production), four validation evaluations, and 7,200 seconds, with no retry, recycling,
+substitution, row omission, gate change, test access, or automatic continuation.
+Anonymous source groups remain evaluation-only metadata.
+
+Synthetic tests do not execute the experiment. After a committed source-neutral issue
+comment and separate authorization, the only prospective invocation writes fresh
+create-only `private/candidate-tuning/run-022` using
+`--plan-kind bounding_box_target_decomposition`. Stop after its first completed,
+rejected, or blocked outcome; do not continue into Issue #33.

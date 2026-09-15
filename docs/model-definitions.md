@@ -49,7 +49,10 @@ The neural network fits normalization on training rows, ends in one linear outpu
 and retains the declared activations, dropout, L2 regularization, optimizer, loss,
 early stopping, and optional learning-rate reduction. XGBoost remains unnormalized
 and uses the declared tree parameters plus `hist`, MAE evaluation, and the supplied
-evaluation seed. Ensemble prediction remains a convex weighted mean in grams.
+evaluation seed. A component explicitly declares either grams or the internal
+bounding-box occupancy factor as its output unit. Ensemble members must have the
+same unit, and ensemble prediction remains a convex weighted mean in that unit.
+Target-decomposition locks reconstruct grams outside the component ensemble.
 
 Candidate IDs retain their existing tuning-version payload and format, with a
 literal compatibility example covered by the focused tests. A model specification

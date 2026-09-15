@@ -128,6 +128,25 @@ class ModelSpecificationTests(unittest.TestCase):
                 0.4,
             )
 
+    def test_candidate_output_unit_is_explicit_and_inherited_by_ensembles(self):
+        neural = candidate_model_specification(
+            "neural_network", NEURAL_PARAMETERS,
+            output_unit="bounding_box_occupancy_factor",
+        )
+        xgboost = candidate_model_specification(
+            "xgboost", XGBOOST_PARAMETERS,
+            output_unit="bounding_box_occupancy_factor",
+        )
+        ensemble = ensemble_model_specification(neural, xgboost, 0.8)
+
+        self.assertEqual(ensemble.output_unit, "bounding_box_occupancy_factor")
+        with self.assertRaisesRegex(ValueError, "invalid_model_specification"):
+            ensemble_model_specification(
+                neural,
+                candidate_model_specification("xgboost", XGBOOST_PARAMETERS),
+                0.8,
+            )
+
     def test_sliced_resin_mass_weighting_is_in_the_training_contract(self):
         weighted = candidate_model_specification(
             "xgboost",

@@ -44,3 +44,7 @@ _Avoid_: Occupied volume, union volume
 **Axis-aligned bounding-box volume**:
 The product of the three extents of the axis-aligned box enclosing a mesh's vertices. A surface-integral mesh volume is not universally bounded by this value because the two measurements have different semantics.
 _Avoid_: Bounding-box area
+
+**Bounding-box occupancy factor**:
+A label-derived training representation equal to sliced resin volume divided by axis-aligned bounding-box volume. It is not assumed to be at most one and is not evidence of physical occupied-union volume.
+_Avoid_: Physical occupancy, occupied-volume fraction
