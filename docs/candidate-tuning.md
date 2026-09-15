@@ -668,10 +668,10 @@ must not read or fingerprint held-out evidence.
 
 ### Guarded residual-stacking result
 
-The one permitted execution completed all three candidates under both seeds and
-all 50 predeclared fits. No candidate was eligible under either seed or their equal
-combination. The best development result was the full ±2 g correction under seed
-41:
+The round ended as `completed_no_candidate`. The one permitted execution completed
+all three candidates under both seeds and all 50 predeclared fits. No candidate was
+eligible under either seed or their equal combination. The best development result
+was the full ±2 g correction under seed 41:
 
 | Metric | Result |
 | --- | ---: |

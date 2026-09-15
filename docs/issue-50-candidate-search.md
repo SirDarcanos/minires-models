@@ -744,9 +744,10 @@ predeclaration did not fit a model, access held-out evidence, or start Issue #33
 
 ## Guarded training-OOF residual-stacking result
 
-The one permitted execution completed all three fixed candidates under both seeds.
-No candidate was eligible under either seed or their equal combination. The best
-development result was the full ±2 g correction under seed 41:
+The round ended as `completed_no_candidate`. The one permitted execution completed
+all three fixed candidates under both seeds. No candidate was eligible under either
+seed or their equal combination. The best development result was the full ±2 g
+correction under seed 41:
 
 | Metric | Result |
 | --- | ---: |
