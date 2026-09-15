@@ -693,7 +693,7 @@ not satisfy any unchanged serious-error gate. This hypothesis is falsified for t
 fixed plan and stops without changed bounds, replacement candidates, added seeds,
 or automatic expansion.
 
-## Predeclared tail-focused closest-anchor correction (not executed)
+## Predeclared tail-focused closest-anchor correction
 
 The `tail_focused_correction` plan tests a bounded additive correction to the exact
 closest run-011 ensemble, not the weaker four-base mean used in run-013. It uses
@@ -877,6 +877,16 @@ Python 3.13 environment with NumPy 2.2.6, Keras 3.15.0, TensorFlow 2.20.0,
 scikit-learn 1.7.2, and XGBoost 3.1.2. It has no held-out argument and must not read
 or fingerprint held-out evidence. Existing runs and dataset artifacts remain
 immutable.
+
+### Completed outcome
+
+The separately authorized execution ended as `training_evidence_rejected` after
+26 honest-stage fits. Seed 41 failed the fixed training-only qualification; seed
+42 passed. The round therefore performed no production fits or validation scoring
+and created no lock. The complete six-artifact manifest was independently
+checksum-verified. See the [aggregate outcome in the Issue #50 ledger](issue-50-candidate-search.md#tail-focused-closest-anchor-correction-result)
+for paired training-holdout metrics and resource use. This round is closed to
+further execution or expansion; the command above is its historical invocation.
 
 ## Locked candidate
 

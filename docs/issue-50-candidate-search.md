@@ -773,7 +773,7 @@ started. The round stops without changed bounds, replacement candidates, added
 seeds, omitted rows, or automatic expansion. Issue #50 remains open for a
 separately justified and predeclared hypothesis.
 
-## Predeclaration: tail-focused closest-anchor correction (not executed)
+## Predeclaration: tail-focused closest-anchor correction
 
 The run-013 four-base mean was weaker than run-011's closest 80% NN/20% XGBoost
 ensemble. Its clipped-target ridge correction remained small and did not satisfy
@@ -791,7 +791,7 @@ This is not another model-family or configuration sweep, a distribution/window
 estimator, or a replacement for the continuous anchor.
 
 The complete fixed contract is declared in
-[`candidate-tuning.md`](candidate-tuning.md#predeclared-tail-focused-closest-anchor-correction-not-executed)
+[`candidate-tuning.md`](candidate-tuning.md#predeclared-tail-focused-closest-anchor-correction)
 and enforced by the existing candidate-development and lock-loading interfaces.
 The frozen pair is the Mish 256/128/64 NN with Adam/Huber, batch 256 and fixed 87
 epochs, and the depth-9 XGBoost with learning rate 0.05 and fixed 1,091 trees. The
@@ -844,3 +844,41 @@ authorized execution, after the committed predeclaration and source-neutral Issu
 not create that directory, fit private models, access or fingerprint held-out
 evidence, publish results, or start Issue #33. Existing runs and training/validation
 artifacts remain unchanged.
+
+## Tail-focused closest-anchor correction result
+
+The separately authorized execution ended as `training_evidence_rejected` with
+`honest_training_correction_gate_failed`. Both seeds completed the honest stage;
+seed 41 failed every qualification condition, while seed 42 passed all three.
+Each seed evaluated 2,074 independently held-out training rows:
+
+| Training-holdout metric | Seed 41 anchor | Seed 41 corrected | Seed 42 anchor | Seed 42 corrected |
+| --- | ---: | ---: | ---: | ---: |
+| Pooled MAE | 0.6234 g | 0.7056 g | 0.7856 g | 0.6997 g |
+| Above-5-g count | 34 | 37 | 39 | 35 |
+| Declared prediction loss | 9.6453 | 9.6811 | 17.8303 | 16.3845 |
+
+These are training-holdout comparisons, not validation eligibility or ranking
+metrics. The declared loss excludes the optimization's correction and coefficient
+penalties. The seeds use different deterministic holdouts; the paired comparisons
+are within each seed. Evidence remains conditional on the historically selected
+anchor and training counts.
+
+The run completed 26 of at most 52 fits: 20 inner-OOF base fits, four partition-wide
+base fits, and two numerical correction fits. It used 72.40 elapsed seconds,
+202.12 process CPU seconds, and a process high-water resident-set measurement of
+909,754,368 platform units. The complete six-artifact create-only manifest and
+recorded qualification decisions were independently verified.
+
+Because both seeds had to qualify, the round stopped before production fitting
+or validation scoring. All four validation candidate slots were skipped and unused
+capacity was not recycled. The unchanged validation gates were not evaluated;
+no candidate was selected, no lock was created, and held-out evidence was not
+read or fingerprinted. Issue #33 was not started.
+
+The correction did not show the required consistent training-only improvement.
+This fixed hypothesis is rejected at its prerequisite gate and stops without
+changed losses, bounds, folds, seeds, replacement candidates, or expansion. Issue
+#50 remains open for a separately justified and predeclared hypothesis. Existing
+runs remain preserved; private row-level evidence and source identities remain
+unpublished.
