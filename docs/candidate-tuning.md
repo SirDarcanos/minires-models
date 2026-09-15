@@ -1072,6 +1072,158 @@ or blocked attempt: no automatic expansion, learned/tuned gate, correction chang
 validation access, candidate promotion, row exclusion, or capacity recycling.
 Existing `run-015` and all prior contracts and outcomes remain immutable.
 
+## Predeclared bounded-influence training prerequisite
+
+Status: **IMPLEMENTED NOT EXECUTED**. This is a new training-only prerequisite
+experiment, not a production candidate round or authorization to fit private data.
+All existing runs, numerical contracts, and loaders remain unchanged.
+
+### Rationale and materially distinct objective
+
+The completed run-016 paired diagnostic found repairs/harms of 4/7, 3/9, 2/4,
+and 5/0 in cells 101/41, 101/42, 202/41, and 202/42 respectively. Its old loss
+fell in every cell even though strict above-5-g count worsened in three. Errors
+beyond 7 g contributed more than 99.98% of anchor excess-squared loss; a ±2 g
+correction cannot make such errors nonserious. This supports testing bounded
+influence, not choosing a favorable seed, identifying defective labels, or claiming
+that a bounded-influence correction will help.
+
+The new `minires-bounded-influence-correction-v1` contract freezes the same exact
+float64 operation `0.8 * neural + (1.0 - 0.8) * xgboost`. The run-011 closest
+Mish 256/128/64 NN (Adam/Huber, batch 256) and depth-9 XGBoost (learning rate
+0.05) retain their complete original base contracts, legacy seven-feature order,
+and validated component preprocessing. All new base fits use exactly **87 epochs
+and 1,091 trees**, without early stopping. Retained legacy `kb` and `scale` still
+have uncertain semantics and may be source/style proxies; no new raw or source
+feature is added. Source/family/identity/linkage/partition/path metadata never
+enters prediction or fitting matrices.
+
+The correction retains only three ordered prediction inputs: anchor, signed
+NN-minus-XGBoost disagreement, and absolute disagreement. Means and population
+standard deviations come only from training OOF predictions. A standard deviation
+at or below `1e-12` becomes 1; standardized inputs clip to ±1, and an intercept
+forms the four-column design `D`. With `c = D*b` and `e = anchor+c-target`, fit:
+
+```text
+H_d(z) = z²                         if |z| <= d
+         2*d*|z| - d²              otherwise
+
+mean[0.1*H_5(e) + 4*H_2.5(max(|e|-4.5,0)) + c²] + 0.01*sum(b²)
+subject to sum(|b|) <= 2 g
+
+prediction-loss derivative = 0.2*clip(e,-5,5)
+                           + 8*sign(e)*min(max(|e|-4.5,0),2.5)
+```
+
+**Both** ordinary and excess derivatives are bounded; their respective magnitudes
+are at most 1 and 20, so the total is at most 21. No unbounded ordinary squared
+residual remains. The ordinary Huber transition is tied to the 5 g serious
+boundary; the 4.5 g margin anticipates that boundary by 0.5 g, and its 2.5 g Huber
+width saturates at absolute error 7 g, the limit of possible repair by ±2 g.
+These and the unchanged weights/penalties are engineering constants, not optimized
+or empirically supported optima. Targets, residuals, and rows are not clipped,
+dropped, imputed, or weighted. Huberization changes influence, not observations.
+
+Use exactly 2,000 zero-initialized Euclidean L1-projected-gradient steps with
+`step = 1/(2*5.1*sum(D²)/n + 0.02)`. Prediction curvature is at most `0.2+8`;
+the departure penalty adds 2. Thus the objective gradient's Lipschitz constant is
+at most `10.2*||D||_F²/n+0.02` including ridge, across the continuously
+differentiable piecewise boundaries. The unchanged conservative step is valid.
+The intercept participates in both penalties and the L1 bound. Bounded design
+entries and `||b||_1 <= 2` guarantee global ±2 g departure, with a final roundoff
+clip. Identity returns the exact anchor directly. This changes neither anchor
+capacity nor the theorem that errors strictly beyond 7 g cannot be repaired.
+
+The new typed state has its own version and exact contract validation; old loaders
+reject it and the new numeric seam rejects old state. Invalid shapes, nonfinite
+values, float32 range violations, overflowing preprocessing, or contract/state
+tampering fail closed even for identity. There is no registration as a production
+candidate or new lock loader. A dedicated small stage reuses fixed base primitives
+but fits exactly one **new** correction per cell; it never fits/discards an old
+correction or monkeypatches the old stage.
+
+### Frozen four-cell qualification and finite stop rule
+
+Use the same four cells as run-015/016: outer split seeds **101/202**, respective
+inner split seeds **1101/1202**, and model seeds **41/42**. Stable identity-SHA-256
+round-robin assigns five folds; outer fold zero is the 20% training holdout. Each
+cell fits bases and preprocessing only on the remaining 80%; five nested OOF
+folds give exactly one excluded-fold prediction per row/base for correction fitting.
+Model seeds affect initialization/sampling only, never partition assignment.
+Outer targets score the prerequisite only; they fit no base, preprocessing, or
+correction. No full-training production stage exists.
+
+For **each** cell, compare corrected to the exact identity anchor on identical
+outer-held training rows. All three conditions must hold:
+
+1. strictly lower **new unpenalized prediction loss**
+   `mean[0.1*H_5(e)+4*H_2.5(max(|e|-4.5,0))]`;
+2. pooled MAE no greater; and
+3. strict `abs(e)>5 g` count no greater (exactly ±5 is nonserious).
+
+Every one of all four cells must pass. Complete all four after any metric failure;
+report every cell's conditions and the full failed-cell list, with no seed selection
+or averaging. All-four success means `training_prerequisite_supported` **only**:
+not validation eligible, no production fitting, validation scoring, ranking,
+selection, lock, promotion, or automatic continuation. Metric failure means
+`training_evidence_rejected`. Invalid data/state/evidence, runtime failure,
+incomplete accounting, or deadline means `blocked`, retaining completed cells,
+failed/uncompleted cell accounting, and started fits without replacement.
+
+The exact ceiling is **52 fits and 7,200 seconds**: 40 inner-OOF base fits, eight
+outer-partition base fits, and four correction fits. No budget recycling, repeated
+attempt, alternate rows/folds/seeds, changed constants, or automatic expansion is
+permitted. Deadline checks surround fits, predictions, summaries, and completion;
+an in-progress backend fit cannot be forcibly interrupted. Artifact-write failure
+cannot claim a complete checksummed package.
+
+### Evidence, provenance, and prospective command
+
+`paired_transitions_with_old_diagnostic_loss` preserves the complete run-016
+2×2 repair/harm table, `[0,4]`, `(4,5]`, `(5,7]`, `>7` bins, signs, correction
+magnitudes/directions, conservation checks, descriptive flags and fixed theoretical
+label-aware ±2 oracle summaries. **Every loss in that subtree, including the
+oracle and severe-tail flag, is the OLD squared diagnostic loss, never the new
+qualification loss.** The oracle is not an estimator or qualification criterion.
+`new_qualification_loss` separately decomposes the new ordinary/excess Huber loss
+by total, transition, and anchor bin. Contributions divide by the whole cell count;
+counts conserve exactly and floating contributions within relative/absolute
+`1e-12`. Existing complete finite OOF/full-fit shift summaries are retained.
+
+The create-only private package contains `prerequisite-plan.json`,
+`bounded-influence-evidence.json`, and `manifest.json`. Before fitting, the plan
+freezes the entire numeric/base/runtime/preprocessing contract, ordered features,
+normalization, all seeds/folds, qualification, old/new accounting, budget, expected
+training checksum, observed training-only input identities, code identity, required
+and observed dependencies/platform, and historical-selection caveat. The manifest
+SHA-256 binds plan and evidence. Evidence includes aggregate outcomes/resources
+and explicitly false validation-eligibility/production-continuation attestations,
+not source names, row vectors, IDs, mappings, or artifacts for production loading.
+
+The training-only CLI accepts no validation/test, seed, budget, rank, lock, or
+promotion input. It verifies only the existing pinned training checksum and pinned
+Python **3.13**, NumPy **2.2.6**, Keras **3.15.0**, TensorFlow **2.20.0**,
+scikit-learn **1.7.2**, and XGBoost **3.1.2** before fitting. The in-memory runtime
+seam permits synthetic tests; checksum/environment enforcement remains at the CLI.
+A separately authorized one-time execution, after committed predeclaration and a
+source-neutral Issue #50 predeclaration, would use fresh create-only **run-017**:
+
+```bash
+.venv-candidates/bin/python -m minires.modeling.bounded_influence_training \
+  --training-records data/train.jsonl \
+  --output-root private/candidate-tuning/run-017 \
+  --volume-unit mm3 \
+  --scope-confirmed
+```
+
+This implementation does not create/inspect that directory, fit private models,
+read/fingerprint datasets or validation/test evidence, publish, or start Issue #33.
+Training-holdout evidence remains conditional on the historically reused-validation
+selection of the anchor and counts, not untouched pipeline evidence. Pairing is
+within cell; different split comparisons are not paired or causal. There is no
+empirical success claim. Stop after the single prospective attempt even if every
+cell passes; any subsequent experiment requires a separate decision/predeclaration.
+
 ## Locked candidate
 
 A successful search creates `locked-candidate/` with:
