@@ -1513,3 +1513,128 @@ further experiment requires a new decision/predeclaration and authorization.
 This implementation performs synthetic tests only: no private fitting, dataset
 contents or validation/test reads/fingerprints, run-directory creation, publication,
 or Issue #33 work. Prior runs and contracts remain immutable.
+
+## Predeclared training-only data and feature audit
+
+Status: **IMPLEMENTED NOT EXECUTED**. This is a bounded audit of the frozen base
+predictor, not a correction, candidate round, seed/loss/feature/ensemble search, or
+authorization to fit. The audit asks three falsifiable questions before proposing
+another model intervention:
+
+1. Do explicit canonical/legacy unit, geometry, density, scope, or slicing-condition
+   declarations contradict one another?
+2. Do records with exact or deterministically similar available canonical geometry
+   have materially different sliced resin mass targets?
+3. If the first two routes do not explain the evidence, does the frozen closest
+   base anchor have stable, supported strict-above-5-g enrichment in a predeclared
+   geometry regime across both training splits and both model seeds?
+
+### What existing evidence can answer
+
+No fitting is needed to reconcile every accepted training row's canonical and
+legacy aliases, explicit volume unit, bounding-box product, mesh-within-box
+constraint, surface-to-volume ratio, density, layer height, slicer-added-support
+setting, and scope declaration. Missing or
+unknown evidence is counted separately and is not called a contradiction. The
+committed provenance states that historical measurements were reused as
+authoritative without mesh probing or slicing, while only the new batch has the
+pinned measurement contract. Assembly harmonized row fields and removed row origin,
+so this audit cannot retrospectively verify which rows actually used the new slicing
+contract. It also does not treat sliced-resin-mass-to-mesh-volume ratio as a defect
+test: legitimate slicing geometry can make that ratio differ from nominal resin
+density.
+
+The same no-fitting stage compares sliced resin mass within exact seven-field
+canonical-geometry groups. It also applies one deterministic source-neutral nearest-
+geometry contract. Positive geometry fields are log transformed; Euler number uses
+signed `log1p(abs(euler))`. Columns use median centering and the greater of
+`1.4826*MAD`, `IQR/1.349`, and `1e-12` (a remaining zero scale becomes one). Each
+row is related to the lowest-row-order nearest nonidentical geometry by RMS robust-
+standardized distance. A relationship is similar only at distance at most `0.10`.
+All relationship counts and target-difference bins are reported; no pair, row,
+identity, feature value, target, source, or path is emitted. Material heterogeneity
+means target difference strictly above 5 g. An exact-group signal requires at least
+20 repeated-group rows and at least 10% of those rows in materially heterogeneous
+groups. A nearest-geometry signal requires at least 100 similar relationships and a
+materially heterogeneous fraction of at least 10%. These fixed thresholds are
+descriptive engineering rules, not optimized statistical cutoffs.
+
+Preserved run evidence is aggregate-only and cannot attribute severe base errors to
+row geometry. That question therefore requires new computation. The minimum fixed
+allocation is eight fits: the original closest neural network and XGBoost component
+fit once in each of four cells crossing outer split seeds 101/202 with model seeds
+41/42. Existing identity-SHA-256 five-fold assignment holds fold zero out. Each base
+fits the other 80% at exactly 87 neural epochs or 1,091 XGBoost trees, without early
+stopping, then predicts only the outer-held training rows. The anchor preserves the
+exact float64 operation `0.8*NN + (1.0-0.8)*XGBoost`. There is no inner OOF fitting,
+correction, production fit, validation score, or saved model artifact.
+
+### Geometry regimes and decision rules
+
+Each cell reports all relative quintiles for log mesh volume, surface compactness
+`surface_area / volume^(2/3)`, mesh-volume-to-bounding-box-volume fill, and sorted-
+dimension longest/shortest aspect ratio. Linear quintile edges come only from that
+cell's outer fitting partition; outer-held targets and predictions do not choose
+edges. Euler number has fixed negative/zero/positive bins. Thus all 23 declared
+view/bin combinations remain visible, including empty and unfavorable bins.
+
+A bin is supported at 100 held rows. It is enriched only if its strict-above-5-g
+rate is at least twice the cell rate and at least 0.01 higher in absolute rate. A
+base-predictor regime is stable only when the same named relative view/bin is
+supported and enriched in all four cells. These multiple overlapping views are a
+descriptive screen, not independent tests; no p-value, favorable-bin selection,
+threshold change, or causal claim follows. Missing required slicing attributes use
+the same per-cell support/enrichment rule and must pass in all four cells before
+they are called error-enriched.
+
+The final route is mutually prioritized and fixed before execution:
+
+1. `investigate_data_contracts` for any explicit alias, geometry, slicing, density,
+   or scope contradiction/invalid explicit value;
+2. otherwise `obtain_better_inputs` if exact/similar-geometry target heterogeneity
+   passes its fixed support rule, or missing required slicing attributes are
+   supported and error-enriched in all four cells;
+3. otherwise `improve_base_predictor` only if at least one predeclared geometry
+   regime is supported and enriched in all four cells; or
+4. `inconclusive_collect_evidence`, which explicitly says no model run is warranted.
+
+A route is diagnostic guidance, not proof of a defect, permission to repair a row,
+or authorization for another fit. Every row remains in place. Historical anchor
+and count choices used reused validation evidence, so results are conditional on
+that selection and are not untouched pipeline evidence. Outer holdouts overlap
+across split definitions, split contrasts are not paired or causal, and this audit
+cannot establish slicing conditions absent from the artifacts.
+
+### Finite command, artifacts, and stop
+
+The one prospective attempt has a hard maximum of **8 fits and 7,200 seconds**.
+Every cell runs regardless of findings; unused capacity is not recycled. Wrong
+shape, nonfinite/overflowing input or prediction, invalid preprocessing, incomplete
+accounting, runtime failure, or deadline blocks without replacement. The create-
+only private package contains `audit-plan.json`, aggregate
+`training-data-feature-audit.json`, and `manifest.json` checksumming both. It writes
+no row vectors, IDs, paths, sources/source groups, artist identity, per-row geometry,
+targets, predictions, nearest-neighbor pairs, source mappings, or model artifacts.
+Private plan fingerprints bind training/code provenance but are not publishable
+results.
+
+The CLI accepts only training records, output root, volume unit, and scope
+confirmation. It checksum-verifies only committed `data/train.jsonl` and the pinned
+candidate environment before fitting. Validation and held-out-test paths are not
+arguments and must not be read or fingerprinted. After this predeclaration is
+committed and a source-neutral Issue #50 comment is posted, a separately authorized
+single execution would use fresh create-only `run-019`:
+
+```bash
+.venv-candidates/bin/python -m minires.modeling.training_data_feature_audit \
+  --training-records data/train.jsonl \
+  --output-root private/candidate-tuning/run-019 \
+  --volume-unit mm3 \
+  --scope-confirmed
+```
+
+Stop after one completed or blocked attempt regardless of outcome. There is no row
+repair/removal, retry, threshold tuning, candidate search, correction, seed/loss/
+feature/ensemble search, gate relaxation, validation access, lock, promotion,
+automatic continuation, or Issue #33 work. Implementation used synthetic tests
+only; `run-019` was not created or inspected and no private model fitting occurred.

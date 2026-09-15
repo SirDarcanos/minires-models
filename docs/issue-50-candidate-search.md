@@ -1378,3 +1378,44 @@ accessed. Evidence remains conditional on historical validation selection of the
 anchor/counts; holdouts overlap and split comparisons are not causal. The attempt
 stops without retries, feature/loss changes, selected thresholds, further fitting,
 or Issue #33 work. Issue #50 stays open and all prior runs remain preserved.
+
+## Predeclaration: training-only data and feature audit
+
+Status: **IMPLEMENTED NOT EXECUTED**. After the bounded-influence feature-signal
+diagnostic found sparse mixed help/harm groups, the next step is an audit rather
+than another correction, seed, loss, feature, ensemble, or candidate search.
+
+The audit first uses all accepted training rows without fitting to reconcile
+canonical/legacy geometry aliases, bounding-box and ratio identities, and explicit
+density/scope/slicing declarations. Missing or historically unverifiable conditions
+remain unknown, not contradictions. It also reports aggregate target disagreement
+for exact geometry and one fixed robust-standardized nearest-geometry relation;
+sliced-resin-mass-to-mesh-volume ratio is not treated as a defect test. Existing
+aggregate run evidence cannot answer row-level geometry/error questions.
+
+Only the severe-error attribution stage fits models. It crosses outer split seeds
+101/202 with model seeds 41/42 and fits the two frozen closest-anchor components
+once per cell, at exactly 87 neural epochs and 1,091 XGBoost trees. The exact
+float64 `0.8*NN+(1.0-0.8)*XGBoost` anchor is evaluated on outer-held training rows.
+The hard ceiling is eight fits / 7,200 seconds, with no inner OOF fitting,
+correction, retry, capacity recycling, validation, held-out access, or saved model.
+All fixed size, compactness, bounding-box-fill, aspect-ratio, and Euler regimes are
+reported. A regime must have at least 100 rows, at least 2x the cell serious-error
+rate, at least 0.01 absolute excess, and satisfy those conditions in all four cells.
+
+Decision priority is fixed: explicit contradictions route to data-contract
+investigation; otherwise supported target heterogeneity or stably error-enriched
+missing slicing attributes route to better inputs; otherwise stable supported
+geometry enrichment routes to base-predictor work; otherwise the result is
+inconclusive and no model run is warranted. These are descriptive routing rules,
+not defect claims or authorization to change data/models. Every row is preserved.
+Evidence remains conditional on historically validation-selected anchor/counts.
+
+The create-only package is aggregate and source-neutral: plan, evidence, manifest;
+no row values, IDs, paths, source groups, artist identity, pairs, predictions, or
+model artifacts. The CLI accepts training only. The intended command is documented
+in `docs/candidate-tuning.md` and targets fresh `private/candidate-tuning/run-019`.
+This commit does not execute it. One execution requires separate authorization
+after the committed plan and a source-neutral Issue #50 predeclaration comment.
+The attempt stops regardless of outcome without validation/test access, selection,
+locking, promotion, or Issue #33 work.
