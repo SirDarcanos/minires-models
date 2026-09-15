@@ -1322,8 +1322,10 @@ evidence.
 
 ## Predeclared bounded-influence feature-signal diagnostic
 
-Status: **IMPLEMENTED NOT EXECUTED**. Implementation/predeclaration only; a
-separate authorization is required before one prospective training-only attempt.
+Predeclaration status at commit `1308516`: **IMPLEMENTED NOT EXECUTED**.
+The separately authorized execution has since completed; see the
+[recorded result](issue-50-candidate-search.md#bounded-influence-feature-signal-diagnostic-result).
+The predeclaration below does not authorize a further attempt.
 This descriptive investigation asks whether the **existing correction inputs**
 show associations distinguishing severe errors helped versus hurt by the frozen
 bounded-influence correction. It does not fit a gate or qualify a candidate.

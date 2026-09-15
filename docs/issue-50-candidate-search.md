@@ -1328,3 +1328,53 @@ evidence. Legacy `kb`/`scale` may still be source/style proxies. Implementation
 uses synthetic tests only, with no private fitting, dataset contents read,
 publication, commits/pushes, issue operations, or Issue #33 work. All prior runs
 and contracts remain unchanged.
+
+## Bounded-influence feature-signal diagnostic result
+
+The separately authorized diagnostic, predeclared at commit `1308516` and on
+Issue #50 before fitting, completed all four fixed cells and all 52 fits.
+Status was `completed`, with no blockers. Timed computation used 161.03 elapsed
+seconds and 422.31 process CPU seconds; the predeclared accounting excludes
+final artifact packaging. Both manifest artifact checksums were independently
+recomputed and matched. Counts and MAE/new-loss/serious-count partition sums were
+independently checked across all cohorts and cells. Baseline new-loss and paired
+transition aggregates exactly matched the preserved preceding prerequisite in all
+four cells, after verifying that preceding package's checksums too.
+
+Each cell evaluated 2,074 held-out training rows. The following are fixed
+standardized-input groups, not raw mass thresholds or selected rules:
+
+| Outer split / model seed | Anchor-error >7 g rows | In high-anchor bin | High-anchor bin improved / worsened | High-anchor bin new-loss change | Supported joint groups in >7 g cohort |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| 101 / 41 | 24 | 23 | 12 / 11 | +0.002660 | 0 |
+| 101 / 42 | 22 | 19 | 7 / 12 | +0.010051 | 0 |
+| 202 / 41 | 26 | 26 | 13 / 13 | -0.002930 | 0 |
+| 202 / 42 | 24 | 24 | 14 / 10 | -0.006652 | 0 |
+
+Most severe errors occupied the high-anchor bin, but help and harm were mixed
+inside it. Its loss change was positive for both split-101 cells and negative
+for both split-202 cells. This identifies concentration, not a reliable help/harm
+rule or a causal split effect. The high-anchor group itself had fewer than 20
+severe rows in the failed split-101/model-42 comparison.
+
+Disagreement did not establish a consistent alternative. High signed-disagreement
+severe groups had new-loss changes +0.003690, +0.005335, -0.001175, +0.001022;
+low signed-disagreement groups had -0.001274, +0.003451, -0.000052, -0.006121.
+Every signed-disagreement severe group had fewer than 20 rows. High absolute
+disagreement groups also mixed improved/worsened outcomes, with loss increases
+in both split-101 cells and decreases in both split-202 cells. These are separate
+views of the same rows, not independent confirmations or additional samples.
+
+Only 3–6 of the 27 joint bins were occupied per >7 g cohort, and none reached
+the fixed descriptive support threshold of 20. No joint bin reached that
+threshold in the >5 g cohort either. Thus this fixed-bin diagnostic does not
+establish a supported, stable rule for gating severe corrections. It also cannot
+prove absence of nonlinear signal, identify clipping as a cause, or justify
+selecting favorable bins, changing bin boundaries, or relaxing support thresholds.
+
+No gate was learned, no prerequisite or validation eligibility was evaluated, no
+candidate was selected, and no lock was created. No validation/test evidence was
+accessed. Evidence remains conditional on historical validation selection of the
+anchor/counts; holdouts overlap and split comparisons are not causal. The attempt
+stops without retries, feature/loss changes, selected thresholds, further fitting,
+or Issue #33 work. Issue #50 stays open and all prior runs remain preserved.
