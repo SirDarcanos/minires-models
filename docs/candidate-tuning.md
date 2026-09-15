@@ -1074,8 +1074,11 @@ Existing `run-015` and all prior contracts and outcomes remain immutable.
 
 ## Predeclared bounded-influence training prerequisite
 
-Status: **IMPLEMENTED NOT EXECUTED**. This is a new training-only prerequisite
-experiment, not a production candidate round or authorization to fit private data.
+Predeclaration status at commit `88f81ec`: **IMPLEMENTED NOT EXECUTED**.
+The separately authorized execution has since completed and failed the all-four
+training prerequisite; see the [recorded result](issue-50-candidate-search.md#bounded-influence-training-prerequisite-result).
+This is a new training-only prerequisite experiment, not a production candidate
+round or authorization for additional fitting.
 All existing runs, numerical contracts, and loaders remain unchanged.
 
 ### Rationale and materially distinct objective

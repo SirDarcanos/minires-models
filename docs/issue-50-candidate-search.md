@@ -1179,3 +1179,43 @@ models, publish, or start Issue #33. Evidence remains conditional on historicall
 reused-validation selection of the anchor/counts, not untouched pipeline evidence;
 within-cell pairing does not make different split comparisons causal. Existing
 runs remain preserved. No supported success or automatic next experiment is claimed.
+
+## Bounded-influence training prerequisite result
+
+The separately authorized execution, predeclared at commit `88f81ec` and on
+Issue #50 before fitting, completed all four cells and all 52 fits. Its status was
+`training_evidence_rejected` with `four_cell_training_prerequisite_failed`.
+Resource use was 148.87 elapsed seconds and 406.62 process CPU seconds. Both
+create-only manifest artifact checksums were independently recomputed and matched;
+per-cell qualification and repair/harm count identities were independently checked.
+
+Each cell evaluated 2,074 held-out training rows. Loss below is the NEW unpenalized
+bounded-influence prediction loss, not the old squared-excess diagnostic loss.
+
+| Outer split / model seed | Anchor MAE | Corrected MAE | Above-5-g count, anchor → corrected | Repairs / harms | New loss, anchor → corrected | Qualified |
+| --- | ---: | ---: | ---: | ---: | ---: | --- |
+| 101 / 41 | 0.8953 g | 0.8897 g | 34 → 34 | 1 / 1 | 7.826388 → 7.825799 | Yes |
+| 101 / 42 | 0.8838 g | 0.8696 g | 34 → 32 | 2 / 0 | 7.604106 → 7.606823 | No |
+| 202 / 41 | 0.8988 g | 0.8519 g | 35 → 34 | 1 / 0 | 7.279983 → 7.268288 | Yes |
+| 202 / 42 | 0.9501 g | 0.9139 g | 42 → 42 | 0 / 0 | 7.235202 → 7.216515 | Yes |
+
+The revised correction improved MAE in every cell and never increased serious-error
+count. The previous correction increased that count in three cells and worsened
+MAE in both split-101 cells. This is more consistent on these training-holdout
+measures, not proof of generalization or validation eligibility. It does not
+uniformly dominate the previous correction: that correction repaired five errors
+without harm in split 202/model 42, whereas this version changed no serious-error
+classifications there.
+
+Three cells passed all requirements. Split 101/model 42 failed only strict new-loss
+improvement: the ordinary component decreased by 0.003562, but the excess component
+increased by 0.006279, for a net increase of 0.002717. The predeclared rule has no
+rounding tolerance or exception for improved MAE/count. The all-four prerequisite
+therefore failed and is not reinterpreted as a pass.
+
+No validation or held-out-test evidence was accessed, no production continuation
+occurred, no candidate was selected, and no lock was created. Evidence remains
+conditional on historically validation-selected anchor/counts, and different
+split-associated holdouts are not causal comparisons. The fixed attempt stops
+without changed constants, seeds, gates, row exclusions, retries, budget recycling,
+or automatic next fitting. Issue #50 remains open; Issue #33 was not started.
