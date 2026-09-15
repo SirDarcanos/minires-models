@@ -1219,3 +1219,112 @@ conditional on historically validation-selected anchor/counts, and different
 split-associated holdouts are not causal comparisons. The fixed attempt stops
 without changed constants, seeds, gates, row exclusions, retries, budget recycling,
 or automatic next fitting. Issue #50 remains open; Issue #33 was not started.
+
+## Predeclaration: bounded-influence feature-signal diagnostic
+
+Status: **IMPLEMENTED NOT EXECUTED**. This is implementation/predeclaration of a
+training-only **descriptive** investigation, not another candidate or prerequisite
+experiment. Separate authorization is required for one prospective attempt.
+The severe >7 g cohorts have only **22–26 rows** per cell; 3D bins will be sparse,
+and more bins do not increase sample size.
+
+### Rationale and fixed question
+
+Can the existing correction inputs show associations distinguishing severe errors
+helped versus hurt by the frozen bounded-influence correction? Preserved run-017
+improved MAE in all four cells without increasing serious-error count; three
+passed its new-loss prerequisite. Split 101/model 42 failed with new-loss change
++0.002716911. Its anchor-bin loss changes were -0.002645285 (`[0,4]`),
+-0.000545987 (`(4,5]`), -0.002984902 (`(5,7]`), +0.008893085 (`>7`). Its
+22 >7 g errors split into 13 worsened and nine improved. Split 101/model 41 also
+worsened the severe bin, offset elsewhere; both split-202 cells improved it.
+Existing aggregate accounting cannot correlate those outcomes with inputs.
+This justifies descriptive instrumentation, not a claim of signal/no signal,
+reinterpreting run-017 as a pass, or changing the correction objective.
+
+The complete finite predeclaration is in
+[candidate-tuning.md](candidate-tuning.md#predeclared-bounded-influence-feature-signal-diagnostic),
+implemented as `minires-bounded-influence-feature-signal-v1`.
+It reuses `bounded_influence_training._fit_stage`: original closest base contracts,
+exact float64 `0.8*NN+(1.0-0.8)*XGBoost` anchor, original preprocessing/legacy
+seven inputs, and **87 epochs / 1,091 trees**, without early stopping. The
+unchanged correction minimizes
+`mean[0.1*H_5(e)+4*H_2.5(max(|e|-4.5,0))+c²]+0.01*sum(b²)` with
+`sum(|b|)<=2`, the same 2,000 projected-gradient steps, step, constants, and
+±2 g bound. `H_d(z)=z²` for `|z|<=d`, otherwise `2*d*|z|-d²`. No new learner,
+feature, loss, threshold tuning, bound, or discarded extra fit is introduced.
+
+### Binning, evidence, and finite stop
+
+The four cells remain outer splits **101/202**, respective inner splits
+**1101/1202**, model seeds **41/42**, and fixed five-fold identity-only assignment.
+Correction fits use only inner training-OOF predictions/targets; measurements
+use outer-held training rows only. The exact allocation is 40 inner-OOF base
+fits, eight outer-partition base fits, four corrections: **52 fits maximum /
+7,200 seconds of timed computation**. Every cell runs regardless of favorable/unfavorable
+measurements, with no qualification or continuation.
+
+Bin exactly `anchor_g`, `neural_minus_xgboost_g`, `absolute_disagreement_g` after
+the frozen state's training-OOF means/scales and ±1 clipping. Fixed bins are
+`[-1,-1/3]`, `(-1/3,1/3]`, `(1/3,1]`; float64 equality belongs to the lower bin.
+Emit all nine marginal groups and all 27 joint groups, including empty ones, for
+all outer-held rows, anchor absolute error >5 g, and anchor absolute error >7 g.
+The cohorts are nested, not additive; marginal views repeat the same rows.
+Targets define evaluation cohorts/outcomes only, not bins or preprocessing.
+No adaptive quantiles, direction selection, best-bin ranking, or optimization.
+
+Each group retains count, fixed descriptive support flag `count>=20` (empty and
+insufficient remain visible, never interpreted as no signal), signed anchor and
+corrected errors, improved/worsened/unchanged counts, correction sign/magnitude
+and toward/away/neutral counts, paired serious 2×2 transitions, and anchor,
+corrected, and delta MAE/new ordinary/excess/total loss contributions. Toward
+can overshoot and is not equivalent to improved. Serious is strictly >5 g;
+exactly ±5 is nonserious. Contributions use the **entire held cell n**, never
+subgroup/cohort size. Counts conserve exactly and sums within relative/absolute
+`1e-12` per cohort/per view; totals reconcile to run-017 numeric accounting.
+Old squared-loss diagnostics/oracle/flags remain explicitly labelled old;
+`new_descriptive_loss` is separate and no loss qualifies a model. Existing
+complete finite OOF/full-fit shift summaries are retained.
+
+The create-only plan precedes fitting and binds full contracts, seeds/folds,
+bins/cohorts/support/accounting, budget, training-only checksum/code provenance,
+and required/observed pinned environment. Aggregate evidence and manifest retain
+all completed/failed/uncompleted cells and partial fit accounting. No row vectors,
+predictions, per-row inputs, source identities/groups/families, or mappings appear
+in evidence. No production model/state artifact is written. Invalid shape/state,
+nonfinite/bounds/overflow/preprocessing, nonconservation, runtime or deadline
+failures block; no rows or fits are replaced. Artifact-write failures cannot
+return a complete package; running backend fits cannot be forcibly interrupted.
+The deadline and elapsed/CPU reporting end at the final post-summary clock sample:
+loading/normalization and initial plan writing are included; CLI preflight,
+directory creation, and final finite-tree validation, evidence serialization/writes,
+checksum reads, and manifest writing are excluded. This is a compute budget, not
+a whole-command wall-clock limit. This cutoff was clarified during review before
+any execution; no completed run or fitting contract was changed.
+
+The training-only CLI verifies the committed training checksum and Python 3.13,
+NumPy 2.2.6, Keras 3.15.0, TensorFlow 2.20.0, scikit-learn 1.7.2, XGBoost 3.1.2.
+No validation/test or tuning/selection/qualification/lock argument is available.
+The prospective command has **not** run and run-018 was not created/inspected:
+
+```bash
+.venv-candidates/bin/python -m minires.modeling.bounded_influence_feature_signal \
+  --training-records data/train.jsonl \
+  --output-root private/candidate-tuning/run-018 \
+  --volume-unit mm3 \
+  --scope-confirmed
+```
+
+Stop after one completed or blocked attempt, regardless of outcomes. Execution
+requires separate authorization after committed predeclaration and a source-neutral
+Issue #50 predeclaration. There is no automatic learned gate, selection,
+qualification, production fit, validation/test access/fingerprinting, locking,
+retry, changed constants/features, or capacity recycling. Descriptive associations
+cannot prove out-of-sample gating or predictive/causal conclusions, and fixed
+bins cannot rule out nonlinear signal. Empty/sparse bins are not absence of
+signal. Overlapping holdouts are not independent; comparisons remain conditional
+on historically reused-validation-selected anchor/counts, not untouched pipeline
+evidence. Legacy `kb`/`scale` may still be source/style proxies. Implementation
+uses synthetic tests only, with no private fitting, dataset contents read,
+publication, commits/pushes, issue operations, or Issue #33 work. All prior runs
+and contracts remain unchanged.

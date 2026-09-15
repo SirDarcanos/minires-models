@@ -1319,3 +1319,195 @@ shop consumption, pricing accuracy, or an operational allowance. The legacy
 reference remains a numerical comparator whose historical training provenance
 is unknown; candidate source isolation does not reclassify it as clean holdout
 evidence.
+
+## Predeclared bounded-influence feature-signal diagnostic
+
+Status: **IMPLEMENTED NOT EXECUTED**. Implementation/predeclaration only; a
+separate authorization is required before one prospective training-only attempt.
+This descriptive investigation asks whether the **existing correction inputs**
+show associations distinguishing severe errors helped versus hurt by the frozen
+bounded-influence correction. It does not fit a gate or qualify a candidate.
+**The historical >7 g cohorts contain only 22–26 rows per cell. Three-dimensional
+binning will be sparse; more bins do not create more samples.**
+
+### Rationale and frozen fitting contract
+
+Preserved run-017 improved MAE in all four cells without increasing serious-error
+count, but only three cells passed its new-loss prerequisite. Split 101/model 42
+had new-loss change +0.002716911. Its changes by anchor absolute-error bin were
+-0.002645285 for `[0,4]`, -0.000545987 for `(4,5]`, -0.002984902 for `(5,7]`,
+and +0.008893085 for `>7`; rounded contributions sum to the rounded total.
+Of its 22 errors beyond 7 g, 13 worsened and nine improved. Split 101/model 41
+also worsened that severe bin, offset elsewhere; both split-202 cells improved it.
+Those preserved aggregates cannot correlate outcomes with correction features.
+They justify prospective descriptive instrumentation, not an objective change,
+claim of missing signal, or reinterpretation of the failed prerequisite.
+
+`minires-bounded-influence-feature-signal-v1` reuses
+`bounded_influence_training._fit_stage` without modifying any prior contract.
+The exact float64 anchor remains `0.8*NN + (1.0-0.8)*XGBoost`; original base
+contracts, seven legacy inputs, preprocessing, and **87 epochs / 1,091 trees**
+are frozen, without early stopping. No new geometry, source/family/identity,
+linkage, partition, path, or join-key prediction input is added. Retained `kb` and
+`scale` have uncertain historical semantics and may remain source/style proxies.
+
+The unchanged `minires-bounded-influence-correction-v1` fits
+
+```text
+H_d(z) = z² if |z| <= d, otherwise 2*d*|z| - d²
+c = D*b; e = anchor + c - target
+minimize mean[0.1*H_5(e) + 4*H_2.5(max(|e|-4.5,0)) + c²]
+         + 0.01*sum(b²), subject to sum(|b|) <= 2 g
+```
+
+Its four-column design adds an intercept to the three inputs below. Exactly
+2,000 zero-initialized Euclidean L1-projected-gradient steps use the existing
+`1/(2*5.1*sum(D²)/n_train + 0.02)` step. The intercept participates in both
+penalties and the L1 bound; prediction retains the final ±2 g roundoff clip.
+No loss, constant, bound, feature, coefficient-fitting algorithm, or target changes.
+
+The fixed four cells cross outer split seeds **101/202** (respective inner split
+seeds **1101/1202**) with model seeds **41/42**. Five-fold identity-only SHA-256
+round-robin assigns outer fold zero as the 20% training holdout. Each cell fits
+its bases only on the other 80%, forms exactly one excluded-inner-fold OOF
+prediction per training row/base, fits one frozen correction on those OOF inputs
+and training targets, and fits both bases on that 80% partition for outer-held
+prediction. All preprocessing is learned only on the relevant training rows;
+correction means/scales come only from **training OOF** predictions, never full-fit
+or outer-held statistics. Outer targets measure outcomes, not fitting or bins.
+
+Exactly 40 inner-OOF base fits, eight outer-partition base fits, and four existing
+numerical correction fits are allocated: **52 fits maximum / 7,200 seconds of
+timed computation**, with no additional learner, discarded correction, or production stage.
+All four cells are measured regardless of favorable/unfavorable metrics.
+
+### Fixed feature bins, cohorts, and accounting
+
+Bin the exact correction input representation, in this fixed order:
+
+1. `anchor_g`;
+2. `neural_minus_xgboost_g` (signed disagreement);
+3. `absolute_disagreement_g`.
+
+For each input use the frozen state's training-OOF mean and population standard
+deviation (the existing floor rule replaces scales <=`1e-12` with 1), then
+`z_j = clip((input_j - mean_j)/scale_j, -1, 1)`, exactly as at prediction.
+No intercept is binned. Every feature has exactly these three fixed bins:
+
+| Label | Interval | Boundary assignment |
+| --- | --- | --- |
+| `low` | `[-1,-1/3]` | -1 and exactly -1/3 included |
+| `middle` | `(-1/3,1/3]` | exactly +1/3 included |
+| `high` | `(1/3,1]` | +1 included |
+
+Edges use float64 `-1.0/3.0` and `1.0/3.0`; equality goes to the lower bin.
+Emit all **nine marginal groups** (three views of three bins) and all **27 joint
+groups** in the feature order above, including every empty bin. Joint keys use
+`anchor_bin|signed_disagreement_bin|absolute_disagreement_bin`, in fixed
+low/middle/high Cartesian order, never performance order. No adaptive quantiles,
+direction selection, best-bin ranking, or threshold/feature optimization.
+
+Each view is emitted for `all` outer-held rows, `anchor_gt5` with strict anchor
+absolute error >5 g, and `anchor_gt7` with strict anchor absolute error >7 g.
+**These cohorts are nested; never sum across cohorts. Each marginal repeats the
+same cohort, so never sum across marginal views either.** Targets define only
+these evaluation cohorts and outcomes, not preprocessing, input bins, or models.
+
+Every group records:
+
+- count; `support_sufficient = count >= 20`, a fixed engineering **descriptive**
+  threshold, not a statistical test; `support_status` is `empty`, `insufficient`,
+  or `sufficient`. Retain every count/contribution below 20. Empty or insufficient
+  support is **not evidence of no signal**, and sufficient support proves nothing;
+- anchor and corrected residual-sign counts: prediction minus target, negative
+  means underestimate, positive overestimate, zero exact agreement;
+- absolute-error improved/worsened/unchanged counts using strict less/greater/equal;
+- actual correction `corrected-anchor`: signed and absolute sums, maximum absolute
+  magnitude, negative/zero/positive counts, and toward/away/neutral counts. Toward
+  means opposite nonzero signs of anchor error and correction, away matching
+  nonzero signs, neutral either zero. **Toward is not improved: overshoot can
+  worsen absolute error or leave it equal**;
+- the paired serious-error 2×2 counts: stable nonserious, harm (nonserious→serious),
+  repair (serious→nonserious), persistent serious; strict `abs(error)>5 g`, exactly
+  ±5 nonserious; and anchor/corrected above-5-g counts and their difference;
+- anchor/corrected MAE, ordinary `0.1*H_5(e)`, weighted excess
+  `4*H_2.5(max(|e|-4.5,0))`, and total new prediction-loss contributions, plus
+  corrected-minus-anchor deltas. **All contributions divide subgroup sums by the
+  entire held cell's n, not subgroup size or cohort size.** Both fitting penalties
+  are excluded. Empty groups have zero sums/contributions and maximum magnitude.
+
+Within each cohort, each marginal and the joint partition separately conserve all
+counts exactly and all contributions/sums to relative/absolute `1e-12`; maxima
+reconcile by maximum, not sum. Serious-count delta equals harms minus repairs.
+Cohort totals independently reconcile to the existing run-017 numeric accounting
+(total, `(5,7]` plus `>7`, and `>7` respectively). The complete old transition
+helper output is retained under **`paired_transitions_with_old_diagnostic_loss`**:
+all its losses, label-aware theoretical oracle and old flags use the OLD squared
+loss, not bounded-influence loss or qualification. New baseline loss is separately
+labelled **`new_descriptive_loss`** and never used to qualify. This preserves
+full-cell/anchor-bin checks for later aggregate comparison with run-017 without
+reading its private evidence or assuming numerical rerun equality now. Existing
+complete finite per-base, anchor, and corrected OOF/full-fit shift summaries remain.
+
+Wrong shape, nonfinite/out-of-range values, overflowing standardization/arithmetic,
+malformed state, departure beyond ±2 g (allowing the existing four-ulp paired
+addition roundoff), nonconserving evidence, invalid backend preprocessing, or
+incomplete fits block completion. No row is dropped, imputed, or substituted.
+
+### Artifacts, command, and stop/interpretation limits
+
+The create-only package contains `diagnostic-plan.json` (before any fit),
+`feature-signal-evidence.json`, and `manifest.json` checksumming both. The private
+plan binds full frozen numeric/base/runtime/preprocessing contracts, ordered
+features/bins/cohorts, normalization, seeds/folds, support/accounting, exact budget,
+expected training checksum, observed training-only input/code identities, and
+required/observed dependencies/platform. Evidence retains completed cells and
+failed/uncompleted accounting, fits started/completed/unused, elapsed and CPU time,
+and explicitly false qualification/selection/locking/continuation attestations.
+No raw rows, predictions, per-row feature values, identities, source groups,
+source/family values, or mappings are emitted. Existing private plan checksum
+provenance is not published evidence; no model/state artifacts are saved for use.
+
+The training-only CLI has no validation/test, seed, budget, bins/support, feature,
+loss, qualification, selection, or lock knob. It verifies only the committed
+training checksum and pinned Python **3.13**, NumPy **2.2.6**, Keras **3.15.0**,
+TensorFlow **2.20.0**, scikit-learn **1.7.2**, and XGBoost **3.1.2** before fitting.
+The in-memory runtime seam remains available for synthetic tests. A separately
+authorized one-time execution after committed predeclaration and a source-neutral
+Issue #50 predeclaration would use fresh create-only **run-018**:
+
+```bash
+.venv-candidates/bin/python -m minires.modeling.bounded_influence_feature_signal \
+  --training-records data/train.jsonl \
+  --output-root private/candidate-tuning/run-018 \
+  --volume-unit mm3 \
+  --scope-confirmed
+```
+
+Stop after one completed or blocked attempt, **regardless of outcome**. The
+7,200-second deadline and reported elapsed/CPU time cover the runner from its
+post-directory-creation clock start through the final post-summary clock sample.
+They include loading/normalization and the initial plan write, but exclude CLI
+preflight and final artifact packaging (finite-tree validation, evidence JSON
+serialization/writes, checksum reads, and manifest writing). They are not a
+whole-command wall-clock limit. Deadline checks surround fits, predictions in the
+reused stage, summaries, and the computation-completion decision; a running
+backend fit cannot be forcibly interrupted. Invalid/runtime/deadline
+failure preserves completed cells and partial fit counts without replacement.
+Artifact-write failure cannot return a complete checksummed package. No selection,
+qualification, production fit, validation/test access or fingerprints, ranking,
+locking, learned gate, retry, budget recycling, or automatic continuation exists.
+
+Fixed-bin descriptive associations can inform a later separately authorized
+investigation but **cannot prove out-of-sample gating, establish predictive or
+causal conclusions, or rule out nonlinear signal**. Sparse joint bins and empty
+bins do not imply no signal. Signed and absolute disagreement are dependent, not
+three independent information sources. Comparisons are paired within cell;
+overlapping training holdouts are **not independent**, and different split
+contrasts are not paired or causal. Evidence is conditional on historically
+reused-validation-selected anchor/counts, not untouched pipeline evidence. No
+many-bin multiplicity is treated as increased sample size. Any learned gate or
+further experiment requires a new decision/predeclaration and authorization.
+This implementation performs synthetic tests only: no private fitting, dataset
+contents or validation/test reads/fingerprints, run-directory creation, publication,
+or Issue #33 work. Prior runs and contracts remain immutable.
