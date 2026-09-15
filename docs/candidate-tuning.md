@@ -1758,3 +1758,112 @@ The investigation read no dataset, source, validation, or held-out artifact,
 performed zero model fits, changed no row, and created no candidate or lock. It
 stops without retry, reslicing, predictor work, automatic continuation, or Issue
 #33 work.
+
+## Predeclared end-to-end bounded tail-risk plan
+
+Status: **IMPLEMENTED NOT EXECUTED**. Restoring complete private STL geometry for
+an occupied-geometry representation is deferred under Issue #53. This separately
+bounded round uses only the existing seven legacy-compatible inputs. It tests a
+new training intervention rather than inferring topology from canonical rows or
+reusing the failed post-hoc correction route.
+
+### Hypothesis and fixed objective
+
+The run-011 closest candidate is 80% neural network and 20% XGBoost. Later
+training-only correction evidence showed that bounding serious-tail influence
+improved ordinary and serious-error behavior more consistently than an unbounded
+squared-excess correction, but a ±2 g post-hoc correction could not repair the
+severe tail. The falsifiable hypothesis is that training the full closest neural
+base end to end with that bounded serious-tail objective can reduce strict
+above-5-g errors enough for a fixed candidate to satisfy every unchanged gate.
+
+For prediction error `e = prediction - sliced_resin_mass`, define `H_d(z)` as
+`z²` when `abs(z) <= d`, otherwise `2*d*abs(z) - d²`. The one fixed neural loss is:
+
+```text
+mean[0.1*H_5(e) + 4*H_2.5(max(abs(e) - 4.5 g, 0))]
+```
+
+Its prediction derivative is
+`0.2*clip(e,-5,5) + 8*sign(e)*min(max(abs(e)-4.5,0),2.5)` and is bounded in
+magnitude by 21. There is no loss coefficient, margin, architecture, weight,
+seed, or threshold sweep. The named implementation is
+`bounded_serious_tail_loss` under `minires-bounded-tail-risk-v1`; loading saved
+models remains compile-free.
+
+The legacy anchor neural contract is Mish 256/128/64, dropout 0.1, Adam,
+learning rate 0.003, L2 `1e-5`, batch 256, and exactly 87 epochs. The tail neural
+contract changes only its loss. The shared XGBoost contract is exactly 1,091
+trees, depth 9, learning rate 0.05, subsample 0.9, column sample 0.9, minimum
+child weight 10, gamma 0.2, alpha 0.1, lambda 10, squared-error objective,
+`hist`, and one worker. No fit uses early stopping. Ensemble arithmetic is
+float64 `0.8 * neural + (1.0 - 0.8) * xgboost`.
+
+Exactly three candidate identities are scored: the tail neural network, its
+fixed 80/20 XGBoost ensemble, and the unchanged closest 80/20 anchor control.
+The three underlying base fits are accounting, not additional candidates.
+
+### Training-only prerequisite
+
+Before validation scoring, outer split seeds 101 and 202 are crossed with model
+seeds 41 and 42. Stable SHA-256 identity ordering assigns five folds and holds
+fold zero out. In each of the four cells, the legacy neural network, tail neural
+network, and XGBoost fit only the other 80% with their fixed counts, then predict
+the held training rows. Source groups, miniature families, targets, and geometry
+do not determine assignment; source and family metadata never enter fitting or
+prediction matrices.
+
+One fixed intervention qualifies the route only if that same intervention has no
+higher strict above-5-g count than the closest anchor in every cell, has a lower
+sum of above-5-g counts across all four cells, and has no higher pooled aggregate
+MAE. Aggregate MAE is total absolute error divided by total row-cell evaluations
+across the four cells. Tail neural and tail ensemble are checked independently.
+If either qualifies, all three candidates continue; training evidence never
+selects between interventions. If neither qualifies, the run ends as
+`training_evidence_rejected` without production fitting or validation scoring.
+Metric failure does not skip later honest cells; invalid, runtime, fit-limit, or
+deadline failure blocks.
+
+### Conditional validation, lock, and finite stop
+
+After a supported route, each model seed fits all three bases on all training rows
+with fixed counts and no validation fitting. All three candidates are then scored
+on validation under both seeds regardless of seed-41 eligibility. Validation
+labels only calculate source-neutral metrics, unchanged gates, and ranking.
+Eligibility remains at most 1% pooled above-5-g, 1% under equal source weighting,
+and 2% for every qualifying anonymous source group. A lock requires seed 41,
+seed 42, and their equal metric combination to pass. It serializes the exact
+seed-42 training-only state already scored; there is no additional refit.
+
+The hard ceilings are 12 honest base fits plus six conditional production base
+fits (**18 total**), six validation candidate evaluations, and 7,200 seconds.
+The fit budget applies to started attempts. Accounting records each attempt's stage,
+outer split when applicable, model seed, fixed base identity and index, and whether
+it completed or failed with a bounded reason; attempted, completed, and failed
+totals remain distinct. Deadline checks run before every fit, after each fit and
+prediction, after each validation score, before combination and locking, after any
+provisional lock, and before final completion. An expired provisional lock is not
+accepted. There is no retry, replacement, budget recycling, changed candidate,
+automatic expansion, row omission, gate relaxation, or held-out-test access. The
+create-only package contains the search plan, aggregate honest evidence, tuning
+result, public drafts/review, manifest, complete fit accounting, and any verified
+lock. Private artifacts contain no raw row vectors or paths; public output contains
+no source values, identities, mappings, or fingerprints.
+
+The command verifies the committed training/validation checksums and pinned Python
+3.13 candidate environment before any fit. This implementation and synthetic test
+coverage do not authorize execution. After a committed source-neutral Issue #50
+predeclaration and separate authorization, the sole prospective invocation uses
+fresh create-only `run-021`:
+
+```bash
+.venv-candidates/bin/python -m minires.modeling.tuning \
+  --training-records data/train.jsonl \
+  --validation-records data/validation.jsonl \
+  --output-root private/candidate-tuning/run-021 \
+  --volume-unit mm3 --scope-confirmed --seed 41 \
+  --plan-kind bounded_tail_risk
+```
+
+Stop after one completed, rejected, or blocked attempt. Do not access or fingerprint
+the held-out test artifact, start Issue #33, or reinterpret prior runs.

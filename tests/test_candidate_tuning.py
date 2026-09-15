@@ -18,6 +18,7 @@ from minires.evaluation.assessment import (
 )
 from minires.ingestion import fingerprint, load_records, normalize
 from minires.source_identity import code_fingerprint
+from minires.modeling import bounded_tail_risk
 from minires.modeling.guarded_residual import (
     FLOAT32_MAXIMUM as GUARDED_RESIDUAL_FLOAT32_MAXIMUM,
     fit_state as fit_guarded_residual_state,
@@ -822,6 +823,38 @@ class CandidateSearchPlanTests(unittest.TestCase):
                 dependency_versions={"runtime": "synthetic-1"},
             )
 
+    def test_bounded_tail_risk_plan_is_fixed_finite_and_source_neutral(self):
+        limits = SearchLimits.for_plan(41, "bounded_tail_risk")
+
+        first = generate_search_plan(
+            limits, input_fingerprint="input", code_fingerprint="code",
+            dependency_versions={"runtime": "synthetic-1"},
+        )
+        second = generate_search_plan(
+            limits, input_fingerprint="input", code_fingerprint="code",
+            dependency_versions={"runtime": "synthetic-1"},
+        )
+
+        self.assertEqual(first, second)
+        self.assertEqual((first.seed, first.second_seed), (41, 42))
+        self.assertEqual(first.generator["plan_kind"], "bounded_tail_risk")
+        self.assertEqual(first.parameter_domains, {"neural_network": {}, "xgboost": {}})
+        self.assertEqual(len(first.component_trials), 3)
+        self.assertEqual(len(first.ensemble_rules), 3)
+        self.assertEqual(
+            [rule["scored_kind"] for rule in first.ensemble_rules],
+            ["bounded_tail_neural", "bounded_tail_ensemble", "closest_anchor_control"],
+        )
+        self.assertEqual(first.resource_limits["maximum_model_fits"], 18)
+        self.assertEqual(first.resource_limits["maximum_validation_candidate_evaluations"], 6)
+        self.assertEqual(first.resource_limits["maximum_candidate_runs"], 6)
+        self.assertEqual(first.resource_limits["maximum_elapsed_seconds"], 7200.0)
+        self.assertEqual(first.second_seed_rule["candidate_count"], 3)
+        self.assertEqual(first.second_seed_rule["selection"], "all_three_fixed_candidates")
+        serialized = json.dumps(first.to_dict(), sort_keys=True)
+        self.assertNotIn("anonymous_source_group", serialized)
+        self.assertNotIn("miniature_family", serialized)
+
     def test_invalid_domains_and_resources_fail_at_the_plan_generation_interface(self):
         invalid = {
             "neural_network": {
@@ -1136,6 +1169,39 @@ class AugmentedGeometryRecordingRuntime(RecordingTuningRuntime):
         return predict
 
 
+class BoundedTailRiskRuntime(RecordingTuningRuntime):
+    def __init__(self, *, improve=True, fail_on_refit=None,
+                 invalidate_seed42_preprocessing=False):
+        super().__init__()
+        self.improve = improve
+        self.fail_on_refit = fail_on_refit
+        self.invalidate_seed42_preprocessing = invalidate_seed42_preprocessing
+
+    def refit(self, candidate, seed, features, targets, fixed_training_counts):
+        self.refit_calls.append((candidate.candidate_id, tuple(features), fixed_training_counts))
+        if len(self.refit_calls) == self.fail_on_refit:
+            raise RuntimeError("private runtime detail")
+        is_tail = candidate.parameters.get("loss") == bounded_tail_risk.LOSS_NAME
+        is_legacy = (
+            candidate.family == "neural_network"
+            and candidate.parameters.get("loss") == "huber"
+        )
+        shift = 8.0 if is_legacy or (is_tail and not self.improve) else 0.0
+        preprocessing = (
+            {}
+            if self.invalidate_seed42_preprocessing and seed == 42
+            else {"mean": [0.0] * 7, "variance": [1.0] * 7}
+            if candidate.family == "neural_network"
+            else {"xgboost": "unnormalized_float32"}
+        )
+        return LockedFit(
+            predictor=lambda rows: [row[1] / 1000.0 + shift for row in rows],
+            preprocessing_state=preprocessing,
+            artifacts={"model.bin": candidate.candidate_id.encode()},
+            metadata={"seed": seed, "validation_used": False},
+        )
+
+
 class ExplicitPartitionDevelopmentTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
@@ -1155,6 +1221,204 @@ class ExplicitPartitionDevelopmentTests(unittest.TestCase):
             "anonymous_source_group": "private-source", "partition": "poison",
             "duplicate_group": f"private-link-{identity}", "join_key": "private-join",
         }
+
+    def test_bounded_tail_risk_stops_before_validation_when_honest_gate_fails(self):
+        runtime = BoundedTailRiskRuntime(improve=False)
+
+        result = develop_candidates(
+            self.training, self.validation, self.config, runtime=runtime,
+            output_root=self.root / "bounded-tail-rejected",
+            limits=SearchLimits.for_plan(41, "bounded_tail_risk"), clock=lambda: 0.0,
+        )
+
+        self.assertEqual(result.status, "training_evidence_rejected")
+        self.assertEqual(result.blockers, ("bounded_tail_risk_training_prerequisite_failed",))
+        self.assertEqual(len(runtime.refit_calls), 12)
+        self.assertEqual(result.run_count, 0)
+        self.assertEqual(result.initial_results, ())
+        evidence = json.loads((self.root / "bounded-tail-rejected" /
+                               "honest-training-evidence.json").read_text())
+        self.assertFalse(evidence["route_to_validation"])
+        self.assertEqual(set(evidence["cells"]), {"101:41", "101:42", "202:41", "202:42"})
+
+    def test_bounded_tail_risk_scores_all_candidates_both_seeds_and_reuses_lock_state(self):
+        runtime = BoundedTailRiskRuntime(improve=True)
+
+        result = develop_candidates(
+            self.training, self.validation, self.config, runtime=runtime,
+            output_root=self.root / "bounded-tail-completed",
+            limits=SearchLimits.for_plan(41, "bounded_tail_risk"), clock=lambda: 0.0,
+        )
+
+        expected_ids = [
+            bounded_tail_risk.candidate(kind).candidate_id
+            for kind in bounded_tail_risk.SCORED_KINDS
+        ]
+        self.assertEqual(result.status, "completed")
+        self.assertEqual(result.run_count, 6)
+        self.assertEqual([run.candidate.candidate_id for run in result.initial_results], expected_ids)
+        self.assertEqual([run.candidate.candidate_id for run in result.second_seed_results], expected_ids)
+        self.assertEqual([run.seed for run in result.initial_results], [41, 41, 41])
+        self.assertEqual([run.seed for run in result.second_seed_results], [42, 42, 42])
+        self.assertEqual(len(runtime.refit_calls), 18)
+        self.assertEqual(result.resource_use["model_fit_attempts"], 18)
+        self.assertEqual(result.resource_use["completed_model_fits"], 18)
+        self.assertEqual(result.resource_use["failed_model_fits"], 0)
+        self.assertIsNotNone(result.locked_candidate)
+        self.assertEqual(result.locked_candidate.contract["runtime_metadata"]["seed"], 42)
+        self.assertEqual(len(runtime.refit_calls), 18, "locking must not refit")
+        reloaded = load_locked_candidate(
+            self.root / "bounded-tail-completed" / "locked-candidate", runtime,
+        )
+        self.assertEqual(reloaded.candidate, result.locked_candidate.candidate)
+
+    def test_bounded_tail_risk_deadline_blocks_without_recycling(self):
+        runtime = BoundedTailRiskRuntime(improve=True)
+        moments = iter((0.0, 0.0, 7200.0, 7200.0, 7200.0))
+
+        result = develop_candidates(
+            self.training, self.validation, self.config, runtime=runtime,
+            output_root=self.root / "bounded-tail-deadline",
+            limits=SearchLimits.for_plan(41, "bounded_tail_risk"),
+            clock=lambda: next(moments),
+        )
+
+        self.assertEqual(result.status, "blocked")
+        self.assertEqual(result.blockers, ("candidate_search_deadline_reached",))
+        self.assertEqual(result.resource_use["model_fit_attempts"], 1)
+        self.assertEqual(result.resource_use["completed_model_fits"], 1)
+        self.assertEqual(result.resource_use["failed_model_fits"], 0)
+        self.assertEqual(len(runtime.refit_calls), 1)
+        self.assertEqual(result.run_count, 0)
+
+    def test_bounded_tail_risk_runtime_failure_has_truthful_bounded_fit_accounting(self):
+        runtime = BoundedTailRiskRuntime(improve=True, fail_on_refit=3)
+        root = self.root / "bounded-tail-runtime-failure"
+
+        result = develop_candidates(
+            self.training, self.validation, self.config, runtime=runtime,
+            output_root=root, limits=SearchLimits.for_plan(41, "bounded_tail_risk"),
+            clock=lambda: 0.0,
+        )
+
+        self.assertEqual(result.status, "blocked")
+        self.assertEqual(result.blockers, ("candidate_runtime_failed",))
+        self.assertEqual(result.resource_use["model_fit_attempts"], 3)
+        self.assertEqual(result.resource_use["completed_model_fits"], 2)
+        self.assertEqual(result.resource_use["failed_model_fits"], 1)
+        evidence = json.loads((root / "honest-training-evidence.json").read_text())
+        attempts = evidence["fit_accounting"]["attempts"]
+        self.assertEqual([item["status"] for item in attempts], ["completed", "completed", "failed"])
+        self.assertEqual(attempts[-1]["bounded_failure_reason"], "candidate_runtime_failed")
+        self.assertEqual(attempts[-1]["stage"], "honest_training")
+        self.assertEqual(attempts[-1]["outer_split_seed"], 101)
+        self.assertEqual(attempts[-1]["model_seed"], 41)
+        self.assertEqual(attempts[-1]["base_index"], 3)
+        self.assertNotIn("private runtime detail", json.dumps(evidence))
+
+    def test_bounded_tail_risk_lock_rejects_coordinated_honest_evidence_tampering(self):
+        runtime = BoundedTailRiskRuntime(improve=True)
+        root = self.root / "bounded-tail-tamper"
+        result = develop_candidates(
+            self.training, self.validation, self.config, runtime=runtime,
+            output_root=root, limits=SearchLimits.for_plan(41, "bounded_tail_risk"),
+            clock=lambda: 0.0,
+        )
+        self.assertIsNotNone(result.locked_candidate)
+        lock = root / "locked-candidate"
+        honest_path = lock / "honest-training-evidence.json"
+        contract_path = lock / "candidate-contract.json"
+        honest = json.loads(honest_path.read_text())
+        cell = honest["cells"]["101:41"]
+        cell["held_out_record_count"] += 1
+        for metrics in cell["metrics"].values():
+            metrics["count"] += 1
+            metrics["absolute_error_sum_g"] += metrics["mae_g"]
+        honest["interventions"], honest["route_to_validation"] = (
+            bounded_tail_risk._route_decision(honest["cells"])
+        )
+        honest_path.write_text(json.dumps(honest))
+        contract = json.loads(contract_path.read_text())
+        contract["development_evidence"]["honest_training_fingerprint"] = fingerprint(honest)
+        contract_path.write_text(json.dumps(contract))
+        manifest_path = lock / "lock-manifest.json"
+        manifest = json.loads(manifest_path.read_text())
+        for path in (honest_path, contract_path):
+            manifest["files"][path.name] = sha256(path.read_bytes()).hexdigest()
+        manifest_path.write_text(json.dumps(manifest))
+
+        blockers, _, _ = verify_locked_candidate_files(
+            lock, runtime.dependency_versions,
+        )
+        self.assertIn("locked_candidate_contract_mismatch", blockers)
+
+    def test_bounded_tail_risk_lock_rejects_invalid_base_preprocessing(self):
+        runtime = BoundedTailRiskRuntime(improve=True)
+        root = self.root / "bounded-tail-preprocessing-tamper"
+        result = develop_candidates(
+            self.training, self.validation, self.config, runtime=runtime,
+            output_root=root, limits=SearchLimits.for_plan(41, "bounded_tail_risk"),
+            clock=lambda: 0.0,
+        )
+        self.assertIsNotNone(result.locked_candidate)
+        lock = root / "locked-candidate"
+        preprocessing_path = lock / "preprocessing-state.json"
+        preprocessing = json.loads(preprocessing_path.read_text())
+        preprocessing["base_1"] = {"mean": [0.0], "variance": [1.0]}
+        preprocessing_path.write_text(json.dumps(preprocessing))
+        manifest_path = lock / "lock-manifest.json"
+        manifest = json.loads(manifest_path.read_text())
+        manifest["files"][preprocessing_path.name] = sha256(
+            preprocessing_path.read_bytes()
+        ).hexdigest()
+        manifest_path.write_text(json.dumps(manifest))
+
+        blockers, _, _ = verify_locked_candidate_files(
+            lock, runtime.dependency_versions,
+        )
+        self.assertIn("locked_candidate_contract_mismatch", blockers)
+
+    def test_bounded_tail_risk_failed_lock_verification_removes_provisional_lock(self):
+        runtime = BoundedTailRiskRuntime(
+            improve=True, invalidate_seed42_preprocessing=True,
+        )
+        root = self.root / "bounded-tail-invalid-lock"
+
+        result = develop_candidates(
+            self.training, self.validation, self.config, runtime=runtime,
+            output_root=root, limits=SearchLimits.for_plan(41, "bounded_tail_risk"),
+            clock=lambda: 0.0,
+        )
+
+        self.assertEqual(result.status, "blocked")
+        self.assertEqual(result.blockers, ("candidate_refit_or_lock_failed",))
+        self.assertIsNone(result.locked_candidate)
+        self.assertFalse((root / "locked-candidate").exists())
+
+    def test_bounded_tail_risk_expiry_after_lock_creation_rejects_provisional_lock(self):
+        runtime = BoundedTailRiskRuntime(improve=True)
+        calls_after_final_fit = 0
+
+        def clock():
+            nonlocal calls_after_final_fit
+            if len(runtime.refit_calls) < 18:
+                return 0.0
+            calls_after_final_fit += 1
+            return 7200.0 if calls_after_final_fit >= 11 else 0.0
+
+        root = self.root / "bounded-tail-late-deadline"
+        result = develop_candidates(
+            self.training, self.validation, self.config, runtime=runtime,
+            output_root=root, limits=SearchLimits.for_plan(41, "bounded_tail_risk"),
+            clock=clock,
+        )
+
+        self.assertEqual(result.status, "blocked")
+        self.assertEqual(result.blockers, ("candidate_search_deadline_reached",))
+        self.assertIsNone(result.locked_candidate)
+        self.assertFalse((root / "locked-candidate").exists())
+        self.assertEqual(result.run_count, 6)
+        self.assertIn("bounded_tail_risk", tuning_parser().format_help())
 
     def test_training_and_validation_artifacts_are_separate_and_validation_selects(self):
         first_runtime = ValidationSensitiveRuntime()

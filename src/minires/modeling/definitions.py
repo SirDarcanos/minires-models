@@ -671,9 +671,13 @@ class TensorflowXGBoostBackend:
             tf.keras.optimizers.AdamW if parameters["optimizer"] == "adamw"
             else tf.keras.optimizers.Adam
         )
+        loss = parameters["loss"]
+        if loss == "bounded_serious_tail_loss":
+            from .bounded_tail_risk import tensorflow_loss
+            loss = tensorflow_loss(tf)
         model.compile(
             optimizer=optimizer_class(float(parameters["learning_rate"])),
-            loss=parameters["loss"], metrics=[tf.keras.metrics.MeanAbsoluteError()],
+            loss=loss, metrics=[tf.keras.metrics.MeanAbsoluteError()],
         )
         kwargs: dict[str, Any] = {
             "verbose": 0, "shuffle": True,
@@ -883,7 +887,10 @@ def _validate_neural_parameters(parameters: Mapping[str, Any]) -> None:
         or any(not _positive_int(value) for value in layers)
         or parameters["activation"] not in {"relu", "selu", "mish"}
         or parameters["optimizer"] not in {"adam", "adamw"}
-        or parameters["loss"] not in {"mean_absolute_error", "huber", "mean_squared_error"}
+        or parameters["loss"] not in {
+            "mean_absolute_error", "huber", "mean_squared_error",
+            "bounded_serious_tail_loss",
+        }
         or not _bounded_number(parameters["dropout"], 0.0, 1.0, upper_inclusive=False)
         or not _positive_number(parameters["learning_rate"])
         or not _bounded_number(parameters["l2"], 0.0, math.inf)

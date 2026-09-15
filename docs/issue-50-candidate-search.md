@@ -1516,3 +1516,63 @@ artifact, performed zero model fits, changed no row, and created no candidate or
 lock. It stops without retry, reslicing, predictor work, gate changes, promotion,
 automatic continuation, or Issue #33 work. Issue #50 remains open for a separately
 justified next step.
+
+## Predeclaration: end-to-end bounded tail-risk training
+
+Status: **IMPLEMENTED NOT EXECUTED**. Complete raw STL restoration and a future
+occupied-geometry representation are deferred under Issue #53. This round instead
+tests one materially distinct training intervention using only the unchanged seven
+legacy-compatible prediction inputs. It neither resumes the resolved geometry-
+contract inquiry nor reinterprets run-019's historical route.
+
+The hypothesis is that applying the bounded serious-tail objective to the full
+closest neural base, rather than to a post-hoc correction limited to ±2 g, can
+reduce strict above-5-g errors enough for a candidate to satisfy every unchanged
+validation gate. For error `e = prediction - target`, the sole fixed loss is
+`mean[0.1*H_5(e) + 4*H_2.5(max(abs(e)-4.5,0))]`, where `H_d` is quadratic through
+`d` and linear afterward. Its prediction derivative is bounded by 21. There is no
+loss, architecture, feature, threshold, ensemble-weight, or seed sweep.
+
+The exact closest contracts are frozen at a Mish 256/128/64 neural network with
+dropout 0.1, Adam, learning rate 0.003, L2 `1e-5`, batch 256, and 87 epochs, plus
+the depth-9 XGBoost model with learning rate 0.05, 1,091 trees, subsample and column
+sample 0.9, minimum child weight 10, gamma 0.2, alpha 0.1, and lambda 10. No fit
+uses early stopping. The tail neural changes only the loss. The exact ensemble is
+float64 `0.8*NN + (1.0-0.8)*XGBoost`.
+
+Exactly three identities are scored: tail neural, fixed 80/20 tail ensemble, and
+the unchanged 80/20 closest anchor control. Before validation, four training-only
+cells cross outer split seeds 101/202 with model seeds 41/42. Stable identity-only
+five-fold assignment holds fold zero out. Each cell fits all three bases on the
+other 80%; source and family metadata are unavailable to prediction matrices.
+
+The route is supported if either fixed tail intervention has no higher strict
+above-5-g count than the anchor in every cell, lower aggregate above-5-g count,
+and no higher pooled aggregate MAE across all row-cell evaluations. Each
+intervention is checked independently. A pass routes all three candidates and
+does not select between them; if neither passes, the attempt stops as
+`training_evidence_rejected` without validation scoring.
+
+Conditional production fits all three bases on all training rows under both seeds,
+then scores all three candidates on validation under each seed regardless of
+unfavorable seed-41 evidence. Existing 1% pooled, 1% source-balanced, and 2%
+qualifying-source gates and ranking are unchanged. Locking requires both seeds and
+their equal metric combination to pass, and reuses the exact seed-42 fitted state
+already scored without another refit.
+
+The hard maximum is 18 started base-fit attempts, six validation candidate
+evaluations, and 7,200 seconds. Attempted, completed, and failed totals remain
+distinct, and every attempt records its stage, split when applicable, model seed,
+base identity/index, status, and bounded failure reason. Deadline checks surround
+fits and predictions, follow every validation score, precede combination and
+locking, follow provisional lock creation, and precede final completion; an expired
+provisional lock is rejected. The create-only run preserves aggregate honest
+evidence, complete fit accounting, outcomes, checksums, and any verified lock.
+There is no retry, budget recycling, replacement, row omission, gate change,
+automatic expansion, test access, or Issue #33 continuation. Anonymous source
+groups remain evaluation-only.
+
+Implementation uses synthetic tests and does not execute or inspect private data.
+One execution requires this committed predeclaration, a source-neutral Issue #50
+comment, and separate authorization. Its sole prospective output is fresh
+`private/candidate-tuning/run-021`, invoked with `--plan-kind bounded_tail_risk`.
