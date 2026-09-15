@@ -924,3 +924,31 @@ source-neutral Issue #50 comment:
   --volume-unit mm3 \
   --scope-confirmed
 ```
+
+## Crossed training split/model-seed stability result
+
+The separately authorized `run-015` execution completed all four cells and all 52
+predeclared fits. It used 150.97 elapsed seconds and 411.65 process CPU seconds.
+The private create-only manifest's two artifact checksums were recomputed and
+matched. No validation labels or held-out evidence were accessed.
+
+| Outer split / model seed | Anchor MAE | Corrected MAE | Anchor above-5-g count | Corrected above-5-g count | Anchor loss | Corrected loss |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| 101 / 41 | 0.8953 g | 0.9646 g | 34 | 37 | 511.7415 | 509.1025 |
+| 101 / 42 | 0.8838 g | 0.9672 g | 34 | 40 | 474.2077 | 472.0289 |
+| 202 / 41 | 0.8988 g | 0.8503 g | 35 | 37 | 444.7951 | 440.9340 |
+| 202 / 42 | 0.9501 g | 0.8396 g | 42 | 37 | 405.7071 | 405.5510 |
+
+The correction lowered its declared loss in every cell, but it was not stable on
+ordinary or serious-error measures. It worsened MAE and above-5-g count for both
+model seeds under split 101; under split 202 it improved MAE for both seeds and
+reduced the above-5-g count only for seed 42. The observed training-stage result
+varied across model seeds and split-associated held-out samples. Corrected-MAE
+differences across splits were about 0.11–0.13 g, compared with about 0.01 g across
+model seeds within a split. Because split contrasts cover different held rows, this
+is descriptive evidence, not a causal attribution to row assignment.
+
+This diagnostic neither evaluates the unchanged validation gates nor selects a
+candidate, lock, or next intervention. It stops without a retry, correction change,
+budget expansion, validation access, held-out assessment, or Issue #33 work. The
+completed private run remains preserved.

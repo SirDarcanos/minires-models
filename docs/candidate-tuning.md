@@ -933,6 +933,34 @@ comment is posted. It must stop after one completed or blocked attempt; no metri
 may select an intervention, expand its budget, or expose validation or held-out
 records.
 
+### Completed outcome
+
+The separately authorized execution completed all four training-only cells and all
+52 predeclared fits in 150.97 elapsed seconds and 411.65 process CPU seconds. Its
+create-only two-artifact manifest was checksum-verified. Validation labels and
+held-out evidence were not accessed.
+
+| Outer split / model seed | Anchor MAE | Corrected MAE | Anchor above-5-g count | Corrected above-5-g count | Anchor loss | Corrected loss |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| 101 / 41 | 0.8953 g | 0.9646 g | 34 | 37 | 511.7415 | 509.1025 |
+| 101 / 42 | 0.8838 g | 0.9672 g | 34 | 40 | 474.2077 | 472.0289 |
+| 202 / 41 | 0.8988 g | 0.8503 g | 35 | 37 | 444.7951 | 440.9340 |
+| 202 / 42 | 0.9501 g | 0.8396 g | 42 | 37 | 405.7071 | 405.5510 |
+
+The correction lowered the declared loss in all four cells, but its MAE and
+above-5-g effects reversed by split: it worsened both MAE and above-5-g count for
+both split-101 model seeds, while it improved MAE for both split-202 seeds and
+reduced the above-5-g count only for model seed 42. The crossed evidence therefore
+shows instability under both factors without isolating a cause. The split-to-split
+corrected-MAE differences (about 0.11–0.13 g) were larger than the within-split
+model-seed differences (about 0.01 g), but the split comparisons use different
+held rows and remain descriptive rather than causal.
+
+This is training-holdout evidence only. It does not evaluate validation eligibility
+or ranking, select an intervention, create a lock, or authorize a correction
+change, retry, expansion, or held-out assessment. The completed `run-015` directory
+is preserved.
+
 ## Locked candidate
 
 A successful search creates `locked-candidate/` with:
