@@ -4302,11 +4302,16 @@ def _second_seed_comparison(result: TuningResult) -> dict[str, Any]:
         if result.plan.generator.get("plan_kind") == "nonlinear_oof_stacking"
         else min(result.plan.second_seed_rule["candidate_count"], eligible_count)
     )
+    shortfall = max(0, int(result.plan.second_seed_rule["candidate_count"]) - (
+        len(result.second_seed_results)
+        if result.plan.generator.get("plan_kind") == "nonlinear_oof_stacking"
+        else eligible_count
+    ))
     return {
         "planned_finalists": result.plan.second_seed_rule["candidate_count"],
         "eligible_initial_candidates": eligible_count,
         "repeated_candidates": len(result.second_seed_results),
-        "shortfall": max(0, result.plan.second_seed_rule["candidate_count"] - eligible_count),
+        "shortfall": shortfall,
         "complete": (
             len(result.initial_results) == len(_planned_initial_candidate_ids(result.plan))
             and len(result.second_seed_results) == target

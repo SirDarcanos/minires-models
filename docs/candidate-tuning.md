@@ -513,7 +513,7 @@ the same two-seed validation evidence. If no initial candidate qualifies, the ru
 records the best initial development result, performs no repetitions or refit, and ends as
 `completed_no_candidate` without expanding the budget.
 
-### Predeclared nonlinear out-of-fold stacking plan (not yet executed)
+### Predeclared nonlinear out-of-fold stacking plan
 
 Issue #50's next bounded round is `nonlinear_oof_stacking`. It retains the
 ordered seven-feature legacy input contract and performs no reslicing and adds no
@@ -572,14 +572,15 @@ training and validation identity fingerprints, dependencies, code and feature
 contracts, gates/ranking, and no-test-access attestation. Loading verifies every
 checksum and reconstructs the exact ordering before prediction.
 
-The command is intentionally not run by this change. A later authorized private
-round uses a fresh output directory:
+The predeclaration change did not run the command. The one authorized private
+round subsequently used the fresh `run-012` directory; its source-neutral outcome
+is recorded in [the issue #50 round ledger](issue-50-candidate-search.md).
 
 ```bash
 .venv-candidates/bin/python -m minires.modeling.tuning \
   --training-records data/train.jsonl \
   --validation-records data/validation.jsonl \
-  --output-root private/candidate-tuning/<fresh-run> \
+  --output-root private/candidate-tuning/run-012 \
   --volume-unit mm3 --scope-confirmed --seed 41 \
   --plan-kind nonlinear_oof_stacking
 ```

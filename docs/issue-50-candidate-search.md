@@ -676,3 +676,37 @@ results and their equal combination pass every fixed gate. Any incomplete or
 invalid run stops in a fresh create-only directory without replacement, tuning,
 budget recycling, or automatic expansion. This predeclaration does not start the
 private run or access held-out assessment data.
+
+## Nonlinear training-OOF stacking result
+
+The one permitted execution completed all three fixed stack candidates under both
+seeds. No candidate was eligible under either seed or their equal combination.
+The best candidate under the unchanged ranking was also closest to the fixed gates:
+
+| Metric | Result |
+| --- | ---: |
+| Pooled mean absolute error | 1.5295 g |
+| Source-balanced mean absolute error | 1.4626 g |
+| Pooled within-2-g fraction | 76.78% |
+| Source-balanced within-2-g fraction | 79.85% |
+| Pooled above-5-g fraction | 3.65% |
+| Source-balanced above-5-g fraction | 3.77% |
+| Maximum qualifying-source above-5-g fraction | 6.12% |
+
+The round used all 54 predeclared fits in 345.68 elapsed seconds and 1,217.66
+process CPU seconds, with a process high-water resident-set measurement of
+1,167,556,608 platform units. Its four-file create-only manifest was independently
+checksum-verified. No candidate was refitted beyond the predeclared training-only
+seed fits, no lock was created, and held-out assessment was not started.
+
+Post-run review found that the generic `second_seed_comparison.shortfall` report
+counted seed-41 eligibility rather than the three mandatory stack repetitions. The
+preserved allocation, run count, candidate history, and results correctly record all
+three seed-42 repetitions, so this reporting-only defect did not affect fitting,
+predictions, metrics, eligibility, or ranking. The reporter and its regression test
+were corrected after the run; the create-only run remains unchanged.
+
+The nonlinear stacking hypothesis is falsified for this fixed plan. This round
+stops without automatic expansion, and Issue #50 remains open for a separately
+justified and predeclared hypothesis. Private row-level results, source reports,
+paths, fingerprints, mappings, and model artifacts remain unpublished.

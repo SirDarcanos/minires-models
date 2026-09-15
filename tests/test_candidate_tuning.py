@@ -1560,6 +1560,7 @@ class ExplicitPartitionDevelopmentTests(unittest.TestCase):
         comparison = result.to_dict()["second_seed_comparison"]
         self.assertEqual(comparison["eligible_initial_candidates"], 1)
         self.assertEqual(comparison["repeated_candidates"], 3)
+        self.assertEqual(comparison["shortfall"], 0)
         self.assertTrue(comparison["complete"])
         self.assertEqual(result.status, "completed")
         self.assertIsNotNone(result.locked_candidate)
