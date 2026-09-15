@@ -952,3 +952,62 @@ This diagnostic neither evaluates the unchanged validation gates nor selects a
 candidate, lock, or next intervention. It stops without a retry, correction change,
 budget expansion, validation access, held-out assessment, or Issue #33 work. The
 completed private run remains preserved.
+
+## Predeclaration: paired correction-transition diagnostic
+
+Status: **IMPLEMENTED NOT EXECUTED**.
+
+The preserved `run-015` reports lower unpenalized prediction loss in all four
+crossed cells, worse above-5-g counts in three, and worse MAE under both split-101
+model seeds. It contains no row prediction vectors from which repair/harm evidence
+can be reconstructed. This new diagnostic collects prospective paired accounting;
+it neither changes that completed diagnostic nor treats the observed trade-off as
+a software bug, candidate experiment, or causal conclusion.
+
+The complete predeclared accounting and interpretation contract is in
+[`candidate-tuning.md`](candidate-tuning.md#predeclared-correction-transition-diagnostic).
+The exact closest anchor and tail-focused correction remain fixed: 87 NN epochs,
+1,091 XGBoost trees, outer split seeds 101/202, respective inner seeds 1101/1202,
+and model seeds 41/42. Four cells use 40 inner-OOF base fits, eight outer-partition
+base fits, and four correction fits, **at most 52 fits and 7,200 seconds**.
+
+Each cell records aggregate 2×2 above-5-g transitions, MAE and separate ordinary/
+excess-squared unpenalized-loss contributions by transition and fixed anchor bins
+`[0,4]`, `(4,5]`, `(5,7]`, `>7`, residual signs, correction magnitudes/directions,
+and existing OOF/full-fit shifts. Exactly ±5 is nonserious; exactly ±7 is in the
+potentially repairable bin. The theoretical label-aware ±2 oracle is not an
+estimator. Fixed descriptive rules ask whether near-threshold harms offset repairs
+(nonzero harms at least repairs and a strict majority in `(4,5]`), whether severe
+tails dominate anchor excess-squared loss (strictly more than half contributed by
+`>7`), and verify the bound cannot repair `>7`. Contributions divide by total cell
+count, and conservation/finite checks fail closed. These are predeclared accounting
+conventions, not learned gates or intervention-selection rules.
+
+The training-only CLI verifies only the committed training checksum and pinned
+Python/dependency environment. Its private create-only plan, aggregate evidence,
+and checksummed manifest record contracts, provenance, exact fit accounting, and
+completed/failed/uncompleted outcomes without row vectors, IDs, paths, or
+source/family values in evidence. Validation/test inputs are unavailable. There
+is no selection, promotion, lock, early stopping, row exclusion, changed seed,
+correction change, tuned gate, retry, or capacity recycling.
+
+The prospective command is fixed to a new create-only directory; it has not run
+and the directory was not created or inspected during implementation:
+
+```bash
+.venv-candidates/bin/python -m minires.modeling.correction_transition \
+  --training-records data/train.jsonl \
+  --output-root private/candidate-tuning/run-016 \
+  --volume-unit mm3 \
+  --scope-confirmed
+```
+
+One execution requires separate authorization after committed predeclaration and
+a source-neutral Issue #50 predeclaration. It stops after one completed or blocked
+attempt without automatic expansion. Evidence remains conditional on the
+historically validation-selected anchor/counts; within-cell pairing does not make
+contrasts between different held training splits causal. No conclusion or targeted
+correction change is justified before executed evidence supports it and a separate
+decision authorizes it. No private fitting, dataset reads, validation/test reads or
+fingerprints, publication, candidate locking, or Issue #33 work occurred during
+this implementation. All prior runs remain preserved.

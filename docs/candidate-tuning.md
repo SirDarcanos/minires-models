@@ -961,6 +961,114 @@ or ranking, select an intervention, create a lock, or authorize a correction
 change, retry, expansion, or held-out assessment. The completed `run-015` directory
 is preserved.
 
+## Predeclared correction-transition diagnostic
+
+Status: **IMPLEMENTED NOT EXECUTED**. This is new observational instrumentation,
+not a candidate experiment or a retry/reinterpretation of `run-015`. That preserved
+run contains aggregate metrics, not paired row predictions, so it cannot recover
+repair/harm transitions retrospectively. Its loss improved in all four cells while
+serious-error count worsened in three; both split-101 MAEs worsened. These are
+observations to account for, not evidence of a software performance bug or a cause.
+
+`minires.modeling.correction_transition` freezes exactly the preceding diagnostic's
+closest anchor, original base contracts, effective runtime/preprocessing contracts,
+87 epochs, 1,091 trees, and unchanged `minires-tail-focused-correction-v1` algorithm.
+It uses the same four cells: outer splits 101/202, respective inner splits
+1101/1202, and model seeds 41/42. Five-fold identity-only assignment holds outer
+fold zero out, fits the correction using only the remaining rows' inner-OOF
+predictions, and evaluates it only on the outer holdout. There is no early stopping.
+The allocation remains 40 inner-OOF base fits, eight outer-partition base fits,
+and four numerical corrections: **52 fits maximum, 7,200 seconds maximum**. Every
+cell is retained regardless of favorable or unfavorable metrics. No capacity is
+recycled, and no row, seed, fold, count, bound, loss, feature, or correction changes.
+
+### Fixed accounting and interpretation before execution
+
+The versioned `minires-correction-transition-diagnostic-v1` plan declares these
+rules before any fit. Residual means **prediction minus target**: negative is an
+underestimate, positive an overestimate, and zero exact agreement.
+
+- A serious error is strictly `abs(residual) > 5 g`; exactly +5 or -5 is not
+  serious. The paired 2×2 table is stable nonserious (neither serious), harm
+  (anchor nonserious, corrected serious), repair (anchor serious, corrected
+  nonserious), and persistent serious (both serious).
+- Fixed anchor absolute-error bins are `[0,4]`, `(4,5]`, `(5,7]`, and `(7,infinity)`.
+  Exactly ±4 belongs to the first, ±5 to the second, and ±7 to the third.
+  Every transition and every bin retains its count, anchor/corrected residual-sign
+  counts, above-5-g counts, and MAE and prediction-loss contributions. Bin tables
+  also retain the four transition counts, so threshold harm is directly accounted
+  for rather than inferred from marginal metrics.
+- The unpenalized prediction loss is `0.1*e² + 4*max(abs(e)-4.5,0)²`; report the
+  ordinary and weighted excess-squared components separately. Correction-departure
+  and coefficient penalties are excluded. Contributions divide subgroup sums by
+  the **entire cell's row count**, not subgroup counts; corrected-minus-anchor
+  contributions add to the cell-wide change. Empty groups have zero contribution.
+  Counts conserve exactly; floating conservation uses relative and absolute
+  tolerance `1e-12`. Serious-count change must equal harms minus repairs.
+- Correction summaries contain signed/absolute sums, maximum absolute magnitude,
+  negative/zero/positive counts, and toward/away/neutral direction counts. Toward
+  means opposite signs for anchor residual and correction; away means matching
+  nonzero signs; neutral means either is zero. Separately count absolute-error
+  improvement, worsening, and equality, since moving toward the target can overshoot.
+  Departure is computed from the actual paired predictions; floating addition can
+  differ from the algorithm's ±2 bound by a few ulps, checked with four ulps of
+  the anchor/corrected values. The unchanged numerical state still enforces ±2.
+- The **label-aware theoretical oracle**, never a deployable estimator, has minimum
+  possible absolute error `max(anchor_absolute_error-2,0)`. Report its minimum MAE
+  and unpenalized-loss contributions, theoretically repairable serious count
+  `(5,7]`, and unavoidable serious count `>7`. Exactly ±7 can reach ±5; errors
+  strictly beyond ±7 cannot become nonserious under an ideal ±2 correction.
+- Three per-cell descriptive flags have fixed decision rules: (1) near-threshold
+  harm offsets repairs only when harms are nonzero, harms are at least repairs,
+  and **more than half** of harms began in `(4,5]`; (2) severe tails dominate the
+  anchor excess-squared loss only when the `>7` contribution is **strictly more
+  than half** its total (zero total does not qualify); (3) the `>7` oracle serious
+  count must equal the `>7` count, a theorem even when the bin is empty. These
+  definitions are accounting conventions, not learned/tuned gates or causal tests.
+
+The existing per-base, anchor, and corrected OOF/full-fit shift and anchor
+prediction distributions are retained with their complete finite aggregate schema.
+Wrong shape, nonfinite values, arithmetic overflow, invalid correction departure,
+incomplete evidence or fit accounting, deadlines, and fit limits block completion.
+Completed cells and failed/uncompleted cell accounting are preserved with exact
+started fits, fits in completed cells, unused capacity, and elapsed/CPU resources.
+The deadline is checked around fits, predictions, summaries, and completion;
+it cannot forcibly interrupt a running backend fit. Artifact-write failures cannot
+claim a complete checksummed package.
+
+The training-only public seam and CLI have **no validation/test input**, candidate
+selection, qualification, ranking, promotion, or lock path. The CLI checksum-verifies
+only committed `data/train.jsonl` and checks Python 3.13, NumPy 2.2.6, Keras 3.15.0,
+TensorFlow 2.20.0, scikit-learn 1.7.2, and XGBoost 3.1.2 before fitting. The fixed
+plan binds these required versions, observed runtime/environment, training-only
+input identities, code identity, exact model contracts and accounting rules. The
+create-only manifest checksums plan and evidence. Evidence contains only
+source-neutral aggregates—no row vectors, IDs, paths, source/family values, or
+source mappings. Plan input/code checksums are private provenance, not published
+results. The in-memory runtime seam remains usable for synthetic tests; deployment
+checksum/environment enforcement is at the CLI boundary, as for `training_stability`.
+
+A separately authorized one-time execution, after committed predeclaration and a
+source-neutral Issue #50 predeclaration, would use the next fresh create-only
+`run-016` directory; this implementation does not create or inspect it:
+
+```bash
+.venv-candidates/bin/python -m minires.modeling.correction_transition \
+  --training-records data/train.jsonl \
+  --output-root private/candidate-tuning/run-016 \
+  --volume-unit mm3 \
+  --scope-confirmed
+```
+
+Evidence remains conditional on the historically validation-selected anchor and
+counts, not untouched pipeline evidence. Pairing is within a cell; different
+training splits contain different held rows and comparisons are descriptive, not
+causal. No conclusion or targeted correction change is justified until executed
+evidence supports it and a separate decision authorizes it. Stop after one completed
+or blocked attempt: no automatic expansion, learned/tuned gate, correction change,
+validation access, candidate promotion, row exclusion, or capacity recycling.
+Existing `run-015` and all prior contracts and outcomes remain immutable.
+
 ## Locked candidate
 
 A successful search creates `locked-candidate/` with:
