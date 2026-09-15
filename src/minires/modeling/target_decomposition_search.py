@@ -109,15 +109,24 @@ def validate_candidate(declared: t.Candidate) -> None:
         raise ValueError("invalid_candidate_configuration")
 
 
-def _fixed_base_specification(base: t.Candidate):
+def base_specification(
+    base: t.Candidate, fixed_training_counts: Mapping[str, int | float],
+):
+    """Resolve one base through the runtime's exact per-kind count contract."""
     from .definitions import candidate_model_specification
 
     parameters = copy.deepcopy(base.parameters)
     representation = parameters.pop("target_representation", None)
     if base.family == "neural_network":
-        parameters["maximum_epochs"] = FIXED_COUNTS["neural_network_epochs"]
+        expected_counts = {"neural_network_epochs": FIXED_COUNTS["neural_network_epochs"]}
+        count = FIXED_COUNTS["neural_network_epochs"]
+        parameters["maximum_epochs"] = count
     else:
-        parameters["n_estimators"] = FIXED_COUNTS["xgboost_trees"]
+        expected_counts = {"xgboost_trees": FIXED_COUNTS["xgboost_trees"]}
+        count = FIXED_COUNTS["xgboost_trees"]
+        parameters["n_estimators"] = count
+    if dict(fixed_training_counts) != expected_counts:
+        raise ValueError("invalid_locked_candidate_training_counts")
     return candidate_model_specification(
         base.family, parameters,
         identity_namespace=(VERSION if representation else "minires-model-definition-v1"),
@@ -137,7 +146,12 @@ def specification(declared: t.Candidate):
         else (raw_neural, raw_xgboost)
     )
     return ensemble_model_specification(
-        _fixed_base_specification(bases[0]), _fixed_base_specification(bases[1]),
+        base_specification(
+            bases[0], {"neural_network_epochs": FIXED_COUNTS["neural_network_epochs"]}
+        ),
+        base_specification(
+            bases[1], {"xgboost_trees": FIXED_COUNTS["xgboost_trees"]}
+        ),
         ENSEMBLE_NEURAL_WEIGHT,
     )
 

@@ -1973,3 +1973,25 @@ candidate environment, then writes fresh create-only `run-022`:
 This implementation and its synthetic tests do not authorize or execute the run.
 Execution requires a committed source-neutral Issue #50 predeclaration and separate
 authorization, and must stop after one completed, rejected, or blocked attempt.
+
+### Blocked outcome
+
+The separately authorized `run-022` stopped as `blocked` with the bounded reason
+`candidate_runtime_failed`. The first honest cell began at outer split seed 101 and
+model seed 41. Its raw neural and raw XGBoost fits completed, while the third started
+attempt—the decomposed neural base—failed before the cell could produce evidence.
+Accounting therefore records three started fits, two completed fits, one failed fit,
+zero completed honest cells, and zero validation candidate evaluations. The remaining
+21-fit capacity and all four validation-evaluation slots were not recycled.
+
+The failure was an implementation adapter mismatch: the runtime supplies the fixed
+count for one base at a time, while the decomposed-base resolver incorrectly required
+the two-family count mapping. The resolver now validates the exact per-kind contract
+(`87` neural epochs or `1,091` XGBoost trees), with a regression test covering both
+bases. This correction was not used to continue or rerun `run-022`.
+
+All five create-only artifact checksums were independently recomputed and matched.
+No honest metric, validation score, candidate selection, lock, or held-out-test access
+occurred. The blocked run remains preserved. It stops without retry, budget recycling,
+replacement, gate change, or Issue #33 continuation. Any execution of the corrected
+implementation requires a new fresh output directory and separate authorization.

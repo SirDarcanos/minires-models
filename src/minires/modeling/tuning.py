@@ -5557,9 +5557,9 @@ def _locked_model_specification(
         candidate.parameters.get("target_representation")
         == target_decomposition_search.TARGET_CONTRACT["representation"]
     ):
-        if dict(fixed_training_counts) != target_decomposition_search.FIXED_COUNTS:
-            raise ValueError("invalid_locked_candidate_training_counts")
-        return target_decomposition_search._fixed_base_specification(candidate)
+        return target_decomposition_search.base_specification(
+            candidate, fixed_training_counts
+        )
     if candidate.family == bounded_tail_risk.FAMILY:
         if dict(fixed_training_counts) != bounded_tail_risk.FIXED_COUNTS:
             raise ValueError("invalid_locked_candidate_training_counts")

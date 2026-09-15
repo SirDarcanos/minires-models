@@ -100,6 +100,25 @@ class TargetDecompositionTests(unittest.TestCase):
 
         self.assertEqual(targets, (0.0, 2.0))
 
+    def test_decomposed_bases_accept_the_runtime_per_kind_fixed_count_contract(self):
+        decomposed_neural, decomposed_xgboost = (
+            target_decomposition_search.base_candidates()[2:]
+        )
+
+        neural = target_decomposition_search.base_specification(
+            decomposed_neural, {"neural_network_epochs": 87}
+        )
+        xgboost = target_decomposition_search.base_specification(
+            decomposed_xgboost, {"xgboost_trees": 1091}
+        )
+
+        self.assertEqual(neural.output_unit, target_decomposition.TARGET_UNIT)
+        self.assertEqual(xgboost.output_unit, target_decomposition.TARGET_UNIT)
+        with self.assertRaisesRegex(ValueError, "invalid_locked_candidate_training_counts"):
+            target_decomposition_search.base_specification(
+                decomposed_neural, target_decomposition_search.FIXED_COUNTS
+            )
+
     def test_plan_is_fixed_finite_and_source_neutral(self):
         plan = generate_search_plan(
             SearchLimits.for_plan(41, "bounding_box_target_decomposition"),

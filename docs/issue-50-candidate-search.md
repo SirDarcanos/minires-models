@@ -1659,3 +1659,24 @@ comment and separate authorization, the only prospective invocation writes fresh
 create-only `private/candidate-tuning/run-022` using
 `--plan-kind bounding_box_target_decomposition`. Stop after its first completed,
 rejected, or blocked outcome; do not continue into Issue #33.
+
+## Bounding-box target-decomposition blocked result
+
+The separately authorized `run-022` stopped as `blocked` with
+`candidate_runtime_failed`. In the first honest 101/41 cell, the raw neural and raw
+XGBoost fits completed; the third started attempt, the decomposed neural base, failed
+before the cell produced metrics. The run records three started fits, two completed,
+one failed, zero completed honest cells, and zero validation candidate evaluations.
+No remaining capacity was recycled.
+
+The bounded failure came from an implementation adapter mismatch: one-base runtime
+calls supply only that model family's fixed count, while the decomposed resolver
+incorrectly required both families' counts together. The resolver has been corrected
+to accept and verify exactly `87` neural epochs or `1,091` XGBoost trees per call, and
+both paths have regression coverage. The correction did not continue or rerun the
+preserved attempt.
+
+All five create-only artifact checksums independently matched. No honest comparison,
+validation scoring, candidate selection, lock, test access, or Issue #33 work
+occurred. `run-022` stops without retry, recycling, substitution, or changed gates.
+A corrected execution requires a fresh run directory and separate authorization.
