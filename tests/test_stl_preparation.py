@@ -193,6 +193,21 @@ class StlPreparationTests(unittest.TestCase):
         self.assertEqual(result.contract["layer_height_mm"], 0.05)
         self.assertFalse(result.contract["slicer_added_supports"])
         self.assertEqual(
+            result.contract["geometry_measurement"]["volume_semantics"],
+            "trimesh_signed_additive_surface_integral",
+        )
+        self.assertEqual(
+            result.contract["geometry_measurement"]["bounding_box_volume_semantics"],
+            "axis_aligned_extent_product",
+        )
+        self.assertFalse(
+            result.contract["geometry_measurement"]["mesh_volume_must_not_exceed_bounding_box_volume"]
+        )
+        self.assertEqual(
+            result.contract["geometry_measurement"]["semantics_apply_with_geometry_version"],
+            "recorded_in_result_versions",
+        )
+        self.assertEqual(
             result.versions["prusaslicer"],
             "PrusaSlicer-2.9.6 based on Slic3r (with GUI support)",
         )

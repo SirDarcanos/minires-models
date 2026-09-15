@@ -1452,3 +1452,39 @@ route or authorize predictor work.
 The audit stops without repair, reslicing, further fitting, validation access,
 selection, locking, promotion, or Issue #33. A source-neutral geometry-contract
 investigation requires a separate predeclared decision and authorization.
+
+## Predeclaration: source-neutral geometry-contract investigation
+
+Status: **IMPLEMENTED NOT EXECUTED**. The next bounded step tests the audit's
+mesh-volume-versus-bounding-box assumption against the pinned measurement
+implementation, not against canonical rows. Trimesh 4.10.1 computes
+`Trimesh.volume` as a signed triangle-surface integral and the production probe
+applies it to all loaded triangles. Its bounding-box field is independently the
+product of global axis-aligned extents. Surface-integral volume is additive across
+overlapping shells rather than boolean-union occupancy, so the presumed inequality
+is not guaranteed by the implementation.
+
+The fixed source-neutral fixtures are a closed unit box, two partially overlapping
+closed unit-box shells, a reversed-winding unit box, and an open unit box. They test
+ordinary volume, additive overlap, sign sensitivity, and non-watertight reliability
+through STL export, `trimesh.load`, and the production probe. Expected volume/box
+pairs are 1/1, 2/1.5, and -1/1 for the first three; the open case must be identified
+as non-watertight while still yielding a finite surface-integral result. All
+expectations must hold under pinned trimesh 4.10.1 or the investigation blocks.
+
+A confirmed result has a predeclared interpretation: volume greater than bounding-
+box volume is not by itself a canonical contradiction, so the audit invariant and
+documentation should be revised. It neither proves every affected row legitimate
+nor classifies overlap, manifoldness, winding, or history. Historical measurement
+semantics remain unknown under committed provenance, and assembled rows lack
+measurement-origin/topology evidence. Those distinctions require better private
+geometry or provenance inputs before any row-defect investigation.
+
+The public seam has only a create-only output argument. It reads no train,
+validation, held-out-test, source, or row artifact; performs zero model fits; and
+emits only four synthetic aggregate cases plus the fixed decision. The private
+package is plan, evidence, and checksummed manifest in prospective `run-020`.
+Implementation uses synthetic tests only and does not execute that run. Separate
+authorization is required after this commit and a source-neutral Issue #50 comment.
+The attempt stops without retries, data changes, reslicing, predictor work,
+selection, locking, promotion, or Issue #33 continuation.

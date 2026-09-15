@@ -182,7 +182,7 @@ tolerance `1e-12`). This is not an arbitrary-precision decimal contract.
 
 | Prediction measurement | Legacy alias | Meaning / unit |
 | --- | --- | --- |
-| `volume_mm3` | `volume` | Mesh-enclosed volume, mm³ |
+| `volume_mm3` | `volume` | Recorded mesh-volume feature, mm³; see provenance-specific semantics below |
 | `surface_area_mm2` | `surface_area` | Mesh surface area, mm² |
 | `bounding_box_x_mm` | `bbox_x` | Bounding-box extent along X, mm |
 | `bounding_box_y_mm` | `bbox_y` | Bounding-box extent along Y, mm |
@@ -192,6 +192,15 @@ tolerance `1e-12`). This is not an arbitrary-precision decimal contract.
 
 Legacy bounding-box and surface aliases have fixed millimetre-based units.
 `volume_unit` applies only to legacy `volume`; `volume_mm3` is self-describing.
+For the pinned new-STL path, trimesh 4.10.1 computes this value from oriented
+triangles. Overlapping shells may be counted more than once, reversed shells may
+subtract, and non-watertight meshes do not support a reliable solid-volume
+interpretation. The preparation result records the observed geometry dependency;
+these implementation semantics are version-qualified, not inferred for other
+producers. It is therefore not a contract contradiction for this value alone to
+exceed `bounding_box_volume_mm3`. Historical rows retain authoritative measurements
+whose original geometry algorithm and topology evidence were not recorded; their
+volume semantics remain unresolved.
 The baseline uses only `volume_mm3`. Other measurements are retained for future
 evaluation, not fitted or engineered here. A future training caller must select
 the schema's `prediction_features` allowlist, never every Parquet column.

@@ -1682,3 +1682,51 @@ row repair/removal, reslicing, further fitting, validation access, candidate sea
 selection, locking, promotion, or Issue #33. Any follow-up must first specify how to
 check the geometry measurement contract without identifying sources or changing the
 canonical artifacts, and requires a separate decision and authorization.
+
+## Predeclared source-neutral geometry-contract investigation
+
+Status: **IMPLEMENTED NOT EXECUTED**. Code and pinned trimesh 4.10.1 establish that
+`Trimesh.volume` delegates to mass properties calculated by a signed triangle-
+surface integral. The production probe applies that value to all loaded triangles
+and separately multiplies the global axis-aligned bounding-box extents. The former
+is additive across shells rather than a boolean union. The completed audit's
+mesh-within-box rule is therefore a hypothesis to test, not a valid general
+reconciliation invariant.
+
+`minires.preparation.geometry_contract_investigation` exercises the exact production
+measurement path—including STL export and `trimesh.load`—on four source-neutral
+fixtures: one closed unit box, two partially overlapping unit-box shells, one
+reversed-winding unit box, and one open unit box. The fixed expectations are
+respectively volume/bounding-box volume 1/1; additive volume/bounding-box volume
+2/1.5 while watertight and winding-consistent; signed volume -1 with unchanged box;
+and a finite result despite the mesh being non-watertight. A dependency mismatch,
+changed numeric behavior, or missing topology evidence blocks rather than selecting
+a favorable subset.
+
+If every expectation holds, the fixed decision is to revise the audit invariant:
+recorded surface-integral mesh volume above axis-aligned bounding-box volume is not
+by itself a canonical data-contract contradiction. The result will not classify any
+canonical row. Historical measurement semantics remain unresolved because committed
+provenance says those values were reused without mesh probing and assembly removed
+per-row origin. Distinguishing malformed/non-watertight geometry, overlapping shells,
+or historical/new measurement semantics therefore requires better source geometry
+or provenance; none may be inferred from fill ratio alone.
+
+The seam accepts only a create-only private output root—no training, validation,
+held-out-test, source, row, model, threshold, or repair input. It performs zero model
+fits, reads no dataset artifact, emits no identity or source values, and preserves
+all canonical rows and prior runs. The package contains `investigation-plan.json`,
+`geometry-contract-evidence.json`, and a manifest checksumming both. The one
+prospective invocation is:
+
+```bash
+.venv/bin/python -m minires.preparation.geometry_contract_investigation \
+  --output-root private/candidate-tuning/run-020
+```
+
+Execution requires this committed predeclaration, a source-neutral Issue #50
+comment, and separate authorization. Stop after one completed or blocked attempt.
+There is no retry, reslicing, row review/removal/replacement, validation or held-out
+access, predictor/candidate run, gate change, locking, promotion, or automatic
+continuation into Issue #33. Synthetic implementation tests do not create or inspect
+`run-020` and are not model or dataset evidence.

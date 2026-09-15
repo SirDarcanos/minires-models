@@ -36,3 +36,11 @@ An outcome indicating that an input is invalid, outside the validated scope, or 
 
 **Prediction interval**:
 A range for sliced resin mass whose stated coverage is supported by held-out evaluation within a defined scope. It is distinct from an operational allowance.
+
+**Surface-integral mesh volume**:
+The signed, additive volume implied by a mesh's oriented triangle shells. It is not occupied union volume: overlapping closed shells can be counted more than once, reversed shells can subtract, and open or inconsistently wound meshes do not support a reliable solid-volume interpretation.
+_Avoid_: Occupied volume, union volume
+
+**Axis-aligned bounding-box volume**:
+The product of the three extents of the axis-aligned box enclosing a mesh's vertices. A surface-integral mesh volume is not universally bounded by this value because the two measurements have different semantics.
+_Avoid_: Bounding-box area
