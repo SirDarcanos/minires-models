@@ -94,9 +94,9 @@ def rules() -> tuple[dict[str, Any], ...]:
 def _fit_stage(
     runtime: t.CandidateRuntime, training: Sequence[CanonicalRow],
     evaluation: Sequence[CanonicalRow], seed: int, before_fit: Callable[[], None],
-    check_deadline: Callable[[], None],
+    check_deadline: Callable[[], None], *, assignment_seed: int | None = None,
 ) -> tuple[dict[str, Any], list[t.LockedFit], list[tuple[float, ...]], dict[str, Any]]:
-    assignments = t._cross_fit_assignments(training, seed, 5)
+    assignments = t._cross_fit_assignments(training, seed if assignment_seed is None else assignment_seed, 5)
     oof_columns: list[tuple[float, ...]] = []
     full_columns: list[tuple[float, ...]] = []
     evaluation_columns: list[tuple[float, ...]] = []

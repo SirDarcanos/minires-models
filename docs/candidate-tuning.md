@@ -888,6 +888,51 @@ checksum-verified. See the [aggregate outcome in the Issue #50 ledger](issue-50-
 for paired training-holdout metrics and resource use. This round is closed to
 further execution or expansion; the command above is its historical invocation.
 
+## Predeclared crossed training-stability diagnostic
+
+This separately bounded diagnostic does not search, select, lock, or assess a
+candidate. It holds the frozen closest 80% neural / 20% XGBoost anchor and the
+existing tail-focused correction algorithm constant while distinguishing two
+sources of training-stage variation: model randomness and which training rows are
+held out.
+
+The plan fixes model seeds 41 and 42, outer split seeds 101 and 202, and inner
+split seeds 1101 and 1202. Each outer split assigns training identities by the
+existing five-fold SHA-256 round-robin rule and holds fold zero out. For every
+outer split/model-seed cell, the correction is trained from five-fold OOF base
+predictions on the remaining 80%, then evaluated only on its outer holdout. The
+base fits use the fixed 87 epochs and 1,091 trees with no early stopping. Model
+seeds affect only model initialization/sampling; split seeds affect only the
+outer and nested fold assignments.
+
+The four cells consume exactly 40 inner-OOF base fits, eight outer-partition base
+fits, and four deterministic numerical-correction fits: 52 fits within 7,200
+seconds. The private aggregate evidence records each cell's anchor and corrected
+training-holdout metrics, plus model-seed contrasts on the same outer holdout and
+split contrasts for each fixed model seed. Different-split contrasts are not
+paired row comparisons and are descriptive, not causal evidence.
+
+The public `run_training_stability_diagnostic` seam receives only training
+records; it has no validation or held-out-test argument. Its create-only package
+contains the fixed plan, aggregate evidence, and checksummed manifest, with no
+row, identity, source-group, family, or prediction values. It has no
+qualification, ranking, promotion, or lock path. The command verifies only the
+committed `data/train.jsonl` checksum and the pinned environment before any fit:
+
+```bash
+.venv-candidates/bin/python -m minires.modeling.training_stability \
+  --training-records data/train.jsonl \
+  --output-root private/candidate-tuning/run-015 \
+  --volume-unit mm3 \
+  --scope-confirmed
+```
+
+Implementation and predeclaration do not authorize execution. It may run once
+only after this change is committed and a source-neutral Issue #50 predeclaration
+comment is posted. It must stop after one completed or blocked attempt; no metric
+may select an intervention, expand its budget, or expose validation or held-out
+records.
+
 ## Locked candidate
 
 A successful search creates `locked-candidate/` with:

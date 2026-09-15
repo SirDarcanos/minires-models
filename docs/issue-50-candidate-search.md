@@ -882,3 +882,45 @@ changed losses, bounds, folds, seeds, replacement candidates, or expansion. Issu
 #50 remains open for a separately justified and predeclared hypothesis. Existing
 runs remain preserved; private row-level evidence and source identities remain
 unpublished.
+
+## Predeclaration: crossed training split/model-seed stability diagnostic
+
+The two tail-focused honest-stage seeds changed both model randomness and the
+training holdout, so their difference cannot identify which factor caused the
+opposite qualification outcomes. Before proposing another correction or anchor,
+this diagnostic holds the exact run-011 closest anchor and the existing
+`minires-tail-focused-correction-v1` algorithm fixed and crosses two deterministic
+training splits with two model seeds.
+
+Outer split seeds 101 and 202 assign training identities by the existing five-fold
+SHA-256 round-robin algorithm, with fold zero as the 20% training holdout. Their
+nested correction-OOF assignments use fixed seeds 1101 and 1202, respectively.
+Model seeds 41 and 42 reach only model initialization and sampling. Every one of
+the four split/model cells fits the frozen neural network for 87 epochs and XGBoost
+for 1,091 trees without early stopping, learns the unchanged correction from the
+remaining 80% training rows' five-fold OOF predictions, and then reports anchor
+and corrected metrics on that cell's outer holdout.
+
+The finite allocation is 40 inner-OOF base fits, eight outer-partition base fits,
+and four deterministic correction fits: 52 fits within 7,200 seconds. Aggregate
+private evidence will contain cell metrics, within-split model-seed contrasts on
+identical held rows, and within-model split contrasts. The latter are descriptive
+comparisons of different held rows, not paired or causal estimates. No metric
+qualifies, ranks, selects, locks, or promotes a candidate.
+
+The diagnostic seam accepts training records only. It cannot receive validation or
+held-out-test records, and its create-only `run-015` package contains only a fixed
+plan, aggregate evidence, and a checksummed manifest—no raw identities, source
+groups, rows, predictions, or source mappings. It verifies only the committed
+training checksum and pinned environment before fitting. This predeclaration does
+not execute the command, read validation or held-out evidence, or start Issue #33.
+A separately authorized one-time execution requires this committed change and a
+source-neutral Issue #50 comment:
+
+```bash
+.venv-candidates/bin/python -m minires.modeling.training_stability \
+  --training-records data/train.jsonl \
+  --output-root private/candidate-tuning/run-015 \
+  --volume-unit mm3 \
+  --scope-confirmed
+```
