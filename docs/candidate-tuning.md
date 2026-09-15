@@ -666,6 +666,33 @@ pinned Python 3.13 environment: NumPy 2.2.6, Keras 3.15.0, TensorFlow 2.20.0,
 scikit-learn 1.7.2, and XGBoost 3.1.2. It has no held-out assessment argument and
 must not read or fingerprint held-out evidence.
 
+### Guarded residual-stacking result
+
+The one permitted execution completed all three candidates under both seeds and
+all 50 predeclared fits. No candidate was eligible under either seed or their equal
+combination. The best development result was the full ±2 g correction under seed
+41:
+
+| Metric | Result |
+| --- | ---: |
+| Pooled mean absolute error | 0.5930 g |
+| Source-balanced mean absolute error | 0.6587 g |
+| Pooled within-2-g fraction | 95.68% |
+| Source-balanced within-2-g fraction | 94.74% |
+| Pooled above-5-g fraction | 1.22% |
+| Source-balanced above-5-g fraction | 1.55% |
+| Maximum qualifying-source above-5-g fraction | 4.15% |
+
+The round used 349.54 elapsed seconds, 1,212.51 process CPU seconds, and a process
+high-water resident-set measurement of 1,224,359,936 platform units. The
+create-only manifest's complete five-artifact inventory was independently
+checksum-verified. No lock was created, and held-out assessment was not started.
+
+The bounded correction preserved aggregate accuracy near the strong anchor but did
+not satisfy any unchanged serious-error gate. This hypothesis is falsified for the
+fixed plan and stops without changed bounds, replacement candidates, added seeds,
+or automatic expansion.
+
 ## Locked candidate
 
 A successful search creates `locked-candidate/` with:

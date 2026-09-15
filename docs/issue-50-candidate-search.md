@@ -741,3 +741,33 @@ The round must stop without substitution or expansion if incomplete or
 unsuccessful. It may execute once in fresh create-only `run-013` only after this
 implementation/predeclaration commit and a source-neutral Issue #50 comment. This
 predeclaration did not fit a model, access held-out evidence, or start Issue #33.
+
+## Guarded training-OOF residual-stacking result
+
+The one permitted execution completed all three fixed candidates under both seeds.
+No candidate was eligible under either seed or their equal combination. The best
+development result was the full ±2 g correction under seed 41:
+
+| Metric | Result |
+| --- | ---: |
+| Pooled mean absolute error | 0.5930 g |
+| Source-balanced mean absolute error | 0.6587 g |
+| Pooled within-2-g fraction | 95.68% |
+| Source-balanced within-2-g fraction | 94.74% |
+| Pooled above-5-g fraction | 1.22% |
+| Source-balanced above-5-g fraction | 1.55% |
+| Maximum qualifying-source above-5-g fraction | 4.15% |
+
+The run used all six candidate evaluations and all 50 fits: 40 OOF base fits,
+eight full-training base fits, and two analytical residual fits. It used 349.54
+elapsed seconds, 1,212.51 process CPU seconds, and a process high-water resident-
+set measurement of 1,224,359,936 platform units. The complete five-artifact
+create-only manifest was independently checksum-verified.
+
+The bounded correction avoided the prediction collapse of the preceding direct-
+target stack and retained aggregate accuracy near the anchor, but it did not pass
+any fixed serious-error gate. The hypothesis is falsified for this plan. No lock
+was created, held-out evidence was not read or fingerprinted, and Issue #33 was not
+started. The round stops without changed bounds, replacement candidates, added
+seeds, omitted rows, or automatic expansion. Issue #50 remains open for a
+separately justified and predeclared hypothesis.
