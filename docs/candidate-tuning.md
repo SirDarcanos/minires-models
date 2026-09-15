@@ -1867,3 +1867,32 @@ fresh create-only `run-021`:
 
 Stop after one completed, rejected, or blocked attempt. Do not access or fingerprint
 the held-out test artifact, start Issue #33, or reinterpret prior runs.
+
+### Completed outcome
+
+The separately authorized execution ended as `training_evidence_rejected` with
+`bounded_tail_risk_training_prerequisite_failed`. All four training-only cells and
+all 12 honest-stage base fits completed without runtime blockers. Neither fixed tail
+intervention qualified the route:
+
+| Intervention | Aggregate above-5-g count | Anchor count | Aggregate MAE | Anchor MAE |
+| --- | ---: | ---: | ---: | ---: |
+| Bounded-tail neural network | 199 | 145 | 1.2574 g | 0.9070 g |
+| Fixed 80/20 bounded-tail ensemble | 174 | 145 | 1.1353 g | 0.9070 g |
+
+The ensemble serious-error counts were 37, 36, 38, and 63 across the four cells,
+compared with anchor counts 34, 34, 35, and 42. The neural counts were 44, 39, 39,
+and 77. Both interventions therefore increased aggregate MAE and serious-error
+counts and failed the required per-cell nonincrease condition.
+
+The run used 52.11 elapsed seconds, 156.17 process CPU seconds, and a process
+high-water resident-set measurement of 872,038,400 platform units. All 12 started
+fits completed, no fit failed, and the six conditional validation evaluations were
+skipped. The five create-only artifact checksums were independently recomputed and
+matched; aggregate metric and route accounting were also independently verified.
+
+The end-to-end bounded-tail objective did not support conditional validation for
+this fixed plan. No production fit, validation scoring, candidate selection, lock,
+or held-out assessment occurred. The run stops without retry, changed loss constants,
+replacement candidates, budget recycling, or automatic expansion. Issue #50 remains
+open for another separately justified hypothesis.

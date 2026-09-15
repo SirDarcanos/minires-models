@@ -1576,3 +1576,34 @@ Implementation uses synthetic tests and does not execute or inspect private data
 One execution requires this committed predeclaration, a source-neutral Issue #50
 comment, and separate authorization. Its sole prospective output is fresh
 `private/candidate-tuning/run-021`, invoked with `--plan-kind bounded_tail_risk`.
+
+## End-to-end bounded tail-risk result
+
+The separately authorized execution ended as `training_evidence_rejected` with
+`bounded_tail_risk_training_prerequisite_failed`. All four fixed training-only cells
+completed and all 12 honest-stage base fits succeeded. Neither intervention met the
+predeclared route:
+
+| Intervention | Aggregate above-5-g count | Anchor count | Aggregate MAE | Anchor MAE |
+| --- | ---: | ---: | ---: | ---: |
+| Bounded-tail neural network | 199 | 145 | 1.2574 g | 0.9070 g |
+| Fixed 80/20 bounded-tail ensemble | 174 | 145 | 1.1353 g | 0.9070 g |
+
+The ensemble above-5-g counts were 37, 36, 38, and 63 across split/model cells
+101/41, 101/42, 202/41, and 202/42, versus anchor counts 34, 34, 35, and 42. The
+bounded-tail neural counts were 44, 39, 39, and 77. Both interventions increased
+serious errors in every cell as well as aggregate MAE, so the fixed hypothesis was
+rejected before validation.
+
+The run used 52.11 elapsed seconds and 156.17 process CPU seconds, with a process
+high-water resident-set measurement of 872,038,400 platform units. All 12 started
+fits completed without failure. The six conditional validation candidate evaluations
+were skipped and capacity was not recycled. All five create-only artifact checksums,
+aggregate metric conservation, route decisions, and fit accounting were independently
+verified.
+
+No production fit or validation scoring occurred. No candidate was selected, no lock
+was created, and held-out evidence was not read or fingerprinted. The attempt stops
+without retry, loss/threshold changes, replacement candidates, automatic expansion,
+or Issue #33 continuation. Issue #50 remains open for a separately justified next
+step; deferred raw-geometry work remains tracked in Issue #53.
