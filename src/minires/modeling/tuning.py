@@ -104,6 +104,10 @@ CROSS_FITTED_GATE_DEPENDENCY_VERSIONS = {
     "xgboost": "3.1.2",
 }
 CROSS_FITTED_GATE_SCIKIT_LEARN_VERSION = "1.7.2"
+GUARDED_RESIDUAL_DEVELOPMENT_CHECKSUMS = {
+    "train.jsonl": "90b6285462ee7dca0267e6345530a423c394123b63b0485ca418f9cc55782386",
+    "validation.jsonl": "6d1c0b98b6f807d818202929d6e029af5327a29737d6a27d9b36e5e3f1bb49a5",
+}
 NONLINEAR_OOF_STACKING_VERSION = "minires-nonlinear-oof-stacking-v1"
 NONLINEAR_OOF_ASSIGNMENT_VERSION = "stable-record-identity-sha256-round-robin-v1"
 NONLINEAR_OOF_META_FEATURES = (
@@ -5530,9 +5534,14 @@ def main(argv: Sequence[str] | None = None) -> int:
             "guarded_residual_stacking",
         }
         if args.plan_kind in governed_predeclared_plans:
-            _verify_development_artifact_manifest(
-                args.training_records, args.validation_records
-            )
+            if args.plan_kind == "guarded_residual_stacking":
+                _verify_guarded_residual_development_artifacts(
+                    args.training_records, args.validation_records
+                )
+            else:
+                _verify_development_artifact_manifest(
+                    args.training_records, args.validation_records
+                )
         try:
             runtime: CandidateRuntime = TensorflowXGBoostCandidateRuntime()
         except ImportError:
@@ -5569,6 +5578,29 @@ def _verify_development_artifact_manifest(
             if (
                 not isinstance(expected, str)
                 or len(expected) != 64
+                or sha256(path.read_bytes()).hexdigest() != expected
+            ):
+                raise ValueError("checksum mismatch")
+    except (KeyError, OSError, TypeError, ValueError, json.JSONDecodeError):
+        raise InputError("development_artifact_checksum_mismatch") from None
+
+
+def _verify_guarded_residual_development_artifacts(
+    training_records: Path, validation_records: Path,
+) -> None:
+    data_root = Path(__file__).resolve().parents[3] / "data"
+    expected_paths = (data_root / "train.jsonl", data_root / "validation.jsonl")
+    if tuple(path.resolve() for path in (training_records, validation_records)) != tuple(
+        path.resolve() for path in expected_paths
+    ):
+        raise InputError("development_artifact_checksum_mismatch")
+    try:
+        manifest = json.loads((data_root / "manifest.json").read_text())
+        manifest_artifacts = manifest["artifacts"]
+        for path in expected_paths:
+            expected = GUARDED_RESIDUAL_DEVELOPMENT_CHECKSUMS[path.name]
+            if (
+                manifest_artifacts.get(path.name) != expected
                 or sha256(path.read_bytes()).hexdigest() != expected
             ):
                 raise ValueError("checksum mismatch")

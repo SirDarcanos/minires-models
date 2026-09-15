@@ -40,13 +40,18 @@ def residual_features(
     rows: list[tuple[float, ...]] = []
     for values in zip(*columns):
         anchor = math.fsum(values) / 4.0
-        row = (anchor, *(value - anchor for value in values), max(values) - min(values))
+        cast_anchor = float(np.float32(anchor))
+        row = (
+            cast_anchor,
+            *(value - cast_anchor for value in values),
+            max(values) - min(values),
+        )
         if not all(math.isfinite(value) and abs(value) <= FLOAT32_MAXIMUM for value in row):
             raise ValueError("invalid_guarded_residual_prediction_matrix")
         cast = tuple(float(value) for value in np.asarray(row, dtype=np.float32))
         if not all(math.isfinite(value) for value in cast):
             raise ValueError("invalid_guarded_residual_prediction_matrix")
-        anchors.append(float(np.float32(anchor)))
+        anchors.append(cast_anchor)
         rows.append(cast)
     return tuple(anchors), tuple(rows)
 
@@ -111,7 +116,8 @@ def valid_numeric_state(state: Mapping[str, Any]) -> bool:
             and isinstance(scales, list) and len(scales) == len(FEATURES)
             and isinstance(coefficients, list) and len(coefficients) == len(FEATURES) + 1
             and all(isinstance(value, (int, float)) and not isinstance(value, bool)
-                    and math.isfinite(float(value)) for value in values)
+                    and math.isfinite(float(value))
+                    and abs(float(value)) <= FLOAT32_MAXIMUM for value in values)
             and all(float(value) > 0.0 for value in scales)
             and state["ridge_penalty"] == RIDGE_PENALTY
             and state["feature_clip"] == FEATURE_CLIP
@@ -136,6 +142,8 @@ def predict(
         matrix.ndim != 2 or matrix.shape[1] != len(FEATURES)
         or anchor_values.shape != (matrix.shape[0],)
         or not np.isfinite(matrix).all() or not np.isfinite(anchor_values).all()
+        or np.any(np.abs(matrix) > FLOAT32_MAXIMUM)
+        or np.any(np.abs(anchor_values) > FLOAT32_MAXIMUM)
     ):
         raise ValueError("invalid_guarded_residual_state")
     if correction_scale == 0.0:
@@ -148,7 +156,14 @@ def predict(
     raw = design @ coefficients
     corrections = correction_scale * np.clip(raw, -RESIDUAL_BOUND_G, RESIDUAL_BOUND_G)
     predictions = anchor_values + corrections
-    if not np.isfinite(corrections).all() or not np.isfinite(predictions).all():
+    if (
+        not np.isfinite(raw).all()
+        or not np.isfinite(corrections).all()
+        or not np.isfinite(predictions).all()
+        or np.any(np.abs(raw) > FLOAT32_MAXIMUM)
+        or np.any(np.abs(corrections) > FLOAT32_MAXIMUM)
+        or np.any(np.abs(predictions) > FLOAT32_MAXIMUM)
+    ):
         raise ValueError("invalid_guarded_residual_state")
     return (
         tuple(float(value) for value in predictions),

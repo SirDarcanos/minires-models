@@ -18,6 +18,13 @@ from minires.evaluation.assessment import (
 )
 from minires.ingestion import fingerprint, load_records, normalize
 from minires.source_identity import code_fingerprint
+from minires.modeling.guarded_residual import (
+    FLOAT32_MAXIMUM as GUARDED_RESIDUAL_FLOAT32_MAXIMUM,
+    fit_state as fit_guarded_residual_state,
+    predict as predict_guarded_residual,
+    residual_features as guarded_residual_features,
+    valid_numeric_state as valid_guarded_residual_state,
+)
 from minires.modeling.tuning import (
     CandidateFoldFit,
     DeclaredCandidate,
@@ -788,6 +795,24 @@ class CandidateSearchPlanTests(unittest.TestCase):
             _stack_meta_matrix((columns[0], columns[1], columns[2], (4.0,)), 2)
         with self.assertRaisesRegex(ValueError, "invalid_stack_prediction_matrix"):
             _stack_meta_matrix((columns[0], columns[1], columns[2], (4.0, math.nan)), 2)
+
+    def test_guarded_residual_numeric_contract_uses_cast_anchor_and_rejects_out_of_range_state(self):
+        anchors, features = guarded_residual_features((
+            (16_777_216.0,), (16_777_217.0,),
+            (16_777_218.0,), (16_777_219.0,),
+        ), 1)
+        self.assertEqual(anchors, (16_777_218.0,))
+        self.assertEqual(features[0][1:5], (-2.0, -1.0, 0.0, 1.0))
+
+        state = fit_guarded_residual_state(features, (16_777_218.0,), anchors)
+        self.assertTrue(valid_guarded_residual_state(state))
+        invalid = {**state, "coefficients": [
+            GUARDED_RESIDUAL_FLOAT32_MAXIMUM * 2,
+            *state["coefficients"][1:],
+        ]}
+        self.assertFalse(valid_guarded_residual_state(invalid))
+        with self.assertRaisesRegex(ValueError, "invalid_guarded_residual_state"):
+            predict_guarded_residual(invalid, features, anchors, 1.0)
 
     def test_geometry_regime_rejects_seeds_outside_its_predeclared_pair(self):
         with self.assertRaisesRegex(ValueError, "invalid_search_plan"):
@@ -2507,6 +2532,39 @@ class CandidateTuningTests(unittest.TestCase):
 
                 self.assertEqual(runtime.fit_calls, [])
                 self.assertFalse(output_root.exists())
+
+    def test_guarded_residual_cli_rejects_self_consistent_alternate_artifacts(self):
+        dataset = Path(self.temp.name) / "alternate-dataset"
+        dataset.mkdir()
+        training = dataset / "train.jsonl"
+        validation = dataset / "validation.jsonl"
+        training.write_text("{}\n")
+        validation.write_text("{}\n")
+        (dataset / "manifest.json").write_text(json.dumps({
+            "artifacts": {
+                "train.jsonl": sha256(training.read_bytes()).hexdigest(),
+                "validation.jsonl": sha256(validation.read_bytes()).hexdigest(),
+            },
+        }))
+        runtime = RecordingTuningRuntime()
+        output_root = self.root.parent / "guarded-alternate"
+
+        with patch(
+            "minires.modeling.tuning.TensorflowXGBoostCandidateRuntime",
+            return_value=runtime,
+        ), self.assertRaisesRegex(
+            SystemExit, "development_artifact_checksum_mismatch"
+        ):
+            tuning_main([
+                "--training-records", str(training),
+                "--validation-records", str(validation),
+                "--output-root", str(output_root),
+                "--volume-unit", "mm3", "--scope-confirmed", "--seed", "41",
+                "--plan-kind", "guarded_residual_stacking",
+            ])
+
+        self.assertEqual(runtime.fit_calls, [])
+        self.assertFalse(output_root.exists())
 
     def test_invalid_unbounded_worker_plan_is_rejected_before_runtime_fitting(self):
         runtime = RecordingTuningRuntime()
