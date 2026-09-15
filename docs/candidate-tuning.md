@@ -963,7 +963,10 @@ is preserved.
 
 ## Predeclared correction-transition diagnostic
 
-Status: **IMPLEMENTED NOT EXECUTED**. This is new observational instrumentation,
+Predeclaration status at commit `04af4e0`: **IMPLEMENTED NOT EXECUTED**.
+The separately authorized execution has since completed; see the
+[correction-transition result](issue-50-candidate-search.md#correction-transition-diagnostic-result).
+This is new observational instrumentation,
 not a candidate experiment or a retry/reinterpretation of `run-015`. That preserved
 run contains aggregate metrics, not paired row predictions, so it cannot recover
 repair/harm transitions retrospectively. Its loss improved in all four cells while

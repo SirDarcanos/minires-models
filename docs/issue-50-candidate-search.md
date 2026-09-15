@@ -1011,3 +1011,50 @@ correction change is justified before executed evidence supports it and a separa
 decision authorizes it. No private fitting, dataset reads, validation/test reads or
 fingerprints, publication, candidate locking, or Issue #33 work occurred during
 this implementation. All prior runs remain preserved.
+
+## Correction-transition diagnostic result
+
+The separately authorized diagnostic, predeclared at commit `04af4e0` and on
+Issue #50 before fitting, completed all four fixed cells and 52 fits. It used
+147.80 elapsed seconds and 406.20 process CPU seconds. Both artifacts in the
+create-only manifest were independently checksum-verified; transition counts and
+MAE/loss contribution conservation were independently recomputed from the
+preserved aggregate evidence. No validation or held-out-test evidence was accessed.
+
+Each cell contains 2,074 held-out training rows. A repair moves an anchor error
+strictly above 5 g to at most 5 g; a harm makes the reverse transition.
+
+| Outer split / model seed | Repairs | Harms | Above-5-g count, anchor → corrected | MAE change | Prediction-loss change |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| 101 / 41 | 4 | 7 | 34 → 37 | +0.0693 g | -2.6390 |
+| 101 / 42 | 3 | 9 | 34 → 40 | +0.0834 g | -2.1788 |
+| 202 / 41 | 2 | 4 | 35 → 37 | -0.0485 g | -3.8612 |
+| 202 / 42 | 5 | 0 | 42 → 37 | -0.1105 g | -0.1560 |
+
+The first three cells met the predeclared near-threshold-harm flag: respectively
+7/7, 8/9, and 3/4 introduced serious errors began with anchor errors in (4,5] g.
+The favorable cell repaired five errors without introducing any. This accounts
+for the serious-count contrast; it does not identify a causal property of either
+split or establish that model seed 42 is generally preferable.
+
+Errors beyond 7 g contributed 99.9815%–99.9936% of anchor weighted excess-squared
+loss across the four cells. That bin's prediction-loss reductions were 2.7158,
+2.2843, 3.8871, and 0.1059, respectively. In the first three cells those reductions
+exceeded the total loss reduction, offsetting a net loss increase elsewhere.
+The loss can therefore improve while serious-error count worsens. The ±2 g
+label-aware oracle leaves at least 24, 22, 26, and 24 serious errors respectively;
+these are theoretical training-holdout limits, not deployable predictions or
+validation eligibility results. No assertion of label defects or missing inputs
+follows from this accounting alone.
+
+The evidence supports considering a separately predeclared correction objective
+that limits the influence of errors beyond the correction's repair capacity and
+explicitly evaluates newly introduced serious errors on training holdouts. It does
+not yet establish that such a change will help, choose its constants, or authorize
+implementation/fitting. The frozen anchor and correction remain unchanged.
+
+This is conditional training-only diagnostic evidence, not untouched pipeline or
+validation evidence: historical anchor/count selection used reused validation.
+No candidate was selected and no lock was created. The attempt stops without
+retries, new seeds, changed bounds/losses, budget recycling, validation access, or
+Issue #33 work. Issue #50 stays open and all prior runs remain preserved.
