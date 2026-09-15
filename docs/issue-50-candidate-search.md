@@ -653,5 +653,26 @@ It is therefore falsified for this fixed plan.
 No candidate was repeated or refitted, no lock was created, and held-out assessment
 was not started. The round stops without automatic expansion. Issue #50 remains
 open for a separately justified, predeclared hypothesis. Private row-level results,
-source reports, paths, fingerprints, mappings, candidate configurations, and model
-artifacts remain unpublished.
+source reports, paths, fingerprints, mappings, and model artifacts remain
+unpublished.
+
+## Predeclaration: nonlinear training-OOF stacking (not executed)
+
+The next hypothesis is that a fixed shallow nonlinear combiner can exploit
+complementary errors among four frozen, structurally diverse existing bases enough
+to satisfy the unchanged serious-error gates. It uses no reslicing and no new raw
+prediction feature. Exact base and combiner contracts, five-fold identity-hash
+assignment, seeds 41/42, the eight prediction-only meta inputs, 54-fit and
+7,200-second limits, unchanged gates/ranking, training-only refit, serialization,
+and strict stop behavior are fully declared in
+[`candidate-tuning.md`](candidate-tuning.md#predeclared-nonlinear-out-of-fold-stacking-plan-not-yet-executed)
+and enforced by `minires.modeling.tuning`.
+
+Anonymous source groups remain evaluation-only. Validation labels score, gate, and
+rank; they never fit a base or combiner. Each training row must receive exactly one
+finite OOF prediction from each base. Every candidate is evaluated under both
+seeds, with unfavorable evidence retained. No candidate is locked unless both seed
+results and their equal combination pass every fixed gate. Any incomplete or
+invalid run stops in a fresh create-only directory without replacement, tuning,
+budget recycling, or automatic expansion. This predeclaration does not start the
+private run or access held-out assessment data.

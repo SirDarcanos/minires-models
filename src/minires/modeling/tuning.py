@@ -91,6 +91,27 @@ CROSS_FITTED_GATE_DEPENDENCY_VERSIONS = {
     "xgboost": "3.1.2",
 }
 CROSS_FITTED_GATE_SCIKIT_LEARN_VERSION = "1.7.2"
+NONLINEAR_OOF_STACKING_VERSION = "minires-nonlinear-oof-stacking-v1"
+NONLINEAR_OOF_ASSIGNMENT_VERSION = "stable-record-identity-sha256-round-robin-v1"
+NONLINEAR_OOF_META_FEATURES = (
+    "base_1_g", "base_2_g", "base_3_g", "base_4_g",
+    "mean_g", "min_g", "max_g", "spread_g",
+)
+NONLINEAR_OOF_MAXIMUM_FITS = 54
+NONLINEAR_OOF_META_VARIANTS: tuple[dict[str, Any], ...] = (
+    {"n_estimators": 64, "max_depth": 1, "learning_rate": 0.03,
+     "subsample": 0.80, "colsample_bytree": 1.00, "min_child_weight": 20.0,
+     "gamma": 0.0, "reg_alpha": 0.0, "reg_lambda": 10.0,
+     "objective": "reg:squarederror", "n_jobs": 1, "early_stopping_rounds": 50},
+    {"n_estimators": 96, "max_depth": 2, "learning_rate": 0.03,
+     "subsample": 0.80, "colsample_bytree": 0.80, "min_child_weight": 20.0,
+     "gamma": 0.05, "reg_alpha": 0.1, "reg_lambda": 10.0,
+     "objective": "reg:squarederror", "n_jobs": 1, "early_stopping_rounds": 50},
+    {"n_estimators": 64, "max_depth": 3, "learning_rate": 0.02,
+     "subsample": 0.75, "colsample_bytree": 0.80, "min_child_weight": 30.0,
+     "gamma": 0.1, "reg_alpha": 1.0, "reg_lambda": 20.0,
+     "objective": "reg:squarederror", "n_jobs": 1, "early_stopping_rounds": 50},
+)
 
 NEURAL_NETWORK_DOMAIN: dict[str, tuple[Any, ...]] = {
     "layers": ((64, 32), (128, 64), (128, 64, 32), (256, 128, 64),
@@ -276,7 +297,84 @@ SEARCH_PLAN_POLICIES = {
         "weights by fixed serious-error gate violation before the unchanged "
         "ranking metrics reduces serious absolute errors",
     ),
+    "nonlinear_oof_stacking": SearchPlanPolicy(
+        "nonlinear_oof_stacking", LEGACY_FEATURES, TRANSFORMATION_VERSION,
+        (41, 42), 2, 2, 3, 3, 6, 7200.0,
+        TAIL_ALIGNED_NEURAL_NETWORK_DOMAIN, TAIL_ALIGNED_XGBOOST_DOMAIN,
+        "a nonlinear combiner fitted only on deterministic training out-of-fold "
+        "predictions from four frozen structurally diverse base contracts reduces "
+        "serious absolute errors without adding raw prediction features",
+    ),
 }
+
+
+def _nonlinear_oof_base_candidates() -> tuple[Candidate, ...]:
+    """Return the four frozen, content-identified legacy-feature base contracts."""
+    contracts = (
+        ("neural_network", {
+            "activation": "relu", "batch_size": 32, "dropout": 0.0,
+            "early_stopping_patience": 8, "l2": 1e-6,
+            "layers": (512, 256, 128, 64), "learning_rate": 0.001,
+            "loss": "huber", "maximum_epochs": 61, "optimizer": "adamw",
+            "validation_selection": TAIL_ALIGNED_VALIDATION_SELECTION,
+        }),
+        ("neural_network", {
+            "activation": "mish", "batch_size": 256, "dropout": 0.1,
+            "early_stopping_patience": 8, "l2": 1e-5,
+            "layers": (256, 128, 64), "learning_rate": 0.003,
+            "loss": "huber", "maximum_epochs": 87, "optimizer": "adam",
+            "validation_selection": TAIL_ALIGNED_VALIDATION_SELECTION,
+        }),
+        ("xgboost", {
+            "colsample_bytree": 1.0, "early_stopping_rounds": 50,
+            "gamma": 0.05, "learning_rate": 0.01, "max_depth": 9,
+            "min_child_weight": 1.0, "n_estimators": 584, "n_jobs": 1,
+            "objective": "reg:squarederror", "reg_alpha": 1e-5,
+            "reg_lambda": 10.0, "subsample": 0.9,
+            "validation_selection": TAIL_ALIGNED_VALIDATION_SELECTION,
+        }),
+        ("xgboost", {
+            "colsample_bytree": 0.9, "early_stopping_rounds": 50,
+            "gamma": 0.2, "learning_rate": 0.05, "max_depth": 9,
+            "min_child_weight": 10.0, "n_estimators": 1091, "n_jobs": 1,
+            "objective": "reg:squarederror", "reg_alpha": 0.1,
+            "reg_lambda": 10.0, "subsample": 0.9,
+            "validation_selection": TAIL_ALIGNED_VALIDATION_SELECTION,
+        }),
+    )
+    result = []
+    for index, (family, parameters) in enumerate(contracts, 1):
+        payload = {
+            "version": NONLINEAR_OOF_STACKING_VERSION, "family": family,
+            "parameters": parameters, "features": LEGACY_FEATURES,
+            "transformation_version": TRANSFORMATION_VERSION,
+        }
+        digest = sha256(json.dumps(payload, sort_keys=True).encode()).hexdigest()[:16]
+        result.append(Candidate(
+            f"stack-base-{index:02d}-{digest}", family, parameters,
+            LEGACY_FEATURES, TRANSFORMATION_VERSION,
+        ))
+    return tuple(result)
+
+
+def _nonlinear_oof_stack_candidate(index: int) -> Candidate:
+    bases = _nonlinear_oof_base_candidates()
+    parameters = {
+        "stack_slot": index + 1,
+        "base_candidates": tuple(asdict(base) for base in bases),
+        "meta_parameters": copy.deepcopy(NONLINEAR_OOF_META_VARIANTS[index]),
+        "meta_features": NONLINEAR_OOF_META_FEATURES,
+        "cross_fit_folds": CROSS_FIT_FOLDS,
+        "cross_fit_assignment_version": NONLINEAR_OOF_ASSIGNMENT_VERSION,
+        "stack_fit_partition": "training_oof_predictions_only",
+        "base_refit_partition": "training_records_only",
+        "validation_use": "scoring_eligibility_ranking_and_locking_only",
+    }
+    digest = sha256(json.dumps(parameters, sort_keys=True).encode()).hexdigest()[:16]
+    return Candidate(
+        f"stack-{index + 1:02d}-{digest}", "nonlinear_oof_stack", parameters,
+        LEGACY_FEATURES, NONLINEAR_OOF_STACKING_VERSION,
+    )
 
 
 def _plan_policy(plan_kind: str) -> SearchPlanPolicy:
@@ -571,6 +669,52 @@ class GeometryGateModelSpecification:
 
 
 @dataclass(frozen=True)
+class NonlinearOOFStackModelSpecification:
+    bases: tuple[ModelSpecification, ...]
+    meta: ModelSpecification
+    ordered_prediction_features: tuple[str, ...] = LEGACY_FEATURES
+    identity_namespace: str = NONLINEAR_OOF_STACKING_VERSION
+
+    @property
+    def stable_identity(self) -> str:
+        encoded = json.dumps(
+            self.to_dict(include_identity=False), sort_keys=True,
+            separators=(",", ":"), allow_nan=False,
+        ).encode()
+        return f"model-nonlinear_oof_stack-{sha256(encoded).hexdigest()[:16]}"
+
+    def to_dict(self, *, include_identity: bool = True) -> dict[str, Any]:
+        result = {
+            "version": self.identity_namespace,
+            "model_kind": "nonlinear_oof_stack",
+            "ordered_prediction_features": list(self.ordered_prediction_features),
+            "preprocessing": {
+                "feature_dtype": "float32",
+                "base_normalization": "defined_by_frozen_members",
+                "meta_transformation": "base_predictions_mean_min_max_spread_v1",
+            },
+            "architecture_parameters": {
+                "meta_features": list(NONLINEAR_OOF_META_FEATURES),
+                "cross_fit_folds": CROSS_FIT_FOLDS,
+                "cross_fit_assignment_version": NONLINEAR_OOF_ASSIGNMENT_VERSION,
+            },
+            "training_parameters": {
+                "stack_fit_partition": "training_oof_predictions_only",
+                "base_refit_partition": "training_records_only",
+                "validation_fit_access": False,
+            },
+            "members": {
+                "bases": [base.to_dict() for base in self.bases],
+                "meta": self.meta.to_dict(),
+            },
+            "output_unit": "g",
+        }
+        if include_identity:
+            result["stable_identity"] = self.stable_identity
+        return result
+
+
+@dataclass(frozen=True)
 class LockedCandidate:
     candidate: Candidate
     predictor: Callable[[Sequence[tuple[float, ...]]], Sequence[float]]
@@ -579,7 +723,10 @@ class LockedCandidate:
     contract: dict[str, Any]
 
     @property
-    def specification(self) -> ModelSpecification | GeometryGateModelSpecification:
+    def specification(self) -> (
+        ModelSpecification | GeometryGateModelSpecification
+        | NonlinearOOFStackModelSpecification
+    ):
         return _locked_model_specification(
             self.candidate, self.contract["fixed_training_counts"]
         )
@@ -644,6 +791,31 @@ class TuningResult:
         return base
 
 
+def _valid_nonlinear_stack_state(state: Mapping[str, Any]) -> bool:
+    return (
+        set(state) == {"version", "candidate_id", "base_order", "meta_features",
+                       "cross_fit_folds", "cross_fit_assignment_version",
+                       "oof_assignment_fingerprints", "fixed_training_counts"}
+        and state.get("version") == NONLINEAR_OOF_STACKING_VERSION
+        and isinstance(state.get("candidate_id"), str) and bool(state["candidate_id"])
+        and state.get("base_order") == [item.candidate_id
+                                        for item in _nonlinear_oof_base_candidates()]
+        and state.get("meta_features") == list(NONLINEAR_OOF_META_FEATURES)
+        and state.get("cross_fit_folds") == CROSS_FIT_FOLDS
+        and state.get("cross_fit_assignment_version") == NONLINEAR_OOF_ASSIGNMENT_VERSION
+        and isinstance(state.get("oof_assignment_fingerprints"), Mapping)
+        and set(state["oof_assignment_fingerprints"]) == {"41", "42"}
+        and all(
+            isinstance(value, str) and len(value) == 64
+            and all(character in "0123456789abcdef" for character in value)
+            for value in state["oof_assignment_fingerprints"].values()
+        )
+        and isinstance(state.get("fixed_training_counts"), Mapping)
+        and all(isinstance(value, int) and not isinstance(value, bool) and value > 0
+                for value in state["fixed_training_counts"].values())
+    )
+
+
 def verify_locked_candidate_files(
     directory: str | Path,
     dependency_versions: Mapping[str, str],
@@ -690,12 +862,31 @@ def verify_locked_candidate_files(
         preprocessing = json.loads((root / "preprocessing-state.json").read_text())
         if not isinstance(preprocessing, dict) or not _valid_locked_contract(contract):
             blockers.add("locked_candidate_contract_mismatch")
-        if contract.get("candidate", {}).get("family") == "geometry_gate":
+        family = contract.get("candidate", {}).get("family")
+        if family == "geometry_gate":
             gate_state = json.loads((root / "gate-state.json").read_text())
             if (
                 not isinstance(gate_state, dict)
                 or not _valid_geometry_gate_state(gate_state)
                 or preprocessing.get("gate") != gate_state
+            ):
+                blockers.add("locked_candidate_contract_mismatch")
+        if family == "nonlinear_oof_stack":
+            stack_state = json.loads((root / "stack-state.json").read_text())
+            if (
+                set(preprocessing) != {
+                    "base_1", "base_2", "base_3", "base_4", "meta", "stack_state"
+                }
+                or not all(isinstance(value, Mapping) for value in preprocessing.values())
+                or not isinstance(stack_state, Mapping)
+                or not _valid_nonlinear_stack_state(stack_state)
+                or preprocessing.get("stack_state") != stack_state
+                or stack_state.get("candidate_id")
+                != contract.get("candidate", {}).get("candidate_id")
+                or stack_state.get("fixed_training_counts")
+                != contract.get("fixed_training_counts")
+                or stack_state.get("oof_assignment_fingerprints")
+                != contract.get("oof_assignment", {}).get("fingerprints_by_seed")
             ):
                 blockers.add("locked_candidate_contract_mismatch")
     except (AttributeError, OSError, ValueError, TypeError, json.JSONDecodeError):
@@ -813,20 +1004,28 @@ def generate_search_plan(
     ):
         raise ValueError("invalid_search_plan")
     policy = _plan_policy(limits.plan_kind)
-    domains = _validated_parameter_domains(parameter_domains, policy)
-    neural = _space_filling_candidates(
-        "neural_network", domains["neural_network"], limits.neural_network_trials,
-        limits.seed, policy.prediction_features, policy.feature_transformation_version,
-    )
-    xgboost = _space_filling_candidates(
-        "xgboost", domains["xgboost"], limits.xgboost_trials, limits.seed ^ 0x5EED,
-        policy.prediction_features, policy.feature_transformation_version,
-    )
-    components = neural + xgboost
-    if len({candidate.candidate_id for candidate in components}) != len(components):
-        raise ValueError("invalid_search_plan")
-    for candidate in components:
-        _validate_declared_candidate(candidate)
+    if policy.plan_kind == "nonlinear_oof_stacking":
+        if parameter_domains is not None:
+            raise ValueError("invalid_search_plan")
+        domains: dict[str, dict[str, tuple[Any, ...]]] = {
+            "neural_network": {}, "xgboost": {},
+        }
+        components = _nonlinear_oof_base_candidates()
+    else:
+        domains = _validated_parameter_domains(parameter_domains, policy)
+        neural = _space_filling_candidates(
+            "neural_network", domains["neural_network"], limits.neural_network_trials,
+            limits.seed, policy.prediction_features, policy.feature_transformation_version,
+        )
+        xgboost = _space_filling_candidates(
+            "xgboost", domains["xgboost"], limits.xgboost_trials, limits.seed ^ 0x5EED,
+            policy.prediction_features, policy.feature_transformation_version,
+        )
+        components = neural + xgboost
+        if len({candidate.candidate_id for candidate in components}) != len(components):
+            raise ValueError("invalid_search_plan")
+        for candidate in components:
+            _validate_declared_candidate(candidate)
     normalized_identity = normalized_input_fingerprint or input_fingerprint
     allocation_identity = source_allocation_fingerprint or fingerprint({
         "allocation_version": ALLOCATION_VERSION,
@@ -837,7 +1036,33 @@ def generate_search_plan(
         "code": code_fingerprint, "configuration": configuration_identity,
     })
     dependencies = dict(sorted(dependency_versions.items()))
-    if policy.plan_kind == "cross_fitted_geometry_gate":
+    if policy.plan_kind == "nonlinear_oof_stacking":
+        ensemble_rules = tuple({
+            "stack_slot": index + 1,
+            "stack_candidate_id": _nonlinear_oof_stack_candidate(index).candidate_id,
+            "construction": "nonlinear_oof_stacking",
+            "base_candidates": tuple(asdict(item) for item in components),
+            "base_order": tuple(item.candidate_id for item in components),
+            "fixed_training_counts": tuple(
+                int(item.parameters["maximum_epochs"])
+                if item.family == "neural_network"
+                else int(item.parameters["n_estimators"])
+                for item in components
+            ),
+            "cross_fit_folds": CROSS_FIT_FOLDS,
+            "cross_fit_partition": "training_records_only",
+            "cross_fit_assignment_version": NONLINEAR_OOF_ASSIGNMENT_VERSION,
+            "oof_coverage": "exactly_one_prediction_per_training_row_per_base",
+            "meta_features": NONLINEAR_OOF_META_FEATURES,
+            "meta_feature_formula": "bases_then_float64_mean_min_max_and_max_minus_min_cast_float32",
+            "meta_parameters": copy.deepcopy(NONLINEAR_OOF_META_VARIANTS[index]),
+            "stack_fit_partition": "training_oof_predictions_only",
+            "base_refit_partition": "training_records_only",
+            "validation_use": "scoring_eligibility_ranking_and_locking_only",
+            "source_groups": "evaluation_only",
+            "stable_tie_breaker": "candidate_id_ascending",
+        } for index in range(limits.ensemble_trials))
+    elif policy.plan_kind == "cross_fitted_geometry_gate":
         ensemble_rules = tuple({
             "ensemble_slot": rank,
             "component_rank": rank,
@@ -916,7 +1141,11 @@ def generate_search_plan(
         ),
         "second_seed_rule": {
             "candidate_count": limits.second_seed_candidates,
-            "selection": "best_eligible_initial_candidates_by_ranking_rule",
+            "selection": (
+                "all_predeclared_meta_candidates"
+                if policy.plan_kind == "nonlinear_oof_stacking"
+                else "best_eligible_initial_candidates_by_ranking_rule"
+            ),
             "combination": "equal_seed_weight",
             "unfavorable_repetitions_retained": True,
             "both_seed_results_must_be_eligible": True,
@@ -924,6 +1153,14 @@ def generate_search_plan(
         "resource_limits": {
             "maximum_candidate_runs": limits.maximum_candidate_runs,
             "maximum_elapsed_seconds": limits.maximum_elapsed_seconds,
+            **({
+                "maximum_model_fits": NONLINEAR_OOF_MAXIMUM_FITS,
+                "oof_base_fits": 40,
+                "full_training_base_fits": 8,
+                "meta_fits": 6,
+                "budget_recycling": False,
+                "automatic_expansion": False,
+            } if policy.plan_kind == "nonlinear_oof_stacking" else {}),
             "initial_neural_network_trials": limits.neural_network_trials,
             "initial_xgboost_trials": limits.xgboost_trials,
             "initial_ensemble_trials": limits.ensemble_trials,
@@ -1289,6 +1526,12 @@ def develop_candidates(
     started = clock()
     cpu_started = time.process_time()
     deadline = started + limits.maximum_elapsed_seconds
+    if limits.plan_kind == "nonlinear_oof_stacking":
+        return _develop_nonlinear_oof_stacking(
+            output, plan, runtime, training_rows, validation_rows,
+            training_fingerprint, validation_fingerprint, started, cpu_started,
+            deadline, clock,
+        )
     allocation = {"neural_network": 0, "xgboost": 0, "ensemble": 0,
                   "second_seed": 0, "control": 0}
     blockers: list[str] = []
@@ -1418,6 +1661,401 @@ def develop_candidates(
     )
     _write_tuning_outputs(output, result)
     return result
+
+
+def _stack_meta_matrix(
+    base_predictions: Sequence[Sequence[float]], expected_rows: int,
+) -> tuple[tuple[float, ...], ...]:
+    """Construct only the eight predeclared source-neutral stack inputs."""
+    if len(base_predictions) != 4 or expected_rows <= 0:
+        raise ValueError("invalid_stack_prediction_matrix")
+    columns = [tuple(float(value) for value in column) for column in base_predictions]
+    if any(len(column) != expected_rows for column in columns) or not all(
+        math.isfinite(value) and abs(value) <= FLOAT32_MAXIMUM
+        for column in columns for value in column
+    ):
+        raise ValueError("invalid_stack_prediction_matrix")
+    import numpy as np
+
+    result = []
+    for values in zip(*columns):
+        mean = math.fsum(values) / 4.0
+        low, high = min(values), max(values)
+        row = (*values, mean, low, high, high - low)
+        if not all(math.isfinite(value) and abs(value) <= FLOAT32_MAXIMUM for value in row):
+            raise ValueError("invalid_stack_prediction_matrix")
+        cast = tuple(float(value) for value in np.asarray(row, dtype=np.float32))
+        if not all(math.isfinite(value) for value in cast):
+            raise ValueError("invalid_stack_prediction_matrix")
+        result.append(cast)
+    return tuple(result)
+
+
+def _validate_nonlinear_oof_stack_candidate(candidate: Candidate) -> None:
+    try:
+        bases = tuple(_candidate_from_dict(item) for item in candidate.parameters["base_candidates"])
+        meta = candidate.parameters["meta_parameters"]
+        slot = candidate.parameters["stack_slot"]
+    except (KeyError, TypeError, ValueError):
+        raise ValueError("invalid_candidate_configuration") from None
+    expected_keys = {
+        "stack_slot", "base_candidates", "meta_parameters", "meta_features",
+        "cross_fit_folds", "cross_fit_assignment_version", "stack_fit_partition",
+        "base_refit_partition", "validation_use",
+    }
+    if (
+        candidate.family != "nonlinear_oof_stack"
+        or candidate.ordered_prediction_features != LEGACY_FEATURES
+        or candidate.feature_transformation_version != NONLINEAR_OOF_STACKING_VERSION
+        or set(candidate.parameters) != expected_keys
+        or slot not in (1, 2, 3)
+        or candidate != _nonlinear_oof_stack_candidate(slot - 1)
+        or bases != _nonlinear_oof_base_candidates()
+        or meta != NONLINEAR_OOF_META_VARIANTS[slot - 1]
+        or tuple(candidate.parameters["meta_features"]) != NONLINEAR_OOF_META_FEATURES
+        or candidate.parameters["cross_fit_folds"] != CROSS_FIT_FOLDS
+        or candidate.parameters["cross_fit_assignment_version"] != NONLINEAR_OOF_ASSIGNMENT_VERSION
+        or candidate.parameters["stack_fit_partition"] != "training_oof_predictions_only"
+        or candidate.parameters["base_refit_partition"] != "training_records_only"
+        or candidate.parameters["validation_use"] != "scoring_eligibility_ranking_and_locking_only"
+    ):
+        raise ValueError("invalid_candidate_configuration")
+
+
+def _stack_meta_runtime_candidate(candidate: Candidate) -> Candidate:
+    _validate_nonlinear_oof_stack_candidate(candidate)
+    return Candidate(
+        f"{candidate.candidate_id}-meta", "xgboost",
+        copy.deepcopy(candidate.parameters["meta_parameters"]),
+        NONLINEAR_OOF_META_FEATURES, NONLINEAR_OOF_STACKING_VERSION,
+    )
+
+
+def _stack_fixed_counts(candidate: Candidate) -> dict[str, int]:
+    _validate_nonlinear_oof_stack_candidate(candidate)
+    bases = tuple(_candidate_from_dict(item) for item in candidate.parameters["base_candidates"])
+    result = {
+        f"base_{index}_{'epochs' if base.family == 'neural_network' else 'trees'}": int(
+            base.parameters["maximum_epochs" if base.family == "neural_network" else "n_estimators"]
+        )
+        for index, base in enumerate(bases, 1)
+    }
+    result["meta_trees"] = int(candidate.parameters["meta_parameters"]["n_estimators"])
+    return result
+
+
+def _stack_refit(
+    runtime: CandidateRuntime, candidate: Candidate, seed: int,
+    features: Sequence[tuple[float, ...]], targets: Sequence[float], count: int,
+) -> LockedFit:
+    key = "neural_network_epochs" if candidate.family == "neural_network" else "xgboost_trees"
+    return runtime.refit(candidate, seed, features, targets, {key: count})
+
+
+def _nonlinear_stack_predictor(
+    base_predictors: Sequence[Callable[[Sequence[tuple[float, ...]]], Sequence[float]]],
+    meta_predictor: Callable[[Sequence[tuple[float, ...]]], Sequence[float]],
+) -> Callable[[Sequence[tuple[float, ...]]], Sequence[float]]:
+    if len(base_predictors) != 4:
+        raise ValueError("invalid_stack_state")
+    def predict(rows: Sequence[tuple[float, ...]]) -> Sequence[float]:
+        columns = tuple(_predict(base, rows) for base in base_predictors)
+        return _predict(meta_predictor, _stack_meta_matrix(columns, len(rows)))
+    return predict
+
+
+def _fit_nonlinear_oof_seed(
+    candidates: Sequence[Candidate], seed: int, runtime: CandidateRuntime,
+    training: Sequence[CanonicalRow], validation: Sequence[CanonicalRow],
+    before_fit: Callable[[], None], runs: list[CandidateRun],
+    lock_fits: dict[str, LockedFit],
+) -> None:
+    bases = _nonlinear_oof_base_candidates()
+    assignments = _cross_fit_assignments(training, seed, CROSS_FIT_FOLDS)
+    oof_columns: list[tuple[float, ...]] = []
+    fold_metadata: list[dict[str, Any]] = []
+    for base_index, base in enumerate(bases, 1):
+        oof = [math.nan] * len(training)
+        for fold in range(CROSS_FIT_FOLDS):
+            held = [i for i, value in enumerate(assignments) if value == fold]
+            fitted_indices = [i for i, value in enumerate(assignments) if value != fold]
+            if not held or not fitted_indices:
+                raise ValueError("invalid_cross_fit_partition")
+            fit_rows = [training[i] for i in fitted_indices]
+            held_rows = [training[i] for i in held]
+            fit_x, fit_y = candidate_prediction_matrix(fit_rows, base)
+            held_x, _ = candidate_prediction_matrix(held_rows, base)
+            count = int(base.parameters[
+                "maximum_epochs" if base.family == "neural_network" else "n_estimators"
+            ])
+            before_fit()
+            fitted = _stack_refit(runtime, base, seed, fit_x, fit_y, count)
+            predictions = _predict(fitted.predictor, held_x)
+            for row_index, prediction in zip(held, predictions):
+                if math.isfinite(oof[row_index]):
+                    raise ValueError("invalid_stack_oof_coverage")
+                oof[row_index] = prediction
+            fold_metadata.append({
+                "base_index": base_index, "fold": fold,
+                "training_record_count": len(fitted_indices),
+                "held_out_record_count": len(held),
+            })
+        if not all(math.isfinite(value) for value in oof):
+            raise ValueError("invalid_stack_oof_coverage")
+        oof_columns.append(tuple(oof))
+    _, train_y = candidate_prediction_matrix(training, bases[0])
+    meta_train_x = _stack_meta_matrix(oof_columns, len(training))
+    base_fits: list[LockedFit] = []
+    validation_columns: list[tuple[float, ...]] = []
+    for base in bases:
+        train_x, base_y = candidate_prediction_matrix(training, base)
+        validation_x, _ = candidate_prediction_matrix(validation, base)
+        if base_y != train_y:
+            raise ValueError("invalid_candidate_feature_data")
+        count = int(base.parameters[
+            "maximum_epochs" if base.family == "neural_network" else "n_estimators"
+        ])
+        before_fit()
+        fitted = _stack_refit(runtime, base, seed, train_x, train_y, count)
+        base_fits.append(fitted)
+        validation_columns.append(_predict(fitted.predictor, validation_x))
+    validation_meta_x = _stack_meta_matrix(validation_columns, len(validation))
+    for candidate in candidates:
+        started, cpu_started = time.perf_counter(), time.process_time()
+        try:
+            meta_candidate = _stack_meta_runtime_candidate(candidate)
+            before_fit()
+            meta_fit = runtime.refit(
+                meta_candidate, seed, meta_train_x, train_y,
+                {"xgboost_trees": candidate.parameters["meta_parameters"]["n_estimators"]},
+            )
+            predictions = _predict(meta_fit.predictor, validation_meta_x)
+            reports = _explicit_validation_source_reports(len(training), validation, predictions)
+            metrics = _candidate_metrics(reports)
+            eligible = _tail_eligible(metrics)
+            metadata = {
+                "stack_training": {"partition": "training_oof_predictions_only",
+                    "oof_prediction_count_per_base": [len(training)] * 4,
+                    "source_metadata_used": False, "validation_labels_used": False},
+                "cross_fit_assignment_version": NONLINEAR_OOF_ASSIGNMENT_VERSION,
+                "cross_fit_metadata": copy.deepcopy(fold_metadata),
+                "fixed_training_counts": _stack_fixed_counts(candidate),
+            }
+            runs.append(CandidateRun(
+                candidate, seed, "completed",
+                () if eligible else ("development_serious_error_gate_failed",),
+                eligible, metrics, reports, (metadata,),
+                _resources(time.perf_counter() - started, time.process_time() - cpu_started),
+            ))
+            artifacts: dict[str, bytes] = {}
+            preprocessing: dict[str, Any] = {"meta": dict(meta_fit.preprocessing_state)}
+            for index, fitted in enumerate(base_fits, 1):
+                preprocessing[f"base_{index}"] = dict(fitted.preprocessing_state)
+                artifacts.update({f"base-{index:02d}-{name}": content
+                                  for name, content in fitted.artifacts.items()})
+            artifacts.update({f"meta-{name}": content for name, content in meta_fit.artifacts.items()})
+            lock_fits[candidate.candidate_id] = LockedFit(
+                _nonlinear_stack_predictor(
+                    tuple(fitted.predictor for fitted in base_fits), meta_fit.predictor),
+                preprocessing, artifacts,
+                {"seed": seed, "stack_training": metadata["stack_training"],
+                 "cross_fit_metadata": fold_metadata},
+            )
+        except RuntimeError as error:
+            if str(error) in {"candidate_fit_limit_reached", "candidate_search_deadline_reached"}:
+                raise
+            runs.append(CandidateRun(
+                candidate, seed, "failed", ("candidate_runtime_failed",), False,
+                _empty_metrics(), (), (),
+                _resources(time.perf_counter() - started, time.process_time() - cpu_started),
+            ))
+            raise
+        except Exception:
+            runs.append(CandidateRun(
+                candidate, seed, "failed", ("candidate_runtime_failed",), False,
+                _empty_metrics(), (), (),
+                _resources(time.perf_counter() - started, time.process_time() - cpu_started),
+            ))
+            raise
+
+
+def _develop_nonlinear_oof_stacking(
+    output: Path, plan: SearchPlan, runtime: CandidateRuntime,
+    training: Sequence[CanonicalRow], validation: Sequence[CanonicalRow],
+    training_fingerprint: str, validation_fingerprint: str,
+    started: float, cpu_started: float, deadline: float, clock: Callable[[], float],
+) -> TuningResult:
+    candidates = tuple(_nonlinear_oof_stack_candidate(index) for index in range(3))
+    fit_count = 0
+    def before_fit() -> None:
+        nonlocal fit_count
+        if fit_count >= NONLINEAR_OOF_MAXIMUM_FITS:
+            raise RuntimeError("candidate_fit_limit_reached")
+        if clock() >= deadline:
+            raise RuntimeError("candidate_search_deadline_reached")
+        fit_count += 1
+    blockers: list[str] = []
+    first: list[CandidateRun] = []
+    second: list[CandidateRun] = []
+    second_fits: dict[str, LockedFit] = {}
+    try:
+        _fit_nonlinear_oof_seed(
+            candidates, plan.seed, runtime, training, validation, before_fit,
+            first, {},
+        )
+        _fit_nonlinear_oof_seed(
+            candidates, plan.second_seed, runtime, training, validation, before_fit,
+            second, second_fits,
+        )
+    except Exception as error:
+        reason = str(error)
+        blockers.append(reason if reason in {
+            "candidate_fit_limit_reached", "candidate_search_deadline_reached"
+        } else "candidate_runtime_failed")
+    combined = _combine_seed_results(first, second)
+    locked = None
+    complete = len(first) == len(candidates) and len(second) == len(candidates) and not blockers
+    if complete:
+        eligible = [item for item in combined if item["eligible"]]
+        if not eligible:
+            blockers.append("no_eligible_candidate")
+        else:
+            selected = min(eligible, key=_combined_rank_key)
+            candidate = next(item for item in candidates
+                             if item.candidate_id == selected["candidate_id"])
+            try:
+                locked = _lock_prefitted_nonlinear_stack(
+                    output / "locked-candidate", candidate,
+                    second_fits[candidate.candidate_id], selected, plan,
+                    training, validation, training_fingerprint,
+                    validation_fingerprint,
+                )
+            except Exception:
+                blockers.append("candidate_refit_or_lock_failed")
+    status = ("completed" if locked else "completed_no_candidate"
+              if complete and "no_eligible_candidate" in blockers else "blocked")
+    result = TuningResult(
+        status, tuple(sorted(set(blockers))), len(first) + len(second),
+        {"neural_network": 0, "xgboost": 0, "ensemble": len(first),
+         "second_seed": len(second), "control": 0},
+        plan, None, tuple(first), tuple(second), tuple(combined), locked,
+        {**_resources(max(0.0, clock() - started), time.process_time() - cpu_started),
+         "model_fits": fit_count, "maximum_model_fits": NONLINEAR_OOF_MAXIMUM_FITS},
+    )
+    _write_tuning_outputs(output, result)
+    return result
+
+
+def _lock_prefitted_nonlinear_stack(
+    directory: Path, candidate: Candidate, fitted: LockedFit,
+    selected: Mapping[str, Any], plan: SearchPlan,
+    training: Sequence[CanonicalRow], validation: Sequence[CanonicalRow],
+    training_fingerprint: str, validation_fingerprint: str,
+) -> LockedCandidate:
+    directory.mkdir(parents=True, exist_ok=False, mode=0o700)
+    counts = _stack_fixed_counts(candidate)
+    training_record_identities = [
+        str(row.metadata["record_identity"]) for row in training
+    ]
+    oof_fold_assignments = {
+        str(seed): list(_cross_fit_assignments(training, seed, CROSS_FIT_FOLDS))
+        for seed in (plan.seed, plan.second_seed)
+    }
+    oof_assignment_fingerprints = {
+        str(seed): fingerprint({
+            "version": NONLINEAR_OOF_ASSIGNMENT_VERSION,
+            "record_identities": training_record_identities,
+            "fold_assignments": oof_fold_assignments[str(seed)],
+        })
+        for seed in (plan.seed, plan.second_seed)
+    }
+    contract = {
+        "version": TUNING_VERSION, "development_contract": "explicit_train_validation",
+        "candidate": asdict(candidate),
+        "model_specification": _locked_model_specification(candidate, counts).to_dict(),
+        "runtime_configuration": _locked_runtime_configuration(candidate),
+        "selection_seeds": [plan.seed, plan.second_seed], "seed_weighting": "equal_weight_each_seed",
+        "selected_combined_development_evidence": copy.deepcopy(dict(selected)),
+        "development_evidence": {
+            "search_plan_id": plan.plan_id,
+            "training_input_fingerprint": training_fingerprint,
+            "validation_input_fingerprint": validation_fingerprint,
+            "normalized_training_fingerprint": fingerprint([asdict(row) for row in training]),
+            "normalized_validation_fingerprint": fingerprint([asdict(row) for row in validation]),
+            "training_record_identity_fingerprint": fingerprint([
+                row.metadata["record_identity"] for row in training]),
+            "validation_record_identity_fingerprint": fingerprint([
+                row.metadata["record_identity"] for row in validation]),
+            "partition_identity_fingerprint": plan.source_allocation_fingerprint,
+            "search_plan_fingerprint": fingerprint(plan.to_dict()),
+            "test_input_attestation": "no_test_argument_or_path_available",
+            "validation_grouping_contract": EXPLICIT_DEVELOPMENT_EVIDENCE_VERSION,
+        },
+        "development_source_groups": sorted({str(row.metadata["anonymous_source_group"])
+                                             for row in (*training, *validation)}),
+        "development_data_usage": {
+            "fitting": "training_records_only", "preprocessing": "training_records_only",
+            "early_stopping": "not_used_fixed_training_counts", "ensemble_selection": "not_used",
+            "threshold_selection": "validation_records_only", "candidate_selection": "validation_records_only",
+            "candidate_locking": "training_and_validation_contract_only",
+            "stack_fitting": "training_oof_predictions_only",
+        },
+        "code_fingerprint": plan.code_fingerprint, "transformation_version": TRANSFORMATION_VERSION,
+        "feature_contract": {
+            "ordered_features": list(LEGACY_FEATURES),
+            "transformation_version": NONLINEAR_OOF_STACKING_VERSION, "dtype": "float32",
+            "meta_features": list(NONLINEAR_OOF_META_FEATURES),
+            "excluded_fields": ["anonymous_source_group", "miniature_family", "partition",
+                                "duplicate_group", "geometry_fingerprint", "record_identity",
+                                "location_evidence", "_id", "join_key"],
+        },
+        "features": list(LEGACY_FEATURES), "preprocessing": "locked_fit_on_training_records_only",
+        "preprocessing_state_file": "preprocessing-state.json",
+        "eligibility_rule": _eligibility_gates(), "ranking_rule": list(plan.ranking_rule),
+        "dependency_versions": dict(plan.dependency_versions),
+        "dependency_environment": {"python": platform.python_version(), "platform": platform.platform(),
+                                   "versions": dict(plan.dependency_versions)},
+        "fixed_training_counts": counts, "training_count_rule": "predeclared_fixed_counts",
+        "oof_assignment": {
+            "version": NONLINEAR_OOF_ASSIGNMENT_VERSION,
+            "fold_count": CROSS_FIT_FOLDS,
+            "training_record_identities": training_record_identities,
+            "fold_assignments_by_seed": oof_fold_assignments,
+            "fingerprints_by_seed": oof_assignment_fingerprints,
+        },
+        "refit_partition": "training_records_only", "refit_record_count": len(training),
+        "validation_record_count": len(validation), "test_input_accessed": False,
+        "final_test_access": False, "classification": "internal_advisory_human_review_required",
+        "output_unit": "g", "runtime_metadata": fitted.metadata,
+    }
+    stack_state = {
+        "version": NONLINEAR_OOF_STACKING_VERSION,
+        "candidate_id": candidate.candidate_id,
+        "base_order": [item.candidate_id for item in _nonlinear_oof_base_candidates()],
+        "meta_features": list(NONLINEAR_OOF_META_FEATURES),
+        "cross_fit_folds": CROSS_FIT_FOLDS,
+        "cross_fit_assignment_version": NONLINEAR_OOF_ASSIGNMENT_VERSION,
+        "oof_assignment_fingerprints": oof_assignment_fingerprints,
+        "fixed_training_counts": counts,
+    }
+    preprocessing_state = {**fitted.preprocessing_state, "stack_state": stack_state}
+    artifacts = {**fitted.artifacts, "stack-state.json": (
+        json.dumps(stack_state, sort_keys=True, separators=(",", ":"), allow_nan=False) + "\n"
+    ).encode()}
+    write_private_json(directory / "candidate-contract.json", contract)
+    write_private_json(directory / "preprocessing-state.json", preprocessing_state)
+    for name, content in sorted(artifacts.items()):
+        if not name or Path(name).name != name or not isinstance(content, bytes):
+            raise InputError("invalid_locked_candidate_artifact")
+        with create_private_file(directory / name) as stream:
+            stream.write(content)
+    files = sorted(path for path in directory.iterdir() if path.is_file())
+    manifest = {"version": TUNING_VERSION,
+                "files": {path.name: sha256(path.read_bytes()).hexdigest() for path in files},
+                "create_only": True, "locked_before_final_assessment": True,
+                "test_input_accessed": False}
+    write_private_json(directory / "lock-manifest.json", manifest)
+    return LockedCandidate(candidate, fitted.predictor, directory, manifest, contract)
 
 
 def _complete_explicit_identities(identities: SearchPlanIdentities) -> SearchPlanIdentities:
@@ -1915,24 +2553,32 @@ def _fit_training_oof_geometry_gate(
     return gate_state, fold_metadata
 
 
-def _cross_fit_assignments(
-    rows: Sequence[CanonicalRow], seed: int, fold_count: int,
+def _cross_fit_assignments_for_identities(
+    record_identities: Sequence[str], seed: int, fold_count: int,
 ) -> tuple[int, ...]:
-    if len(rows) < fold_count or fold_count < 2:
+    if len(record_identities) < fold_count or fold_count < 2 or any(
+        not isinstance(identity, str) or not identity for identity in record_identities
+    ) or len(set(record_identities)) != len(record_identities):
         raise ValueError("invalid_cross_fit_partition")
-    identities = []
-    for index, row in enumerate(rows):
-        identity = row.metadata.get("record_identity")
-        if not isinstance(identity, str) or not identity:
-            raise ValueError("invalid_cross_fit_partition")
-        digest = sha256(f"{seed}:{identity}".encode()).hexdigest()
-        identities.append((digest, identity, index))
-    if len({identity for _, identity, _ in identities}) != len(rows):
-        raise ValueError("invalid_cross_fit_partition")
-    assignments = [0] * len(rows)
+    identities = [
+        (sha256(f"{seed}:{identity}".encode()).hexdigest(), identity, index)
+        for index, identity in enumerate(record_identities)
+    ]
+    assignments = [0] * len(record_identities)
     for position, (_, _, index) in enumerate(sorted(identities)):
         assignments[index] = position % fold_count
     return tuple(assignments)
+
+
+def _cross_fit_assignments(
+    rows: Sequence[CanonicalRow], seed: int, fold_count: int,
+) -> tuple[int, ...]:
+    identities = [row.metadata.get("record_identity") for row in rows]
+    if any(not isinstance(identity, str) for identity in identities):
+        raise ValueError("invalid_cross_fit_partition")
+    return _cross_fit_assignments_for_identities(
+        tuple(str(identity) for identity in identities), seed, fold_count
+    )
 
 
 def _fit_geometry_gate(
@@ -2496,6 +3142,60 @@ def _eligibility_gates() -> dict[str, float | int]:
         "per_source_above_5g_fraction_maximum": PER_SOURCE_ABOVE_5G_FRACTION_MAXIMUM,
         "per_source_minimum_accepted_records": PER_SOURCE_MINIMUM_ACCEPTED_RECORDS,
     }
+
+
+def _valid_candidate_metrics(metrics: Mapping[str, Any]) -> bool:
+    if set(metrics) != set(_empty_metrics()):
+        return False
+    count_keys = ("sample_count", "source_count", "qualifying_source_count")
+    if any(
+        not isinstance(metrics.get(key), int) or isinstance(metrics.get(key), bool)
+        or metrics[key] < 0 for key in count_keys
+    ):
+        return False
+    if (
+        metrics["sample_count"] <= 0
+        or metrics["source_count"] <= 0
+        or metrics["source_count"] > metrics["sample_count"]
+        or metrics["qualifying_source_count"] > metrics["source_count"]
+    ):
+        return False
+    for key in ("pooled_mae_g", "source_balanced_mae_g"):
+        value = metrics.get(key)
+        if (not isinstance(value, (int, float)) or isinstance(value, bool)
+                or not math.isfinite(float(value)) or float(value) < 0.0):
+            return False
+    fraction_keys = (
+        "pooled_within_2g_fraction", "source_balanced_within_2g_fraction",
+        "pooled_above_5g_fraction", "source_balanced_above_5g_fraction",
+        "maximum_source_above_5g_fraction",
+    )
+    if any(
+        not isinstance(metrics.get(key), (int, float))
+        or isinstance(metrics.get(key), bool)
+        or not math.isfinite(float(metrics[key]))
+        or not 0.0 <= float(metrics[key]) <= 1.0
+        for key in fraction_keys
+    ) or any(
+        float(metrics[within]) + float(metrics[above]) > 1.0 + 1e-12
+        for within, above in (
+            ("pooled_within_2g_fraction", "pooled_above_5g_fraction"),
+            ("source_balanced_within_2g_fraction",
+             "source_balanced_above_5g_fraction"),
+        )
+    ) or float(metrics["maximum_source_above_5g_fraction"]) + 1e-12 < float(
+        metrics["source_balanced_above_5g_fraction"]
+    ):
+        return False
+    qualifying_maximum = metrics.get("maximum_qualifying_source_above_5g_fraction")
+    if metrics["qualifying_source_count"] == 0:
+        return qualifying_maximum is None
+    return (
+        isinstance(qualifying_maximum, (int, float))
+        and not isinstance(qualifying_maximum, bool)
+        and math.isfinite(float(qualifying_maximum))
+        and 0.0 <= float(qualifying_maximum) <= float(metrics["maximum_source_above_5g_fraction"])
+    )
 
 
 def _tail_eligible(metrics: Mapping[str, Any]) -> bool:
@@ -3082,6 +3782,18 @@ def _rounded_median_count(values: Sequence[int]) -> int:
 
 
 def _locked_runtime_configuration(candidate: Candidate) -> dict[str, Any]:
+    if candidate.family == "nonlinear_oof_stack":
+        _validate_nonlinear_oof_stack_candidate(candidate)
+        return {
+            "bases": [copy.deepcopy(CANDIDATE_RUNTIME_CONTRACT[item.family])
+                      for item in _nonlinear_oof_base_candidates()],
+            "meta": {**copy.deepcopy(CANDIDATE_RUNTIME_CONTRACT["xgboost"]),
+                     "early_stopping_partition": "none_fixed_tree_count"},
+            "combination": "base_predictions_mean_min_max_spread_then_xgboost",
+            "stack_fit_partition": "training_oof_predictions_only",
+            "cross_fit_folds": CROSS_FIT_FOLDS,
+            "cross_fit_assignment_version": NONLINEAR_OOF_ASSIGNMENT_VERSION,
+        }
     if candidate.family == "geometry_gate":
         return {
             "neural_network": copy.deepcopy(CANDIDATE_RUNTIME_CONTRACT["neural_network"]),
@@ -3106,6 +3818,11 @@ def _valid_fixed_training_counts(
     epochs = fixed_counts.get("neural_network_epochs")
     trees = fixed_counts.get("xgboost_trees")
     weight = fixed_counts.get("ensemble_neural_network_weight")
+    if candidate.family == "nonlinear_oof_stack":
+        try:
+            return dict(fixed_counts) == _stack_fixed_counts(candidate)
+        except ValueError:
+            return False
     return (
         candidate.family == "neural_network"
         and isinstance(epochs, int) and not isinstance(epochs, bool) and epochs > 0
@@ -3123,6 +3840,12 @@ def _valid_fixed_training_counts(
 
 
 def _valid_locked_feature_contract(candidate: Candidate) -> bool:
+    if candidate.family == "nonlinear_oof_stack":
+        try:
+            _validate_nonlinear_oof_stack_candidate(candidate)
+            return True
+        except ValueError:
+            return False
     if candidate.family == "geometry_gate":
         try:
             _validate_geometry_gate_candidate(candidate)
@@ -3166,6 +3889,78 @@ def _valid_locked_feature_contract(candidate: Candidate) -> bool:
     )
 
 
+def _valid_nonlinear_stack_lock_fields(
+    contract: Mapping[str, Any], candidate: Candidate,
+) -> bool:
+    if candidate.family != "nonlinear_oof_stack":
+        return True
+    evidence = contract.get("development_evidence")
+    selected = contract.get("selected_combined_development_evidence")
+    feature_contract = contract.get("feature_contract")
+    oof_assignment = contract.get("oof_assignment")
+    if not isinstance(evidence, Mapping) or not isinstance(oof_assignment, Mapping):
+        return False
+    try:
+        assignment_identities = oof_assignment["training_record_identities"]
+        assignment_folds = oof_assignment["fold_assignments_by_seed"]
+        assignment_fingerprints = oof_assignment["fingerprints_by_seed"]
+        expected_folds = {
+            str(seed): list(_cross_fit_assignments_for_identities(
+                assignment_identities, seed, CROSS_FIT_FOLDS
+            ))
+            for seed in (41, 42)
+        }
+        expected_fingerprints = {
+            str(seed): fingerprint({
+                "version": NONLINEAR_OOF_ASSIGNMENT_VERSION,
+                "record_identities": assignment_identities,
+                "fold_assignments": expected_folds[str(seed)],
+            })
+            for seed in (41, 42)
+        }
+    except (KeyError, TypeError, ValueError):
+        return False
+    return (
+        contract.get("selection_seeds") == [41, 42]
+        and contract.get("seed_weighting") == "equal_weight_each_seed"
+        and contract.get("training_count_rule") == "predeclared_fixed_counts"
+        and isinstance(oof_assignment, Mapping)
+        and oof_assignment.get("version") == NONLINEAR_OOF_ASSIGNMENT_VERSION
+        and oof_assignment.get("fold_count") == CROSS_FIT_FOLDS
+        and isinstance(assignment_identities, list)
+        and bool(assignment_identities)
+        and all(isinstance(identity, str) and identity for identity in assignment_identities)
+        and len(set(assignment_identities)) == len(assignment_identities)
+        and fingerprint(assignment_identities)
+        == evidence.get("training_record_identity_fingerprint")
+        and assignment_folds == expected_folds
+        and assignment_fingerprints == expected_fingerprints
+        and isinstance(selected, Mapping)
+        and set(selected) == {
+            "candidate_id", "family", "eligible", "blockers", "seed_results",
+            "seed_eligibility", "equal_seed_weight", "metrics",
+        }
+        and selected.get("candidate_id") == candidate.candidate_id
+        and selected.get("family") == candidate.family
+        and selected.get("eligible") is True
+        and selected.get("blockers") == []
+        and selected.get("seed_results") == [41, 42]
+        and selected.get("seed_eligibility") == [True, True]
+        and selected.get("equal_seed_weight") == 0.5
+        and isinstance(selected.get("metrics"), Mapping)
+        and _valid_candidate_metrics(selected["metrics"])
+        and _tail_eligible(selected["metrics"])
+        and isinstance(evidence, Mapping)
+        and all(isinstance(evidence.get(name), str) and evidence.get(name) for name in (
+            "training_record_identity_fingerprint",
+            "validation_record_identity_fingerprint",
+        ))
+        and isinstance(feature_contract, Mapping)
+        and feature_contract.get("meta_features") == list(NONLINEAR_OOF_META_FEATURES)
+        and feature_contract.get("transformation_version") == NONLINEAR_OOF_STACKING_VERSION
+    )
+
+
 def _valid_locked_contract(contract: Mapping[str, Any]) -> bool:
     evidence = contract.get("development_evidence")
     feature_contract = contract.get("feature_contract")
@@ -3185,13 +3980,22 @@ def _valid_locked_contract(contract: Mapping[str, Any]) -> bool:
         required_usage = {
             "fitting": "training_records_only",
             "preprocessing": "training_records_only",
-            "early_stopping": "validation_records_only",
-            "ensemble_selection": "validation_records_only",
+            "early_stopping": (
+                "not_used_fixed_training_counts"
+                if candidate.family == "nonlinear_oof_stack"
+                else "validation_records_only"
+            ),
+            "ensemble_selection": (
+                "not_used" if candidate.family == "nonlinear_oof_stack"
+                else "validation_records_only"
+            ),
             "threshold_selection": "validation_records_only",
             "candidate_selection": "validation_records_only",
             "candidate_locking": "training_and_validation_contract_only",
             **({"gate_fitting": "training_oof_predictions_only"}
                if candidate.family == "geometry_gate" else {}),
+            **({"stack_fitting": "training_oof_predictions_only"}
+               if candidate.family == "nonlinear_oof_stack" else {}),
         }
         return (
             contract.get("version") == TUNING_VERSION
@@ -3200,6 +4004,7 @@ def _valid_locked_contract(contract: Mapping[str, Any]) -> bool:
             and contract.get("test_input_accessed") is False
             and contract.get("refit_partition") == "training_records_only"
             and contract.get("runtime_configuration") == _locked_runtime_configuration(candidate)
+            and _valid_nonlinear_stack_lock_fields(contract, candidate)
             and isinstance(evidence, Mapping)
             and all(isinstance(evidence.get(key), str) and evidence.get(key) for key in (
                 "search_plan_id", "training_input_fingerprint",
@@ -3389,6 +4194,10 @@ def _validate_plan(
         limits.neural_network_trials + limits.xgboost_trials
     ):
         raise ValueError("invalid_search_plan")
+    if limits.plan_kind == "nonlinear_oof_stacking":
+        if plan.component_trials != _nonlinear_oof_base_candidates():
+            raise ValueError("invalid_search_plan")
+        return
     for candidate in plan.component_trials:
         domain = plan.parameter_domains.get(candidate.family)
         if domain is None or set(candidate.parameters) != set(domain):
@@ -3426,34 +4235,60 @@ def _search_stop_reason(result: TuningResult) -> str:
     return result.blockers[0] if result.blockers else "search_stopped"
 
 
+def _planned_initial_candidate_ids(plan: SearchPlan) -> tuple[str, ...]:
+    if plan.generator.get("plan_kind") == "nonlinear_oof_stacking":
+        return tuple(str(rule["stack_candidate_id"]) for rule in plan.ensemble_rules)
+    return (
+        *(candidate.candidate_id for candidate in plan.component_trials),
+        *(f"ensemble-slot-{index + 1:02d}" for index in range(len(plan.ensemble_rules))),
+    )
+
+
 def _skipped_candidates(result: TuningResult) -> list[dict[str, Any]]:
     attempted = {run.candidate.candidate_id for run in result.initial_results}
     reason = _search_stop_reason(result)
-    skipped = [
-        {"candidate_id": candidate.candidate_id, "phase": "initial", "reason": reason}
-        for candidate in result.plan.component_trials if candidate.candidate_id not in attempted
-    ]
-    skipped.extend(
-        {"candidate_id": f"ensemble-slot-{index + 1:02d}", "phase": "initial",
-         "reason": reason}
-        for index in range(
-            result.allocation["ensemble"], len(result.plan.ensemble_rules)
+    planned_initial_ids = _planned_initial_candidate_ids(result.plan)
+    if result.plan.generator.get("plan_kind") == "nonlinear_oof_stacking":
+        skipped = [
+            {"candidate_id": candidate_id, "phase": "initial", "reason": reason}
+            for candidate_id in planned_initial_ids if candidate_id not in attempted
+        ]
+    else:
+        skipped = [
+            {"candidate_id": candidate.candidate_id, "phase": "initial", "reason": reason}
+            for candidate in result.plan.component_trials
+            if candidate.candidate_id not in attempted
+        ]
+        skipped.extend(
+            {"candidate_id": f"ensemble-slot-{index + 1:02d}", "phase": "initial",
+             "reason": reason}
+            for index in range(
+                result.allocation["ensemble"], len(result.plan.ensemble_rules)
+            )
         )
-    )
     eligible_count = sum(run.eligible for run in result.initial_results)
-    initial_candidate_count = (
-        len(result.plan.component_trials) + len(result.plan.ensemble_rules)
-    )
+    initial_candidate_count = len(planned_initial_ids)
     second_seed_count = int(result.plan.second_seed_rule["candidate_count"])
-    skipped.extend(
-        {"candidate_id": f"second-seed-slot-{index + 1:02d}", "phase": "second_seed",
-         "reason": (
-             "eligible_candidate_shortfall"
-             if len(result.initial_results) == initial_candidate_count
-             and index >= eligible_count else reason
-         )}
-        for index in range(result.allocation["second_seed"], second_seed_count)
-    )
+    if result.plan.generator.get("plan_kind") == "nonlinear_oof_stacking":
+        second_attempted = {
+            run.candidate.candidate_id for run in result.second_seed_results
+        }
+        skipped.extend(
+            {"candidate_id": candidate_id, "phase": "second_seed", "reason": reason}
+            for candidate_id in planned_initial_ids
+            if candidate_id not in second_attempted
+        )
+    else:
+        skipped.extend(
+            {"candidate_id": f"second-seed-slot-{index + 1:02d}",
+             "phase": "second_seed",
+             "reason": (
+                 "eligible_candidate_shortfall"
+                 if len(result.initial_results) == initial_candidate_count
+                 and index >= eligible_count else reason
+             )}
+            for index in range(result.allocation["second_seed"], second_seed_count)
+        )
     maximum_runs = int(result.plan.resource_limits["maximum_candidate_runs"])
     return skipped[:max(0, maximum_runs - result.run_count)]
 
@@ -3462,15 +4297,18 @@ def _second_seed_comparison(result: TuningResult) -> dict[str, Any]:
     eligible_count = sum(
         run.status == "completed" and run.eligible for run in result.initial_results
     )
-    target = min(result.plan.second_seed_rule["candidate_count"], eligible_count)
+    target = (
+        int(result.plan.second_seed_rule["candidate_count"])
+        if result.plan.generator.get("plan_kind") == "nonlinear_oof_stacking"
+        else min(result.plan.second_seed_rule["candidate_count"], eligible_count)
+    )
     return {
         "planned_finalists": result.plan.second_seed_rule["candidate_count"],
         "eligible_initial_candidates": eligible_count,
         "repeated_candidates": len(result.second_seed_results),
         "shortfall": max(0, result.plan.second_seed_rule["candidate_count"] - eligible_count),
         "complete": (
-            len(result.initial_results)
-            == len(result.plan.component_trials) + len(result.plan.ensemble_rules)
+            len(result.initial_results) == len(_planned_initial_candidate_ids(result.plan))
             and len(result.second_seed_results) == target
             and all(run.status == "completed" for run in result.second_seed_results)
         ),
@@ -3645,6 +4483,22 @@ class TensorflowXGBoostCandidateRuntime:
             candidate, contract["fixed_training_counts"]
         )
         preprocessing = json.loads((directory / "preprocessing-state.json").read_text())
+        if candidate.family == "nonlinear_oof_stack":
+            assert isinstance(specification, NonlinearOOFStackModelSpecification)
+            bases = []
+            for index, base_specification in enumerate(specification.bases, 1):
+                artifact = "model.keras" if base_specification.model_kind is ModelKind.NEURAL_NETWORK else "model.json"
+                bases.append(self.models.load(
+                    base_specification,
+                    {artifact: (directory / f"base-{index:02d}-{artifact}").read_bytes()},
+                    preprocessing[f"base_{index}"],
+                ))
+            meta = self.models.load(
+                specification.meta,
+                {"model.json": (directory / "meta-model.json").read_bytes()},
+                preprocessing["meta"],
+            )
+            return _nonlinear_stack_predictor(tuple(bases), meta)
         if candidate.family == "geometry_gate":
             assert isinstance(specification, GeometryGateModelSpecification)
             gate_state = json.loads((directory / "gate-state.json").read_text())
@@ -3712,6 +4566,21 @@ def _component_fit_metadata(fitted: FittedModel) -> dict[str, Any]:
 def _locked_model_specification(
     candidate: Candidate, fixed_training_counts: Mapping[str, int | float],
 ):
+    if candidate.family == "nonlinear_oof_stack":
+        _validate_nonlinear_oof_stack_candidate(candidate)
+        if dict(fixed_training_counts) != _stack_fixed_counts(candidate):
+            raise ValueError("invalid_locked_candidate_training_counts")
+        bases = []
+        for item in candidate.parameters["base_candidates"]:
+            base = _candidate_from_dict(item)
+            specification = base.specification
+            if specification is None:
+                raise ValueError("invalid_candidate_configuration")
+            bases.append(specification)
+        meta = _stack_meta_runtime_candidate(candidate).specification
+        if meta is None:
+            raise ValueError("invalid_candidate_configuration")
+        return NonlinearOOFStackModelSpecification(tuple(bases), meta)
     if candidate.family == "geometry_gate":
         _validate_geometry_gate_candidate(candidate)
         fixed_neural, fixed_xgboost = _fixed_geometry_gate_components(
@@ -3829,7 +4698,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     try:
         governed_predeclared_plans = {
             "cross_fitted_geometry_gate", "legacy_geometry_augmentation",
-            "tail_aligned_selection",
+            "tail_aligned_selection", "nonlinear_oof_stacking",
         }
         if args.plan_kind in governed_predeclared_plans:
             _verify_development_artifact_manifest(

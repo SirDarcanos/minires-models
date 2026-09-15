@@ -513,6 +513,77 @@ the same two-seed validation evidence. If no initial candidate qualifies, the ru
 records the best initial development result, performs no repetitions or refit, and ends as
 `completed_no_candidate` without expanding the budget.
 
+### Predeclared nonlinear out-of-fold stacking plan (not yet executed)
+
+Issue #50's next bounded round is `nonlinear_oof_stacking`. It retains the
+ordered seven-feature legacy input contract and performs no reslicing and adds no
+raw prediction features. The four frozen base contracts are, in order:
+
+1. neural network: layers 512/256/128/64, ReLU, dropout 0, AdamW, Huber,
+   learning rate 0.001, L2 0.000001, batch 32, fixed 61 epochs;
+2. neural network: layers 256/128/64, Mish, dropout 0.1, Adam, Huber,
+   learning rate 0.003, L2 0.00001, batch 256, fixed 87 epochs;
+3. XGBoost: 584 trees, depth 9, learning rate 0.01, subsample 0.9,
+   column sample 1.0, minimum child weight 1, gamma 0.05, alpha 0.00001,
+   lambda 10; and
+4. XGBoost: 1,091 trees, depth 9, learning rate 0.05, subsample 0.9,
+   column sample 0.9, minimum child weight 10, gamma 0.2, alpha 0.1,
+   lambda 10.
+
+Both tree bases use `reg:squarederror`, `hist`, and one worker. The complete
+contracts, including the otherwise unused early-stopping settings inherited from
+the existing candidates, are content-identified in the generated plan. During
+this round every base fit uses its fixed count with no early stopping.
+
+For each seed 41 and 42, training identities are sorted by SHA-256 of
+`seed:record_identity` and assigned round-robin to five folds. Identity is used
+only for assignment. Each base fits five times on four folds and predicts the
+held fold, so every training row must receive exactly one finite OOF prediction
+per base. Source group, target, miniature family, linkage, partition, path, and
+identity are unavailable to model matrices. The combiner matrix is exactly the
+four ordered base predictions followed by their float64 mean, minimum, maximum,
+and spread (`maximum - minimum`), cast to float32. Wrong-length, non-finite, or
+out-of-float32 predictions block the round.
+
+Exactly three shallow XGBoost combiners are declared: (1) 64 trees/depth 1/rate
+0.03/subsample 0.80/column sample 1.00/child weight 20/gamma 0/alpha 0/lambda 10;
+(2) 96 trees/depth 2/rate 0.03/subsample 0.80/column sample 0.80/child weight
+20/gamma 0.05/alpha 0.1/lambda 10; and (3) 64 trees/depth 3/rate
+0.02/subsample 0.75/column sample 0.80/child weight 30/gamma 0.1/alpha 1/lambda
+20. All use `reg:squarederror`, `hist`, one worker, their evaluation seed, fixed
+tree counts, and no early stopping. They fit only training targets against OOF
+predictions. Four bases are then fit once on all training rows and produce
+validation inputs; validation labels only score eligibility and ranking.
+
+The finite allocation is three candidates under each of two seeds: six candidate
+evaluations, 40 OOF base fits, eight full-training base fits, and six combiner
+fits (54 model fits total), with a 7,200-second ceiling checked before every fit.
+No budget is recycled. Existing serious-error eligibility gates and ranking are
+unchanged. All three candidates run under both seeds, unfavorable evidence is
+retained, and eligibility is required under seed 41, seed 42, and their equal
+combination. Incomplete execution, any invalid vector, or no qualifying candidate
+stops without substitution, extra seeds, changed folds, tuning, or expansion.
+
+The seed-42 training-only fitted state is the predeclared refit used for a selected
+lock; validation never fits it. The create-only lock checksum-binds all four base
+contracts/artifacts and preprocessing states, the combiner contract/artifact and
+state, fixed counts, base/meta ordering, fold algorithm/version/count, seeds,
+training and validation identity fingerprints, dependencies, code and feature
+contracts, gates/ranking, and no-test-access attestation. Loading verifies every
+checksum and reconstructs the exact ordering before prediction.
+
+The command is intentionally not run by this change. A later authorized private
+round uses a fresh output directory:
+
+```bash
+.venv-candidates/bin/python -m minires.modeling.tuning \
+  --training-records data/train.jsonl \
+  --validation-records data/validation.jsonl \
+  --output-root private/candidate-tuning/<fresh-run> \
+  --volume-unit mm3 --scope-confirmed --seed 41 \
+  --plan-kind nonlinear_oof_stacking
+```
+
 ## Locked candidate
 
 A successful search creates `locked-candidate/` with:

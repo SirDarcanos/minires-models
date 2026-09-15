@@ -16,7 +16,7 @@ from minires.evaluation.assessment import (
     evaluate_promotion_gates,
     main as assessment_main,
 )
-from minires.ingestion import fingerprint, load_records
+from minires.ingestion import fingerprint, load_records, normalize
 from minires.source_identity import code_fingerprint
 from minires.modeling.tuning import (
     CandidateFoldFit,
@@ -32,8 +32,11 @@ from minires.modeling.tuning import (
     main as tuning_main,
     tune_candidates,
     verify_locked_candidate_files,
+    _cross_fit_assignments,
+    _nonlinear_oof_stack_candidate,
     _select_ensemble_weight,
     _selected_epoch_count,
+    _stack_meta_matrix,
     _source_candidate_metrics,
     _tail_selection_key,
 )
@@ -224,6 +227,19 @@ class PredictionMutatingRuntime(RecordingTuningRuntime):
             return [row[1] / 1000.0 for row in rows]
 
         return CandidateFoldFit(predictor=predict, metadata=metadata, fitted_state=state)
+
+
+class StackRecordingRuntime(RecordingTuningRuntime):
+    def refit(self, candidate, seed, features, targets, fixed_training_counts):
+        self.refit_calls.append((candidate.candidate_id, tuple(features), fixed_training_counts))
+        is_meta = candidate.candidate_id.endswith("-meta")
+        return LockedFit(
+            predictor=(lambda rows: [row[0] for row in rows]) if is_meta
+            else (lambda rows: [row[1] / 1000.0 for row in rows]),
+            preprocessing_state={"fit_rows": len(features), "meta": is_meta},
+            artifacts={"model.bin": candidate.candidate_id.encode()},
+            metadata={"seed": seed, "validation_used": False},
+        )
 
 
 class CandidateSearchPlanTests(unittest.TestCase):
@@ -645,6 +661,89 @@ class CandidateSearchPlanTests(unittest.TestCase):
             self.assertNotIn("anonymous_source_group", json.dumps(rule))
             self.assertNotIn("miniature_family", json.dumps(rule))
         self.assertTrue(first.second_seed_rule["both_seed_results_must_be_eligible"])
+
+    def test_nonlinear_oof_stacking_plan_is_complete_finite_and_source_neutral(self):
+        limits = SearchLimits.for_plan(41, "nonlinear_oof_stacking")
+        first = generate_search_plan(
+            limits, input_fingerprint="input", code_fingerprint="code",
+            dependency_versions={"runtime": "synthetic-1"},
+        )
+        second = generate_search_plan(
+            limits, input_fingerprint="input", code_fingerprint="code",
+            dependency_versions={"runtime": "synthetic-1"},
+        )
+
+        self.assertEqual(first, second)
+        self.assertEqual((first.seed, first.second_seed), (41, 42))
+        self.assertEqual([item.family for item in first.component_trials],
+                         ["neural_network", "neural_network", "xgboost", "xgboost"])
+        self.assertEqual([
+            item.parameters.get("maximum_epochs", item.parameters.get("n_estimators"))
+            for item in first.component_trials
+        ], [61, 87, 584, 1091])
+        self.assertEqual(first.parameter_domains,
+                         {"neural_network": {}, "xgboost": {}})
+        self.assertEqual(first.resource_limits["maximum_candidate_runs"], 6)
+        self.assertEqual(first.resource_limits["maximum_model_fits"], 54)
+        self.assertEqual(first.resource_limits["oof_base_fits"], 40)
+        self.assertEqual(first.resource_limits["full_training_base_fits"], 8)
+        self.assertEqual(first.resource_limits["meta_fits"], 6)
+        self.assertEqual(first.second_seed_rule["selection"],
+                         "all_predeclared_meta_candidates")
+        self.assertEqual(len(first.ensemble_rules), 3)
+        self.assertEqual([rule["meta_parameters"]["max_depth"]
+                          for rule in first.ensemble_rules], [1, 2, 3])
+        for index, rule in enumerate(first.ensemble_rules):
+            self.assertEqual(rule["stack_candidate_id"],
+                             _nonlinear_oof_stack_candidate(index).candidate_id)
+            self.assertEqual(rule["cross_fit_folds"], 5)
+            self.assertEqual(rule["stack_fit_partition"],
+                             "training_oof_predictions_only")
+            self.assertEqual(rule["validation_use"],
+                             "scoring_eligibility_ranking_and_locking_only")
+            self.assertEqual(tuple(rule["meta_features"]), (
+                "base_1_g", "base_2_g", "base_3_g", "base_4_g",
+                "mean_g", "min_g", "max_g", "spread_g",
+            ))
+        serialized = json.dumps(first.to_dict(), sort_keys=True)
+        self.assertNotIn("anonymous_source_group", serialized)
+        self.assertNotIn("miniature_family", serialized)
+        with self.assertRaisesRegex(ValueError, "invalid_search_plan"):
+            generate_search_plan(
+                SearchLimits.for_plan(99, "nonlinear_oof_stacking"),
+                input_fingerprint="input", code_fingerprint="code",
+                dependency_versions={"runtime": "synthetic-1"},
+            )
+
+    def test_stack_fold_assignment_is_deterministic_and_ignores_source_and_target(self):
+        raw = [
+            {**CandidateTuningTests.row("source-a", f"family-{index}", index + 1),
+             "_id": f"record-{index}"}
+            for index in range(20)
+        ]
+        rows = normalize(raw, self.config)
+        changed = [dict(item, weight=item["weight"] + 1000,
+                        anonymous_source_group="source-b") for item in raw]
+        changed_rows = normalize(changed, self.config)
+
+        first = _cross_fit_assignments(rows, 41, 5)
+        self.assertEqual(first, _cross_fit_assignments(rows, 41, 5))
+        self.assertEqual(first, _cross_fit_assignments(changed_rows, 41, 5))
+        self.assertNotEqual(first, _cross_fit_assignments(rows, 42, 5))
+        self.assertEqual(sorted(first), [0, 0, 0, 0, 1, 1, 1, 1,
+                                         2, 2, 2, 2, 3, 3, 3, 3,
+                                         4, 4, 4, 4])
+
+    def test_stack_meta_matrix_is_deterministic_and_rejects_invalid_vectors(self):
+        columns = ((1.0, 2.0), (2.0, 3.0), (3.0, 4.0), (4.0, 5.0))
+        self.assertEqual(_stack_meta_matrix(columns, 2), (
+            (1.0, 2.0, 3.0, 4.0, 2.5, 1.0, 4.0, 3.0),
+            (2.0, 3.0, 4.0, 5.0, 3.5, 2.0, 5.0, 3.0),
+        ))
+        with self.assertRaisesRegex(ValueError, "invalid_stack_prediction_matrix"):
+            _stack_meta_matrix((columns[0], columns[1], columns[2], (4.0,)), 2)
+        with self.assertRaisesRegex(ValueError, "invalid_stack_prediction_matrix"):
+            _stack_meta_matrix((columns[0], columns[1], columns[2], (4.0, math.nan)), 2)
 
     def test_geometry_regime_rejects_seeds_outside_its_predeclared_pair(self):
         with self.assertRaisesRegex(ValueError, "invalid_search_plan"):
@@ -1194,6 +1293,276 @@ class ExplicitPartitionDevelopmentTests(unittest.TestCase):
         public = json.dumps(result.to_dict(public=True), sort_keys=True)
         self.assertNotIn("private-source", public)
         self.assertNotIn("anonymous_source_group", public)
+
+    def test_nonlinear_stack_cross_fits_refits_and_checksum_binds_the_lock(self):
+        runtime = StackRecordingRuntime()
+        result = develop_candidates(
+            self.training, self.validation, self.config, runtime=runtime,
+            output_root=self.root / "nonlinear-stack",
+            limits=SearchLimits.for_plan(41, "nonlinear_oof_stacking"),
+            clock=lambda: 0.0,
+        )
+
+        self.assertEqual(result.status, "completed")
+        self.assertEqual(result.run_count, 6)
+        self.assertEqual(result.resource_use["model_fits"], 54)
+        self.assertEqual(len(runtime.refit_calls), 54)
+        self.assertTrue(result.to_dict()["second_seed_comparison"]["complete"])
+        cross_fit_calls = [call for call in runtime.refit_calls
+                           if len(call[1]) < len(self.training)]
+        self.assertEqual(len(cross_fit_calls), 40)
+        meta_calls = [call for call in runtime.refit_calls
+                      if call[0].endswith("-meta")]
+        self.assertEqual(len(meta_calls), 6)
+        self.assertTrue(all(len(row) == 8 for call in meta_calls for row in call[1]))
+        self.assertTrue(all(run.fit_metadata[0]["stack_training"] == {
+            "partition": "training_oof_predictions_only",
+            "oof_prediction_count_per_base": [len(self.training)] * 4,
+            "source_metadata_used": False,
+            "validation_labels_used": False,
+        } for run in (*result.initial_results, *result.second_seed_results)))
+        self.assertTrue(all(len(run.fit_metadata[0]["cross_fit_metadata"]) == 20
+                            for run in result.initial_results))
+        assert result.locked_candidate is not None
+        contract = result.locked_candidate.contract
+        self.assertEqual(contract["candidate"]["family"], "nonlinear_oof_stack")
+        self.assertEqual(contract["training_count_rule"], "predeclared_fixed_counts")
+        self.assertEqual(contract["development_data_usage"]["stack_fitting"],
+                         "training_oof_predictions_only")
+        self.assertIn("training_record_identity_fingerprint",
+                      contract["development_evidence"])
+        self.assertIn("validation_record_identity_fingerprint",
+                      contract["development_evidence"])
+        self.assertEqual(contract["oof_assignment"]["version"],
+                         "stable-record-identity-sha256-round-robin-v1")
+        self.assertEqual(set(contract["oof_assignment"]["fingerprints_by_seed"]),
+                         {"41", "42"})
+        self.assertTrue(all(
+            len(value) == 64
+            for value in contract["oof_assignment"]["fingerprints_by_seed"].values()
+        ))
+        self.assertEqual(contract["model_specification"]["model_kind"],
+                         "nonlinear_oof_stack")
+        self.assertEqual(len(contract["model_specification"]["members"]["bases"]), 4)
+        blockers, _, _ = verify_locked_candidate_files(
+            result.locked_candidate.directory, runtime.dependency_versions
+        )
+        self.assertEqual(blockers, ())
+
+        contract_path = result.locked_candidate.directory / "candidate-contract.json"
+        original_contract = contract_path.read_text()
+        manifest_path = result.locked_candidate.directory / "lock-manifest.json"
+        manifest = json.loads(manifest_path.read_text())
+        impossible_metrics = (
+            {"source_balanced_mae_g": -1.0},
+            {"source_count": contract["selected_combined_development_evidence"][
+                "metrics"]["sample_count"] + 1},
+            {"pooled_within_2g_fraction": 1.0,
+             "pooled_above_5g_fraction": 0.01},
+        )
+        for mutation in impossible_metrics:
+            tampered_contract = json.loads(original_contract)
+            tampered_contract["selected_combined_development_evidence"][
+                "metrics"
+            ].update(mutation)
+            contract_path.write_text(json.dumps(tampered_contract, sort_keys=True))
+            manifest["files"]["candidate-contract.json"] = sha256(
+                contract_path.read_bytes()
+            ).hexdigest()
+            manifest_path.write_text(json.dumps(manifest, sort_keys=True))
+            blockers, _, _ = verify_locked_candidate_files(
+                result.locked_candidate.directory, runtime.dependency_versions
+            )
+            self.assertIn("locked_candidate_contract_mismatch", blockers)
+        contract_path.write_text(original_contract)
+        manifest["files"]["candidate-contract.json"] = sha256(
+            contract_path.read_bytes()
+        ).hexdigest()
+        manifest_path.write_text(json.dumps(manifest, sort_keys=True))
+
+        state_path = result.locked_candidate.directory / "stack-state.json"
+        state = json.loads(state_path.read_text())
+        state["version"] = "tampered-stack"
+        state_path.write_text(json.dumps(state, sort_keys=True))
+        manifest_path = result.locked_candidate.directory / "lock-manifest.json"
+        manifest = json.loads(manifest_path.read_text())
+        manifest["files"]["stack-state.json"] = sha256(state_path.read_bytes()).hexdigest()
+        manifest_path.write_text(json.dumps(manifest, sort_keys=True))
+        blockers, _, _ = verify_locked_candidate_files(
+            result.locked_candidate.directory, runtime.dependency_versions
+        )
+        self.assertIn("locked_candidate_contract_mismatch", blockers)
+
+        artifact = next(path for path in result.locked_candidate.directory.iterdir()
+                        if path.name.startswith("meta-") and path.is_file())
+        artifact.write_bytes(b"tampered")
+        blockers, _, _ = verify_locked_candidate_files(
+            result.locked_candidate.directory, runtime.dependency_versions
+        )
+        self.assertIn("locked_candidate_checksum_mismatch", blockers)
+
+    def test_nonlinear_stack_rejects_coordinated_oof_fingerprint_tampering(self):
+        runtime = StackRecordingRuntime()
+        result = develop_candidates(
+            self.training, self.validation, self.config, runtime=runtime,
+            output_root=self.root / "nonlinear-stack-oof-tamper",
+            limits=SearchLimits.for_plan(41, "nonlinear_oof_stacking"),
+            clock=lambda: 0.0,
+        )
+        assert result.locked_candidate is not None
+        directory = result.locked_candidate.directory
+        fake = {"41": "0" * 64, "42": "1" * 64}
+        contract_path = directory / "candidate-contract.json"
+        contract = json.loads(contract_path.read_text())
+        contract["oof_assignment"]["fingerprints_by_seed"] = fake
+        contract_path.write_text(json.dumps(contract, sort_keys=True))
+        state_path = directory / "stack-state.json"
+        state = json.loads(state_path.read_text())
+        state["oof_assignment_fingerprints"] = fake
+        state_path.write_text(json.dumps(state, sort_keys=True))
+        preprocessing_path = directory / "preprocessing-state.json"
+        preprocessing = json.loads(preprocessing_path.read_text())
+        preprocessing["stack_state"]["oof_assignment_fingerprints"] = fake
+        preprocessing_path.write_text(json.dumps(preprocessing, sort_keys=True))
+        manifest_path = directory / "lock-manifest.json"
+        manifest = json.loads(manifest_path.read_text())
+        for path in (contract_path, state_path, preprocessing_path):
+            manifest["files"][path.name] = sha256(path.read_bytes()).hexdigest()
+        manifest_path.write_text(json.dumps(manifest, sort_keys=True))
+
+        blockers, _, _ = verify_locked_candidate_files(
+            directory, runtime.dependency_versions
+        )
+        self.assertIn("locked_candidate_contract_mismatch", blockers)
+
+    def test_nonlinear_stack_rejects_tampered_contract_and_nonfinite_oof(self):
+        candidate = _nonlinear_oof_stack_candidate(0)
+        tampered = replace(candidate, parameters={**candidate.parameters,
+                                                  "cross_fit_folds": 4})
+        from minires.modeling.tuning import _validate_nonlinear_oof_stack_candidate
+        with self.assertRaisesRegex(ValueError, "invalid_candidate_configuration"):
+            _validate_nonlinear_oof_stack_candidate(tampered)
+        with self.assertRaisesRegex(ValueError, "invalid_candidate_configuration"):
+            _validate_nonlinear_oof_stack_candidate(
+                replace(candidate, candidate_id="forged-stack-id")
+            )
+
+        class NaNStackRuntime(StackRecordingRuntime):
+            def refit(self, candidate, seed, features, targets, fixed_training_counts):
+                fitted = super().refit(candidate, seed, features, targets,
+                                       fixed_training_counts)
+                return replace(fitted, predictor=lambda rows: [math.nan] * len(rows))
+
+        result = develop_candidates(
+            self.training, self.validation, self.config, runtime=NaNStackRuntime(),
+            output_root=self.root / "nonlinear-stack-nan",
+            limits=SearchLimits.for_plan(41, "nonlinear_oof_stacking"),
+            clock=lambda: 0.0,
+        )
+        self.assertEqual(result.status, "blocked")
+        self.assertEqual(result.blockers, ("candidate_runtime_failed",))
+        self.assertIsNone(result.locked_candidate)
+
+    def test_nonlinear_stack_preserves_completed_and_failed_candidate_outcomes(self):
+        class SecondMetaFailingRuntime(StackRecordingRuntime):
+            def __init__(self):
+                super().__init__()
+                self.meta_calls = 0
+
+            def refit(self, candidate, seed, features, targets, fixed_training_counts):
+                if candidate.candidate_id.endswith("-meta"):
+                    self.meta_calls += 1
+                    if self.meta_calls == 2:
+                        raise RuntimeError("private meta failure")
+                return super().refit(
+                    candidate, seed, features, targets, fixed_training_counts
+                )
+
+        result = develop_candidates(
+            self.training, self.validation, self.config,
+            runtime=SecondMetaFailingRuntime(),
+            output_root=self.root / "nonlinear-stack-partial",
+            limits=SearchLimits.for_plan(41, "nonlinear_oof_stacking"),
+            clock=lambda: 0.0,
+        )
+
+        self.assertEqual(result.status, "blocked")
+        self.assertEqual(result.blockers, ("candidate_runtime_failed",))
+        self.assertEqual(result.run_count, 2)
+        self.assertEqual([run.status for run in result.initial_results],
+                         ["completed", "failed"])
+        report = result.to_dict()
+        self.assertFalse(report["second_seed_comparison"]["complete"])
+        self.assertEqual(len(report["candidate_history"]), 6)
+        self.assertEqual([item["status"] for item in report["candidate_history"][:2]],
+                         ["completed", "failed"])
+        self.assertEqual(
+            [item["candidate_id"] for item in report["skipped_candidates"]
+             if item["phase"] == "initial"],
+            [_nonlinear_oof_stack_candidate(2).candidate_id],
+        )
+        self.assertTrue(all(item["status"] == "skipped"
+                            for item in report["candidate_history"][2:]))
+        self.assertNotIn("stack-base", json.dumps(report["skipped_candidates"]))
+        self.assertIsNone(result.locked_candidate)
+
+    def test_nonlinear_stack_seed_two_interruption_keeps_canonical_skipped_id(self):
+        class SeedTwoMetaFailingRuntime(StackRecordingRuntime):
+            def __init__(self):
+                super().__init__()
+                self.meta_calls = 0
+
+            def refit(self, candidate, seed, features, targets, fixed_training_counts):
+                if candidate.candidate_id.endswith("-meta"):
+                    self.meta_calls += 1
+                    if self.meta_calls == 5:
+                        raise RuntimeError("private second-seed meta failure")
+                return super().refit(
+                    candidate, seed, features, targets, fixed_training_counts
+                )
+
+        result = develop_candidates(
+            self.training, self.validation, self.config,
+            runtime=SeedTwoMetaFailingRuntime(),
+            output_root=self.root / "nonlinear-stack-seed-two-partial",
+            limits=SearchLimits.for_plan(41, "nonlinear_oof_stacking"),
+            clock=lambda: 0.0,
+        )
+
+        self.assertEqual(result.run_count, 5)
+        self.assertEqual([run.status for run in result.second_seed_results],
+                         ["completed", "failed"])
+        skipped = result.to_dict()["skipped_candidates"]
+        self.assertEqual(skipped, [{
+            "candidate_id": _nonlinear_oof_stack_candidate(2).candidate_id,
+            "phase": "second_seed",
+            "reason": "candidate_runtime_failed",
+        }])
+
+    def test_nonlinear_stack_repeats_all_slots_when_only_one_is_eligible(self):
+        class OneEligibleStackRuntime(StackRecordingRuntime):
+            def refit(self, candidate, seed, features, targets, fixed_training_counts):
+                fitted = super().refit(
+                    candidate, seed, features, targets, fixed_training_counts
+                )
+                if candidate.candidate_id.endswith("-meta") and not candidate.candidate_id.startswith("stack-01-"):
+                    return replace(fitted, predictor=lambda rows: [row[0] + 6.0 for row in rows])
+                return fitted
+
+        result = develop_candidates(
+            self.training, self.validation, self.config,
+            runtime=OneEligibleStackRuntime(),
+            output_root=self.root / "nonlinear-stack-one-eligible",
+            limits=SearchLimits.for_plan(41, "nonlinear_oof_stacking"),
+            clock=lambda: 0.0,
+        )
+
+        comparison = result.to_dict()["second_seed_comparison"]
+        self.assertEqual(comparison["eligible_initial_candidates"], 1)
+        self.assertEqual(comparison["repeated_candidates"], 3)
+        self.assertTrue(comparison["complete"])
+        self.assertEqual(result.status, "completed")
+        self.assertIsNotNone(result.locked_candidate)
 
     def test_legacy_geometry_augmentation_appends_four_canonical_terms(self):
         def canonical(row):
