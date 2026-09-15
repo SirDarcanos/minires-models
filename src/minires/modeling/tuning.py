@@ -26,6 +26,7 @@ from ..ingestion import (
 )
 from .learned import LearnedBaselineConfig, _matrix, _predict
 from .legacy import LEGACY_FEATURES
+from . import tail_focused_search
 from .guarded_residual import (
     CORRECTION_SCALES as GUARDED_RESIDUAL_CORRECTION_SCALES,
     FEATURES as GUARDED_RESIDUAL_FEATURES,
@@ -41,7 +42,7 @@ from .guarded_residual import (
 )
 from .definitions import (
     FittedModel, ModelKind, ModelRuntime, ModelSpecification,
-    TensorflowXGBoostBackend, TrainingData,
+    TensorflowXGBoostBackend, TrainingData, TailCorrectionModelSpecification,
     ValidationData, candidate_model_specification, combine_ensemble_predictions,
     ensemble_model_specification,
     fixed_model_specification,
@@ -260,6 +261,13 @@ class SearchLimits:
 
 
 SEARCH_PLAN_POLICIES = {
+    "tail_focused_correction": SearchPlanPolicy(
+        "tail_focused_correction", LEGACY_FEATURES, TRANSFORMATION_VERSION,
+        (41, 42), 1, 1, 2, 2, 4, 7200.0,
+        TAIL_ALIGNED_NEURAL_NETWORK_DOMAIN, TAIL_ALIGNED_XGBOOST_DOMAIN,
+        "an honestly evaluated bounded tail-loss correction improves the frozen "
+        "run-011 closest 80-percent neural anchor without replacing it",
+    ),
     "baseline": SearchPlanPolicy(
         "baseline", LEGACY_FEATURES, TRANSFORMATION_VERSION, None,
         6, 6, 3, 5, 20, 7200.0,
@@ -824,6 +832,7 @@ class LockedCandidate:
     def specification(self) -> (
         ModelSpecification | GeometryGateModelSpecification
         | NonlinearOOFStackModelSpecification | GuardedResidualStackModelSpecification
+        | TailCorrectionModelSpecification
     ):
         return _locked_model_specification(
             self.candidate, self.contract["fixed_training_counts"]
@@ -1001,6 +1010,10 @@ def verify_locked_candidate_files(
         if not isinstance(preprocessing, dict) or not _valid_locked_contract(contract):
             blockers.add("locked_candidate_contract_mismatch")
         family = contract.get("candidate", {}).get("family")
+        if family == "tail_focused_correction" and not tail_focused_search.verify_state_files(
+            root, contract, preprocessing
+        ):
+            blockers.add("locked_candidate_contract_mismatch")
         if family == "geometry_gate":
             gate_state = json.loads((root / "gate-state.json").read_text())
             if (
@@ -1166,13 +1179,15 @@ def generate_search_plan(
     ):
         raise ValueError("invalid_search_plan")
     policy = _plan_policy(limits.plan_kind)
-    if policy.plan_kind in {"nonlinear_oof_stacking", "guarded_residual_stacking"}:
+    if policy.plan_kind in {"nonlinear_oof_stacking", "guarded_residual_stacking", "tail_focused_correction"}:
         if parameter_domains is not None:
             raise ValueError("invalid_search_plan")
         domains: dict[str, dict[str, tuple[Any, ...]]] = {
             "neural_network": {}, "xgboost": {},
         }
-        components = _nonlinear_oof_base_candidates()
+        components = (tail_focused_search.base_candidates()
+                      if policy.plan_kind == "tail_focused_correction"
+                      else _nonlinear_oof_base_candidates())
     else:
         domains = _validated_parameter_domains(parameter_domains, policy)
         neural = _space_filling_candidates(
@@ -1198,7 +1213,9 @@ def generate_search_plan(
         "code": code_fingerprint, "configuration": configuration_identity,
     })
     dependencies = dict(sorted(dependency_versions.items()))
-    if policy.plan_kind == "guarded_residual_stacking":
+    if policy.plan_kind == "tail_focused_correction":
+        ensemble_rules = tail_focused_search.rules()
+    elif policy.plan_kind == "guarded_residual_stacking":
         ensemble_rules = tuple({
             "residual_slot": index + 1,
             "residual_candidate_id": _guarded_residual_candidate(index).candidate_id,
@@ -1310,7 +1327,9 @@ def generate_search_plan(
         },
         "parameter_domains": domains,
         "generator": {
-            "strategy": "seeded_mixed_radix_space_filling",
+            "strategy": ("fixed_closest_anchor_with_honest_training_gate"
+                         if policy.plan_kind == "tail_focused_correction"
+                         else "seeded_mixed_radix_space_filling"),
             "ordered": True,
             "target_access": False,
             "prior_score_access": False,
@@ -1334,7 +1353,9 @@ def generate_search_plan(
         "second_seed_rule": {
             "candidate_count": limits.second_seed_candidates,
             "selection": (
-                "all_predeclared_meta_candidates"
+                "all_predeclared_tail_candidates_after_both_honest_seeds_qualify"
+                if policy.plan_kind == "tail_focused_correction"
+                else "all_predeclared_meta_candidates"
                 if policy.plan_kind == "nonlinear_oof_stacking"
                 else "all_predeclared_residual_candidates"
                 if policy.plan_kind == "guarded_residual_stacking"
@@ -1348,6 +1369,12 @@ def generate_search_plan(
             "maximum_candidate_runs": limits.maximum_candidate_runs,
             "maximum_elapsed_seconds": limits.maximum_elapsed_seconds,
             **({
+                "maximum_model_fits": tail_focused_search.MAXIMUM_FITS,
+                "honest_stage_fits": 26,
+                "conditional_production_stage_fits": 26,
+                "budget_recycling": False,
+                "automatic_expansion": False,
+            } if policy.plan_kind == "tail_focused_correction" else {
                 "maximum_model_fits": NONLINEAR_OOF_MAXIMUM_FITS,
                 "oof_base_fits": 40,
                 "full_training_base_fits": 8,
@@ -1727,6 +1754,12 @@ def develop_candidates(
     started = clock()
     cpu_started = time.process_time()
     deadline = started + limits.maximum_elapsed_seconds
+    if limits.plan_kind == "tail_focused_correction":
+        return tail_focused_search.develop(
+            output, plan, runtime, training_rows, validation_rows,
+            training_fingerprint, validation_fingerprint, started, cpu_started,
+            deadline, clock,
+        )
     if limits.plan_kind == "nonlinear_oof_stacking":
         return _develop_nonlinear_oof_stacking(
             output, plan, runtime, training_rows, validation_rows,
@@ -3366,6 +3399,8 @@ def tune_candidates(
     plan: SearchPlan | None = None,
 ) -> TuningResult:
     """Run the complete bounded search and lock one development-only candidate."""
+    if limits.plan_kind == "tail_focused_correction":
+        raise InputError("explicit_train_validation_required")
     output = Path(output_root)
     if "private" not in output.resolve().parts:
         raise InputError("private_output_directory_required")
@@ -4735,6 +4770,8 @@ def _valid_guarded_residual_lock_fields(
 
 
 def _valid_locked_contract(contract: Mapping[str, Any]) -> bool:
+    if contract.get("candidate", {}).get("family") == "tail_focused_correction":
+        return tail_focused_search.valid_contract(contract)
     evidence = contract.get("development_evidence")
     feature_contract = contract.get("feature_contract")
     fixed_counts = contract.get("fixed_training_counts")
@@ -4971,6 +5008,10 @@ def _validate_plan(
         limits.neural_network_trials + limits.xgboost_trials
     ):
         raise ValueError("invalid_search_plan")
+    if limits.plan_kind == "tail_focused_correction":
+        if plan.component_trials != tail_focused_search.base_candidates():
+            raise ValueError("invalid_search_plan")
+        return
     if limits.plan_kind in {"nonlinear_oof_stacking", "guarded_residual_stacking"}:
         if plan.component_trials != _nonlinear_oof_base_candidates():
             raise ValueError("invalid_search_plan")
@@ -5015,6 +5056,8 @@ def _search_stop_reason(result: TuningResult) -> str:
 
 def _planned_initial_candidate_ids(plan: SearchPlan) -> tuple[str, ...]:
     plan_kind = plan.generator.get("plan_kind")
+    if plan_kind == "tail_focused_correction":
+        return tuple(str(rule["candidate_id"]) for rule in plan.ensemble_rules)
     if plan_kind == "nonlinear_oof_stacking":
         return tuple(str(rule["stack_candidate_id"]) for rule in plan.ensemble_rules)
     if plan_kind == "guarded_residual_stacking":
@@ -5030,7 +5073,7 @@ def _skipped_candidates(result: TuningResult) -> list[dict[str, Any]]:
     reason = _search_stop_reason(result)
     planned_initial_ids = _planned_initial_candidate_ids(result.plan)
     mandatory_two_seed = result.plan.generator.get("plan_kind") in {
-        "nonlinear_oof_stacking", "guarded_residual_stacking",
+        "nonlinear_oof_stacking", "guarded_residual_stacking", "tail_focused_correction",
     }
     if mandatory_two_seed:
         skipped = [
@@ -5084,14 +5127,14 @@ def _second_seed_comparison(result: TuningResult) -> dict[str, Any]:
     target = (
         int(result.plan.second_seed_rule["candidate_count"])
         if result.plan.generator.get("plan_kind") in {
-            "nonlinear_oof_stacking", "guarded_residual_stacking",
+            "nonlinear_oof_stacking", "guarded_residual_stacking", "tail_focused_correction",
         }
         else min(result.plan.second_seed_rule["candidate_count"], eligible_count)
     )
     shortfall = max(0, int(result.plan.second_seed_rule["candidate_count"]) - (
         len(result.second_seed_results)
         if result.plan.generator.get("plan_kind") in {
-            "nonlinear_oof_stacking", "guarded_residual_stacking",
+            "nonlinear_oof_stacking", "guarded_residual_stacking", "tail_focused_correction",
         }
         else eligible_count
     ))
@@ -5272,6 +5315,8 @@ class TensorflowXGBoostCandidateRuntime:
         return self.models.save(model)
 
     def load_locked(self, candidate, directory, contract):
+        if candidate.family == "tail_focused_correction":
+            return tail_focused_search.load(self.models, directory, contract)
         specification = _locked_model_specification(
             candidate, contract["fixed_training_counts"]
         )
@@ -5384,6 +5429,8 @@ def _component_fit_metadata(fitted: FittedModel) -> dict[str, Any]:
 def _locked_model_specification(
     candidate: Candidate, fixed_training_counts: Mapping[str, int | float],
 ):
+    if candidate.family == "tail_focused_correction":
+        return tail_focused_search.specification(candidate, fixed_training_counts)
     if candidate.family == "guarded_residual_stack":
         _validate_guarded_residual_candidate(candidate)
         if dict(fixed_training_counts) != _guarded_residual_fixed_counts(candidate):
@@ -5531,10 +5578,10 @@ def main(argv: Sequence[str] | None = None) -> int:
         governed_predeclared_plans = {
             "cross_fitted_geometry_gate", "legacy_geometry_augmentation",
             "tail_aligned_selection", "nonlinear_oof_stacking",
-            "guarded_residual_stacking",
+            "guarded_residual_stacking", "tail_focused_correction",
         }
         if args.plan_kind in governed_predeclared_plans:
-            if args.plan_kind == "guarded_residual_stacking":
+            if args.plan_kind in {"guarded_residual_stacking", "tail_focused_correction"}:
                 _verify_guarded_residual_development_artifacts(
                     args.training_records, args.validation_records
                 )

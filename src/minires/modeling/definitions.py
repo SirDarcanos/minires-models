@@ -20,11 +20,13 @@ from types import MappingProxyType
 from typing import Any, Callable, Mapping, Protocol, Sequence
 
 from .legacy import LEGACY_FEATURES
+from . import tail_correction
 
 
 BatchPredictor = Callable[[Sequence[tuple[float, ...]]], Sequence[float]]
 PredictionRanker = Callable[[Sequence[float]], tuple[Any, ...]]
 MODEL_DEFINITION_VERSION = "minires-model-definition-v1"
+COMPONENT_PREPROCESSING_VERSION = "normalization-vectors-and-unnormalized-xgboost-v1"
 
 
 class ModelKind(str, Enum):
@@ -155,6 +157,60 @@ class ModelSpecification:
 
 
 @dataclass(frozen=True)
+class TailCorrectionModelSpecification:
+    """The continuous two-base anchor plus its fixed bounded numerical correction."""
+
+    bases: tuple[ModelSpecification, ModelSpecification]
+    correction_scale: float
+    ordered_prediction_features: tuple[str, ...] = LEGACY_FEATURES
+    output_unit: str = "g"
+
+    def __post_init__(self) -> None:
+        self.validate()
+
+    def validate(self) -> None:
+        if (
+            not isinstance(self.bases, tuple) or len(self.bases) != 2
+            or not all(isinstance(base, ModelSpecification) for base in self.bases)
+            or self.bases[0].model_kind is not ModelKind.NEURAL_NETWORK
+            or self.bases[1].model_kind is not ModelKind.XGBOOST
+            or self.ordered_prediction_features != LEGACY_FEATURES
+            or any(base.ordered_prediction_features != self.ordered_prediction_features
+                   for base in self.bases)
+            or isinstance(self.correction_scale, bool) or self.correction_scale not in (0.0, 1.0)
+            or self.output_unit != "g"
+        ):
+            raise ValueError("invalid_model_specification")
+        for base in self.bases:
+            base.validate()
+
+    @property
+    def stable_identity(self) -> str:
+        encoded = json.dumps(
+            self.to_dict(include_identity=False), sort_keys=True,
+            separators=(",", ":"), allow_nan=False,
+        ).encode()
+        return f"model-tail_focused_correction-{sha256(encoded).hexdigest()[:16]}"
+
+    def to_dict(self, *, include_identity: bool = True) -> dict[str, Any]:
+        result = {
+            "model_kind": "tail_focused_correction", "version": tail_correction.VERSION,
+            "bases": [base.to_dict() for base in self.bases],
+            "ordered_prediction_features": list(self.ordered_prediction_features),
+            "numeric_contract": _jsonable(tail_correction.CONTRACT),
+            "base_preprocessing_state_contract": COMPONENT_PREPROCESSING_VERSION,
+            "correction_scale": self.correction_scale, "output_unit": self.output_unit,
+        }
+        if include_identity:
+            result["stable_identity"] = self.stable_identity
+        return result
+
+    def describe(self) -> str:
+        return ("tail_focused_correction (0.8 neural_network + (1.0 - 0.8) xgboost; "
+                f"correction scale {self.correction_scale:g}; {self.output_unit})")
+
+
+@dataclass(frozen=True)
 class TrainingData:
     features: tuple[tuple[float, ...], ...]
     targets: tuple[float, ...]
@@ -197,6 +253,26 @@ class FittedModel:
     preprocessing_state: Mapping[str, Any]
     metadata: Mapping[str, Any]
     backend_state: Mapping[str, Any] = field(repr=False, compare=False)
+
+
+def validate_component_preprocessing(
+    specification: ModelSpecification, state: Mapping[str, Any],
+) -> None:
+    """Validate the frozen NN/XGB serialized preprocessing, without loading frameworks."""
+    if specification.model_kind is ModelKind.XGBOOST:
+        if dict(state) != {"xgboost": "unnormalized_float32"}:
+            raise ValueError("invalid_preprocessing_state")
+        return
+    if specification.model_kind is not ModelKind.NEURAL_NETWORK or set(state) != {"mean", "variance"}:
+        raise ValueError("invalid_preprocessing_state")
+    width = len(specification.ordered_prediction_features)
+    for key in ("mean", "variance"):
+        values = state[key]
+        if (not isinstance(values, list) or len(values) != width
+                or not all(isinstance(value, (int, float)) and not isinstance(value, bool)
+                           and math.isfinite(value) and abs(value) <= tail_correction.FLOAT32_MAXIMUM
+                           and (key != "variance" or value >= 0) for value in values)):
+            raise ValueError("invalid_preprocessing_state")
 
 
 class ModelBackend(Protocol):
@@ -282,6 +358,21 @@ class ModelRuntime:
             **{f"xgboost-{name}": content for name, content in
                _validated_artifacts(self.backend.serialize_component(xgboost)).items()},
         }
+
+    def load_verified_component(
+        self, specification: ModelSpecification, artifacts: Mapping[str, bytes],
+        preprocessing_state: Mapping[str, Any],
+    ) -> BatchPredictor:
+        """Load a frozen component with strict state validation and backend consistency checks.
+
+        Custom backends receive the same validated state contract. The production
+        backend additionally compares that evidence with its deserialized model.
+        """
+        specification.validate()
+        validate_component_preprocessing(specification, preprocessing_state)
+        checked = _validated_artifacts(artifacts)
+        loader = getattr(self.backend, "load_verified_component", self.backend.load_component)
+        return loader(specification, checked, preprocessing_state)
 
     def load(
         self, specification: ModelSpecification, artifacts: Mapping[str, bytes],
@@ -490,7 +581,19 @@ class TensorflowXGBoostBackend:
         self, specification: ModelSpecification, artifacts: Mapping[str, bytes],
         preprocessing_state: Mapping[str, Any],
     ) -> BatchPredictor:
-        del preprocessing_state
+        return self._load_component(specification, artifacts, preprocessing_state, verify=False)
+
+    def load_verified_component(
+        self, specification: ModelSpecification, artifacts: Mapping[str, bytes],
+        preprocessing_state: Mapping[str, Any],
+    ) -> BatchPredictor:
+        validate_component_preprocessing(specification, preprocessing_state)
+        return self._load_component(specification, artifacts, preprocessing_state, verify=True)
+
+    def _load_component(
+        self, specification: ModelSpecification, artifacts: Mapping[str, bytes],
+        preprocessing_state: Mapping[str, Any], *, verify: bool,
+    ) -> BatchPredictor:
         np, tf = self.np, self.tf
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -501,6 +604,20 @@ class TensorflowXGBoostBackend:
                 path = root / "model.keras"
                 path.write_bytes(content)
                 model = tf.keras.models.load_model(path, compile=False)
+                if verify:
+                    width = len(specification.ordered_prediction_features)
+                    normalizers = [layer for layer in model.layers
+                                   if isinstance(layer, tf.keras.layers.Normalization)]
+                    if getattr(model, "input_shape", None) != (None, width) or len(normalizers) != 1:
+                        raise ValueError("invalid_preprocessing_state")
+                    normalizer = normalizers[0]
+                    actual = {
+                        "mean": normalizer.mean.numpy().reshape(-1).tolist(),
+                        "variance": normalizer.variance.numpy().reshape(-1).tolist(),
+                    }
+                    validate_component_preprocessing(specification, actual)
+                    if actual != dict(preprocessing_state):
+                        raise ValueError("invalid_preprocessing_state")
                 return lambda rows: np.asarray(
                     model(np.asarray(rows, dtype=np.float32), training=False)
                 ).reshape(-1).tolist()
@@ -512,6 +629,8 @@ class TensorflowXGBoostBackend:
                 path.write_bytes(content)
                 model = self.xgboost.XGBRegressor()
                 model.load_model(path)
+                if verify and model.n_features_in_ != len(specification.ordered_prediction_features):
+                    raise ValueError("invalid_preprocessing_state")
                 return lambda rows: model.predict(
                     np.asarray(rows, dtype=np.float32)
                 ).reshape(-1).tolist()

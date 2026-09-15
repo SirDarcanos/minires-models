@@ -772,3 +772,75 @@ was created, held-out evidence was not read or fingerprinted, and Issue #33 was 
 started. The round stops without changed bounds, replacement candidates, added
 seeds, omitted rows, or automatic expansion. Issue #50 remains open for a
 separately justified and predeclared hypothesis.
+
+## Predeclaration: tail-focused closest-anchor correction (not executed)
+
+The run-013 four-base mean was weaker than run-011's closest 80% NN/20% XGBoost
+ensemble. Its clipped-target ridge correction remained small and did not satisfy
+any gate. Preserved diagnostics do not support a simple calibration-bias
+hypothesis: the closest anchor's 17 pooled serious errors were split between eight
+underestimates and nine overestimates, with ten errors above 8 g and only one
+between 5 and 6 g. Eighteen further errors were between 4 and 5 g. A new correction
+must preserve severe-error information rather than flatten all residual targets
+to the same small bound.
+
+The falsifiable hypothesis is that a bounded additive learner with an unclipped,
+serious-error excess loss can improve the **exact closest anchor**, first on
+independently held-out training rows, then satisfy every unchanged validation gate.
+This is not another model-family or configuration sweep, a distribution/window
+estimator, or a replacement for the continuous anchor.
+
+The complete fixed contract is declared in
+[`candidate-tuning.md`](candidate-tuning.md#predeclared-tail-focused-closest-anchor-correction-not-executed)
+and enforced by the existing candidate-development and lock-loading interfaces.
+The frozen pair is the Mish 256/128/64 NN with Adam/Huber, batch 256 and fixed 87
+epochs, and the depth-9 XGBoost with learning rate 0.05 and fixed 1,091 trees. The
+original component ceilings and selection settings remain identifiable but every
+new fit uses the selected counts with no early stopping. The exact anchor operation
+is `0.8 * neural + (1.0 - 0.8) * xgboost` in float64, using the original legacy
+feature/preprocessing contracts.
+
+Only two variants are declared: exact identity and one full correction bounded to
+±2 g. The correction uses the anchor, signed disagreement, and absolute
+disagreement; training-OOF standardization and clipping bound the design inputs.
+A four-coefficient L1 constraint bounds departure everywhere. Exactly 2,000
+projected-gradient steps fit the fixed convex objective: ordinary squared error
+weighted 0.1, squared excess beyond 4.5 g weighted 4, squared anchor departure
+weighted 1, and squared coefficients weighted 0.01. These are fixed engineering
+choices, not empirically chosen optima. Labels and residuals are not clipped.
+
+Before any production fit or validation scoring, **both seeds 41 and 42** must
+complete an honest 20% training holdout evaluation. Each honest learner uses only
+the other 80%, including nested five-fold OOF base predictions and all learned
+preprocessing. Identity-hash folds do not use source/family metadata or targets.
+For each seed, correction must strictly improve the declared prediction loss
+without increasing MAE or the above-5-g count. Failure under either seed stops the
+whole round as `training_evidence_rejected`, preserving aggregate evidence and
+performing no validation scoring or lock. This evidence remains conditional on
+the historical pair/count choice made with reused validation; it is not wholly
+untouched pipeline evidence.
+
+If both seeds qualify, each seed independently repeats OOF correction training and
+base fitting on all training rows. Identity and corrected candidates are then
+scored under both seeds regardless of unfavorable validation results. The finite
+ceiling is 26 honest-stage fits plus 26 conditional production-stage fits, four
+validation candidate evaluations, and 7,200 seconds. Existing serious-error gates
+(1% pooled, 1% source-balanced, 2% per qualifying source) and ranking are unchanged.
+No budget is recycled. Source groups remain evaluation-only; no new source/family,
+identity, linkage, partition, or path prediction input is added.
+
+A successful lock uses the exact eligible seed-42 training-only state already
+scored; equal seed weighting combines metrics, not locked predictions. There is
+no undisclosed refit. Checksums and semantic verification bind the precise model,
+optimizer, preprocessing, splits, complete artifacts, honest qualification,
+OOF/full-fit shift, dependencies, gates, and no-test-access contracts. Incomplete
+or invalid evidence cannot qualify. No eligible candidate, weak honest evidence,
+or any failure stops without changed constants, folds, seeds, omitted rows,
+replacement candidates, or expansion.
+
+This implementation and predeclaration do not authorize execution. A separately
+authorized execution, after the committed predeclaration and source-neutral Issue
+#50 comment, would use the fresh create-only `run-014` directory. This change does
+not create that directory, fit private models, access or fingerprint held-out
+evidence, publish results, or start Issue #33. Existing runs and training/validation
+artifacts remain unchanged.

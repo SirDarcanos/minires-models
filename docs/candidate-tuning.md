@@ -693,6 +693,191 @@ not satisfy any unchanged serious-error gate. This hypothesis is falsified for t
 fixed plan and stops without changed bounds, replacement candidates, added seeds,
 or automatic expansion.
 
+## Predeclared tail-focused closest-anchor correction (not executed)
+
+The `tail_focused_correction` plan tests a bounded additive correction to the exact
+closest run-011 ensemble, not the weaker four-base mean used in run-013. It uses
+one identity control and one corrected candidate. The loss and feature constants
+below are predeclared engineering choices, not validation-tuned, training-OOF-
+selected, or empirically optimal settings. This implementation does not authorize
+execution or claim improvement or eligibility.
+
+### Frozen anchor
+
+The original ordered inputs remain `kb`, `volume`, `surface_area`, `bbox_area`,
+`euler_number`, `scale`, and `surface_volume_ratio`, using
+`minires-normalization-v3` and finite float32 matrices. The two original run-011
+contracts are frozen separately from their selected training counts:
+
+| Setting | Neural network | XGBoost |
+| --- | --- | --- |
+| Architecture | 256/128/64, Mish, dropout 0.1 | depth 9 |
+| Optimization | Adam, Huber, learning rate 0.003, L2 0.00001 | squared-error objective, learning rate 0.05 |
+| Sampling | batch 256, training shuffle | subsample 0.9, column sample 0.9 |
+| Regularization | as above | minimum child weight 10, gamma 0.2, alpha 0.1, lambda 10 |
+| Original ceiling | 100 epochs | 1,200 trees |
+| Original early-stopping setting | patience 8 | 50 rounds |
+| Fixed training count in **every** new fit | **87 epochs** | **1,091 trees** |
+| Preprocessing | normalization fitted on that fit's training rows | no normalization |
+
+The original gate-first `serious_error_gates_then_ranking_v1` selection setting is
+retained in the historical contracts but never invoked in this round. No inner,
+outer, full-training, or validation partition supplies early stopping or checkpoint
+selection. The NN retains a linear one-unit output; XGBoost retains `hist`, one
+worker, and its declared evaluation seed. Plan identities bind both the original
+contracts and the effective fixed-count model specifications and runtime settings.
+
+For each prediction, preserve the original float64 operation order exactly:
+`anchor = 0.8 * neural + (1.0 - 0.8) * xgboost`. Do not cast the anchor to float32,
+replace it with a mean, or quantize it. Retained `kb` and `scale` have uncertain
+historical semantics and may be source/style proxies; this round does not establish
+that they are source-neutral. No new raw geometry, source, family, identity,
+linkage, partition, path, or join-key prediction inputs are added.
+
+### Fixed numerical correction
+
+The ordered correction inputs are the anchor, `neural - xgboost`, and the absolute
+value of that disagreement. Training-OOF means and population standard deviations
+standardize these three inputs. A standard deviation at or below `1e-12` becomes
+1.0. Standardized values are clipped to `[-1, 1]`; prepend a constant intercept to
+form the four-column design matrix `D`.
+
+Let `c = D * coefficients`, `e = anchor + c - target`, and `n` be the number of
+correction-training rows. Minimize this fixed convex objective:
+
+```text
+mean(0.1 * e² + 4 * max(abs(e) - 4.5 g, 0)² + c²)
+    + 0.01 * sum(coefficients²)
+subject to sum(abs(coefficients)) <= 2 g
+```
+
+The target residual and error are **not clipped**: severe errors retain their
+excess-loss gradients. The margin is deliberately below the unchanged 5 g serious-
+error threshold. The ordinary squared-error term protects ordinary accuracy and
+the departure term penalizes changing the anchor. The intercept is included in
+both coefficient penalties; this is not an intercept-only calibration model.
+
+Use exactly 2,000 deterministic projected-gradient steps from zero coefficients,
+with constant step `1 / (2 * 5.1 * sum(D²) / n + 0.02)`. Each update is projected
+onto the L1 ball by Euclidean soft thresholding; a roundoff normalization enforces
+the exact coefficient bound. No convergence-based extension, optimizer search,
+feature selection, changed margin, or bound sweep is permitted. The L1 constraint
+and bounded inputs guarantee a correction of at most ±2 g globally. A final
+roundoff clip to ±2 g is applied at prediction. The identity variant returns the
+anchor directly; the corrected variant adds the full bounded correction. Neither
+can replace the continuous anchor. In particular, this bound cannot by itself
+bring an anchor error greater than 7 g inside 5 g.
+
+Wrong-length, non-finite, or out-of-float32 base predictions, inputs, state, or
+outputs block rather than dropping rows, imputing, or substituting predictions.
+The numerical contract is versioned `minires-tail-focused-correction-v1`.
+
+### Honest training evidence comes before validation scoring
+
+For each seed 41 and 42, sort training identities by SHA-256 of
+`seed:record_identity`, breaking ties by identity, and assign ranks round-robin to
+five folds. Rank modulo five equal to zero is the outer 20% holdout. Only identity
+and seed determine assignment; source groups, miniature families, labels, and
+features do not.
+
+Within the remaining 80%, independently apply the same five-fold assignment. Each
+base fits on four inner folds and predicts the fifth using its frozen count and
+training-only preprocessing. Fit the correction on these inner OOF predictions
+and training labels only. Fit both bases on the 80% partition and predict the
+outer holdout. No outer row, target, or preprocessing statistic influences **any**
+of these base or correction fits. These are independent correction evaluation
+predictions, not scores on the correction's own OOF meta-training rows.
+
+Complete this honest stage under **both** seeds before any production-stage fit
+or validation prediction. For each seed, the corrected outer-holdout predictions
+must have strictly lower `mean(0.1 * e² + 4 * max(abs(e) - 4.5, 0)²)`, no higher
+pooled MAE, and no higher count of errors above 5 g than the identity control.
+All values must be finite. If either seed fails, the whole round ends as
+`training_evidence_rejected` with `honest_training_correction_gate_failed`, retains
+both seeds' aggregate evidence, and performs **no production fit, validation
+scoring, or lock**. Unused budget is not recycled, even to score the identity.
+
+This honest evidence is conditional on the historical choice of pair and counts,
+which used reused validation evidence. It is not an untouched evaluation of the
+entire historically selected pipeline. Outer labels only apply this fixed gate;
+they do not select features, coefficients, loss constants, or training counts.
+
+### Conditional production stage, budget, and lock
+
+Only if both honest seeds qualify, independently repeat five-fold OOF correction
+training on **all** training rows, then fit both bases on all training rows. Score
+identity and corrected predictions on validation under **both** seeds, retaining
+unfavorable results. Validation labels fit nothing: they only apply the unchanged
+eligibility gates and ranking. The gates remain at most 1% pooled above-5-g errors,
+1% source-balanced, and 2% for each anonymous source group with at least 200
+accepted records. Groups remain evaluation-only. Ranking remains source-balanced
+MAE, pooled MAE, within-2-g fraction, and stable candidate identity. Eligibility
+is required for each seed separately and their equal-weight metric combination.
+
+Each seed/stage uses ten OOF base fits, two partition-wide base fits, and one
+numerical correction fit. The ceiling is 26 honest-stage fits plus 26 conditional
+production-stage fits: **52 fits**, at most **four validation candidate evaluations**,
+and **7,200 seconds**. The deadline is checked before and after fits, before
+prediction/scoring, and before completion or locking, including unsuccessful
+searches. An expired final correction fit cannot score further validation variants.
+The historical source-holdout `tune_candidates` interface rejects this plan; use
+`develop_candidates` with explicit training and validation artifacts or the CLI.
+
+Aggregate private `honest-training-evidence.json` retains paired outer metrics,
+prediction distributions, and honest-stage OOF/full-fit shift. The production
+`oof-full-fit-shift.json` records per-base, anchor, and corrected-prediction shifts,
+anchor distributions, and validation correction distributions without validation
+labels. These files contain no row, source, family, or identity values. Private
+lock split evidence separately records recomputable identity-only assignments.
+
+A selected lock serializes the **exact eligible seed-42 production state already
+scored**, not an average of the two seeds' predictions and not an extra refit.
+Equal weighting combines development metrics only. This follows the existing
+prefitted-stack lock semantics. No validation rows enter this training-only state.
+The create-only lock binds the full plan, exact pair/counts/runtime contracts,
+numerical optimizer/state, feature order/version, honest gate and both seeds'
+evidence, recomputable outer/inner/full-training assignments, OOF/full-fit shift,
+dependencies, code/development identities, unchanged gates/ranking, complete base
+artifact inventory and preprocessing, and no-test-access attestation. Loading
+verifies checksums and reconstructs fixed contracts and predictions through the
+existing model backend seam; modified contracts or incomplete evidence block.
+The public lock specification is a typed `TailCorrectionModelSpecification` with
+reproducible identity, not a separate dictionary-only representation.
+
+Every tail lock, including one made through a custom backend, requires neural
+preprocessing with exactly `mean` and `variance` arrays of length seven. Values
+must be finite and float32-representable, and variances must be nonnegative.
+XGBoost preprocessing must be exactly `{"xgboost": "unnormalized_float32"}`.
+The schema is bound as `normalization-vectors-and-unnormalized-xgboost-v1`.
+Production loading also compares neural normalization and input width with the
+serialized model and checks the serialized XGBoost feature count. Empty mappings,
+missing or invalid statistics, and inconsistent serialized preprocessing block.
+
+Any invalid vector/state, failed fit, incomplete stage, expired budget, failed
+honest gate, or absence of an eligible validation candidate ends this round
+without replacement candidates, additional seeds, changed folds, changed bounds,
+omitted rows, or automatic expansion. Completed evidence and skipped slots remain
+preserved. No held-out assessment is part of this plan.
+
+Execution requires separate authorization after the implementation/predeclaration
+commit and source-neutral Issue #50 predeclaration. The intended next fresh private
+directory is `run-014`; this change does not create it:
+
+```bash
+.venv-candidates/bin/python -m minires.modeling.tuning \
+  --training-records data/train.jsonl \
+  --validation-records data/validation.jsonl \
+  --output-root private/candidate-tuning/run-014 \
+  --volume-unit mm3 --scope-confirmed --seed 41 \
+  --plan-kind tail_focused_correction
+```
+
+The command verifies the frozen committed training/validation checksums and pinned
+Python 3.13 environment with NumPy 2.2.6, Keras 3.15.0, TensorFlow 2.20.0,
+scikit-learn 1.7.2, and XGBoost 3.1.2. It has no held-out argument and must not read
+or fingerprint held-out evidence. Existing runs and dataset artifacts remain
+immutable.
+
 ## Locked candidate
 
 A successful search creates `locked-candidate/` with:
