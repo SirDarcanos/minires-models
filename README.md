@@ -8,7 +8,7 @@ This repository is developing and validating the next MiniRes model. It does not
 
 - A one-STL preparation workflow that inventories geometry, slices with a bundled checksum-pinned profile, and extracts UVtools `WeightG` without exposing the input identity.
 - Deterministic private dataset preparation and source-balanced train, validation, and held-out test partitions.
-- Explicit neural-network, XGBoost, and ensemble model specifications.
+- Explicit neural-network, XGBoost, convex-ensemble, and cross-fitted geometry-gate model specifications.
 - Bounded candidate search, candidate locking, and final assessment workflows.
 - Reproducible physical, clean-refit, and legacy comparison baselines.
 
@@ -16,7 +16,7 @@ MiniRes estimates sliced resin mass under validated slicing conditions. It does 
 
 ## Repository status
 
-The current code supports data preparation and governed model development. The latest tail-aware expanded candidate round produced no eligible lock, so final assessment was not started and no replacement production model has been declared. Further tuning requires a separate predeclared hypothesis and finite plan rather than automatic search expansion.
+The current code supports data preparation and governed model development. The corrected issue #50 round aligned validation-based checkpoint, component-pair, and ensemble-weight selection with the fixed serious-error gates without adding features or reslicing data. Its closest ensemble passed both aggregate gates but missed the qualifying-source gate, so no lock was created and final assessment was not started.
 
 Start with:
 
@@ -25,6 +25,7 @@ Start with:
 - [Candidate tuning and locked assessment](docs/candidate-tuning.md) for the replacement-model workflow.
 - [Source-balanced partitions](docs/normalization.md#generate-source-balanced-partitions) for current data allocation.
 - [STL preparation](docs/stl-preparation.md) for one-file smoke checks and resumable batches.
+- [Issue 53 surface-signature feasibility](docs/issue-53-surface-signature-feasibility.md) for the bounded development-only geometry investigation.
 
 ## Prepare STL files
 
@@ -115,6 +116,7 @@ The main references are:
 - [Candidate tuning](docs/candidate-tuning.md)
 - [Regenerated-data tuning result](docs/issue-49-completion.md)
 - [Tail-aware expanded tuning result](docs/issue-46-completion.md)
+- [Large-batch extended search ledger](docs/issue-50-candidate-search.md)
 - [Baseline evidence](docs/baseline-evidence.md)
 
 `notebooks/baseline_analysis.ipynb` remains because it is a current, output-free view over the public aggregate evaluation interface. It is not a historical training notebook and is not required by the runtime.

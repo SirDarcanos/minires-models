@@ -20,10 +20,14 @@ from types import MappingProxyType
 from typing import Any, Callable, Mapping, Protocol, Sequence
 
 from .legacy import LEGACY_FEATURES
+from . import tail_correction
 
 
 BatchPredictor = Callable[[Sequence[tuple[float, ...]]], Sequence[float]]
+PredictionRanker = Callable[[Sequence[float]], tuple[Any, ...]]
 MODEL_DEFINITION_VERSION = "minires-model-definition-v1"
+COMPONENT_PREPROCESSING_VERSION = "normalization-vectors-and-unnormalized-xgboost-v1"
+MODEL_OUTPUT_UNITS = ("g", "bounding_box_occupancy_factor")
 
 
 class ModelKind(str, Enum):
@@ -70,8 +74,11 @@ class ModelSpecification:
     def validate(self) -> None:
         if (
             not self.ordered_prediction_features
+            or any(not isinstance(name, str) or not name
+                   for name in self.ordered_prediction_features)
             or len(set(self.ordered_prediction_features)) != len(self.ordered_prediction_features)
-            or self.output_unit != "g"
+            or not isinstance(self.output_unit, str)
+            or self.output_unit not in MODEL_OUTPUT_UNITS
             or not self.identity_namespace
             or self.preprocessing.feature_dtype != "float32"
         ):
@@ -152,6 +159,60 @@ class ModelSpecification:
 
 
 @dataclass(frozen=True)
+class TailCorrectionModelSpecification:
+    """The continuous two-base anchor plus its fixed bounded numerical correction."""
+
+    bases: tuple[ModelSpecification, ModelSpecification]
+    correction_scale: float
+    ordered_prediction_features: tuple[str, ...] = LEGACY_FEATURES
+    output_unit: str = "g"
+
+    def __post_init__(self) -> None:
+        self.validate()
+
+    def validate(self) -> None:
+        if (
+            not isinstance(self.bases, tuple) or len(self.bases) != 2
+            or not all(isinstance(base, ModelSpecification) for base in self.bases)
+            or self.bases[0].model_kind is not ModelKind.NEURAL_NETWORK
+            or self.bases[1].model_kind is not ModelKind.XGBOOST
+            or self.ordered_prediction_features != LEGACY_FEATURES
+            or any(base.ordered_prediction_features != self.ordered_prediction_features
+                   for base in self.bases)
+            or isinstance(self.correction_scale, bool) or self.correction_scale not in (0.0, 1.0)
+            or self.output_unit != "g"
+        ):
+            raise ValueError("invalid_model_specification")
+        for base in self.bases:
+            base.validate()
+
+    @property
+    def stable_identity(self) -> str:
+        encoded = json.dumps(
+            self.to_dict(include_identity=False), sort_keys=True,
+            separators=(",", ":"), allow_nan=False,
+        ).encode()
+        return f"model-tail_focused_correction-{sha256(encoded).hexdigest()[:16]}"
+
+    def to_dict(self, *, include_identity: bool = True) -> dict[str, Any]:
+        result = {
+            "model_kind": "tail_focused_correction", "version": tail_correction.VERSION,
+            "bases": [base.to_dict() for base in self.bases],
+            "ordered_prediction_features": list(self.ordered_prediction_features),
+            "numeric_contract": _jsonable(tail_correction.CONTRACT),
+            "base_preprocessing_state_contract": COMPONENT_PREPROCESSING_VERSION,
+            "correction_scale": self.correction_scale, "output_unit": self.output_unit,
+        }
+        if include_identity:
+            result["stable_identity"] = self.stable_identity
+        return result
+
+    def describe(self) -> str:
+        return ("tail_focused_correction (0.8 neural_network + (1.0 - 0.8) xgboost; "
+                f"correction scale {self.correction_scale:g}; {self.output_unit})")
+
+
+@dataclass(frozen=True)
 class TrainingData:
     features: tuple[tuple[float, ...], ...]
     targets: tuple[float, ...]
@@ -177,9 +238,14 @@ class _WeightedTrainingData(TrainingData):
 class ValidationData:
     features: tuple[tuple[float, ...], ...]
     targets: tuple[float, ...]
+    prediction_ranker: PredictionRanker | None = field(
+        default=None, repr=False, compare=False,
+    )
 
     def __post_init__(self) -> None:
         _validate_data(self.features, self.targets)
+        if self.prediction_ranker is not None and not callable(self.prediction_ranker):
+            raise ValueError("invalid_model_validation_data")
 
 
 @dataclass(frozen=True)
@@ -189,6 +255,26 @@ class FittedModel:
     preprocessing_state: Mapping[str, Any]
     metadata: Mapping[str, Any]
     backend_state: Mapping[str, Any] = field(repr=False, compare=False)
+
+
+def validate_component_preprocessing(
+    specification: ModelSpecification, state: Mapping[str, Any],
+) -> None:
+    """Validate the frozen NN/XGB serialized preprocessing, without loading frameworks."""
+    if specification.model_kind is ModelKind.XGBOOST:
+        if dict(state) != {"xgboost": "unnormalized_float32"}:
+            raise ValueError("invalid_preprocessing_state")
+        return
+    if specification.model_kind is not ModelKind.NEURAL_NETWORK or set(state) != {"mean", "variance"}:
+        raise ValueError("invalid_preprocessing_state")
+    width = len(specification.ordered_prediction_features)
+    for key in ("mean", "variance"):
+        values = state[key]
+        if (not isinstance(values, list) or len(values) != width
+                or not all(isinstance(value, (int, float)) and not isinstance(value, bool)
+                           and math.isfinite(value) and abs(value) <= tail_correction.FLOAT32_MAXIMUM
+                           and (key != "variance" or value >= 0) for value in values)):
+            raise ValueError("invalid_preprocessing_state")
 
 
 class ModelBackend(Protocol):
@@ -275,6 +361,21 @@ class ModelRuntime:
                _validated_artifacts(self.backend.serialize_component(xgboost)).items()},
         }
 
+    def load_verified_component(
+        self, specification: ModelSpecification, artifacts: Mapping[str, bytes],
+        preprocessing_state: Mapping[str, Any],
+    ) -> BatchPredictor:
+        """Load a frozen component with strict state validation and backend consistency checks.
+
+        Custom backends receive the same validated state contract. The production
+        backend additionally compares that evidence with its deserialized model.
+        """
+        specification.validate()
+        validate_component_preprocessing(specification, preprocessing_state)
+        checked = _validated_artifacts(artifacts)
+        loader = getattr(self.backend, "load_verified_component", self.backend.load_component)
+        return loader(specification, checked, preprocessing_state)
+
     def load(
         self, specification: ModelSpecification, artifacts: Mapping[str, bytes],
         preprocessing_state: Mapping[str, Any],
@@ -303,7 +404,10 @@ class ModelRuntime:
 
 
 def candidate_model_specification(
-    model_kind: str | ModelKind, parameters: Mapping[str, Any]
+    model_kind: str | ModelKind, parameters: Mapping[str, Any], *,
+    ordered_prediction_features: Sequence[str] = LEGACY_FEATURES,
+    identity_namespace: str = MODEL_DEFINITION_VERSION,
+    output_unit: str = "g",
 ) -> ModelSpecification:
     """Convert one search candidate into the explicit model-definition interface."""
     try:
@@ -311,6 +415,9 @@ def candidate_model_specification(
     except (TypeError, ValueError):
         raise ValueError("invalid_model_specification") from None
     copied = _plain_mapping(parameters)
+    if isinstance(ordered_prediction_features, (str, bytes)):
+        raise ValueError("invalid_model_specification")
+    features = tuple(ordered_prediction_features)
     if kind is ModelKind.NEURAL_NETWORK:
         _validate_neural_candidate(copied)
         architecture_keys = {"layers", "activation", "dropout", "optimizer", "loss", "l2"}
@@ -319,15 +426,23 @@ def candidate_model_specification(
             PreprocessingContract("float32", "fit_on_training_records"),
             {key: copied[key] for key in architecture_keys},
             {key: value for key, value in copied.items() if key not in architecture_keys},
+            features,
+            output_unit=output_unit,
+            identity_namespace=identity_namespace,
         )
     if kind is ModelKind.XGBOOST:
         _validate_xgboost(copied)
-        training_keys = {"early_stopping_rounds", "target_weighting"}
+        training_keys = {
+            "early_stopping_rounds", "target_weighting", "validation_selection",
+        }
         return ModelSpecification(
             kind,
             PreprocessingContract("float32", "none"),
             {key: value for key, value in copied.items() if key not in training_keys},
             {key: copied[key] for key in training_keys if key in copied},
+            features,
+            output_unit=output_unit,
+            identity_namespace=identity_namespace,
         )
     raise ValueError("invalid_model_specification")
 
@@ -357,10 +472,16 @@ def ensemble_model_specification(
     neural_network: ModelSpecification, xgboost: ModelSpecification,
     neural_network_weight: float,
 ) -> ModelSpecification:
+    if (
+        neural_network.ordered_prediction_features != xgboost.ordered_prediction_features
+        or neural_network.output_unit != xgboost.output_unit
+    ):
+        raise ValueError("invalid_model_specification")
     return ModelSpecification(
         ModelKind.ENSEMBLE,
         PreprocessingContract("float32", "defined_by_members"),
-        {}, {},
+        {}, {}, neural_network.ordered_prediction_features,
+        output_unit=neural_network.output_unit,
         ensemble=EnsembleDefinition(neural_network, xgboost, neural_network_weight),
     )
 
@@ -469,7 +590,19 @@ class TensorflowXGBoostBackend:
         self, specification: ModelSpecification, artifacts: Mapping[str, bytes],
         preprocessing_state: Mapping[str, Any],
     ) -> BatchPredictor:
-        del preprocessing_state
+        return self._load_component(specification, artifacts, preprocessing_state, verify=False)
+
+    def load_verified_component(
+        self, specification: ModelSpecification, artifacts: Mapping[str, bytes],
+        preprocessing_state: Mapping[str, Any],
+    ) -> BatchPredictor:
+        validate_component_preprocessing(specification, preprocessing_state)
+        return self._load_component(specification, artifacts, preprocessing_state, verify=True)
+
+    def _load_component(
+        self, specification: ModelSpecification, artifacts: Mapping[str, bytes],
+        preprocessing_state: Mapping[str, Any], *, verify: bool,
+    ) -> BatchPredictor:
         np, tf = self.np, self.tf
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -480,6 +613,20 @@ class TensorflowXGBoostBackend:
                 path = root / "model.keras"
                 path.write_bytes(content)
                 model = tf.keras.models.load_model(path, compile=False)
+                if verify:
+                    width = len(specification.ordered_prediction_features)
+                    normalizers = [layer for layer in model.layers
+                                   if isinstance(layer, tf.keras.layers.Normalization)]
+                    if getattr(model, "input_shape", None) != (None, width) or len(normalizers) != 1:
+                        raise ValueError("invalid_preprocessing_state")
+                    normalizer = normalizers[0]
+                    actual = {
+                        "mean": normalizer.mean.numpy().reshape(-1).tolist(),
+                        "variance": normalizer.variance.numpy().reshape(-1).tolist(),
+                    }
+                    validate_component_preprocessing(specification, actual)
+                    if actual != dict(preprocessing_state):
+                        raise ValueError("invalid_preprocessing_state")
                 return lambda rows: np.asarray(
                     model(np.asarray(rows, dtype=np.float32), training=False)
                 ).reshape(-1).tolist()
@@ -491,6 +638,8 @@ class TensorflowXGBoostBackend:
                 path.write_bytes(content)
                 model = self.xgboost.XGBRegressor()
                 model.load_model(path)
+                if verify and model.n_features_in_ != len(specification.ordered_prediction_features):
+                    raise ValueError("invalid_preprocessing_state")
                 return lambda rows: model.predict(
                     np.asarray(rows, dtype=np.float32)
                 ).reshape(-1).tolist()
@@ -503,6 +652,7 @@ class TensorflowXGBoostBackend:
         np, tf = self.np, self.tf
         parameters = specification_parameters(specification)
         parameters.pop("target_weighting", None)
+        validation_selection = parameters.pop("validation_selection", "mae")
         random.seed(seed)
         np.random.seed(seed)
         tf.keras.utils.set_random_seed(seed)
@@ -530,9 +680,13 @@ class TensorflowXGBoostBackend:
             tf.keras.optimizers.AdamW if parameters["optimizer"] == "adamw"
             else tf.keras.optimizers.Adam
         )
+        loss = parameters["loss"]
+        if loss == "bounded_serious_tail_loss":
+            from .bounded_tail_risk import tensorflow_loss
+            loss = tensorflow_loss(tf)
         model.compile(
             optimizer=optimizer_class(float(parameters["learning_rate"])),
-            loss=parameters["loss"], metrics=[tf.keras.metrics.MeanAbsoluteError()],
+            loss=loss, metrics=[tf.keras.metrics.MeanAbsoluteError()],
         )
         kwargs: dict[str, Any] = {
             "verbose": 0, "shuffle": True,
@@ -542,27 +696,62 @@ class TensorflowXGBoostBackend:
         sample_weights = getattr(training, "sample_weights", None)
         if sample_weights is not None:
             kwargs["sample_weight"] = np.asarray(sample_weights, dtype=np.float32)
+        tail_callback = None
         if validation is not None:
             validation_x = np.asarray(validation.features, dtype=np.float32)
             validation_y = np.asarray(validation.targets, dtype=np.float32)
             kwargs["validation_data"] = (validation_x, validation_y)
-            callbacks = [tf.keras.callbacks.EarlyStopping(
-                monitor="val_mean_absolute_error", mode="min",
-                min_delta=float(parameters.get("early_stopping_min_delta", 0.0)),
-                patience=int(parameters["early_stopping_patience"]),
-                restore_best_weights=True, verbose=0,
-            )]
-            if "lr_reduction_factor" in parameters:
-                callbacks.append(tf.keras.callbacks.ReduceLROnPlateau(
+            if validation_selection == "serious_error_gates_then_ranking_v1":
+                if validation.prediction_ranker is None:
+                    raise ValueError("validation_prediction_ranker_required")
+                ranker = validation.prediction_ranker
+
+                class TailAlignedCheckpoint(tf.keras.callbacks.Callback):
+                    def __init__(self) -> None:
+                        super().__init__()
+                        self.best_key: tuple[Any, ...] | None = None
+                        self.best_weights: list[Any] | None = None
+                        self.selected_epochs = 0
+
+                    def on_epoch_end(self, epoch: int, logs: Any = None) -> None:
+                        del logs
+                        predictions = np.asarray(
+                            self.model(validation_x, training=False)
+                        ).reshape(-1).tolist()
+                        key = (*ranker(predictions), epoch + 1)
+                        if self.best_key is None or key < self.best_key:
+                            self.best_key = key
+                            self.best_weights = self.model.get_weights()
+                            self.selected_epochs = epoch + 1
+
+                    def on_train_end(self, logs: Any = None) -> None:
+                        del logs
+                        if self.best_weights is None:
+                            raise ValueError("validation_checkpoint_unavailable")
+                        self.model.set_weights(self.best_weights)
+
+                tail_callback = TailAlignedCheckpoint()
+                callbacks = [tail_callback]
+            else:
+                callbacks = [tf.keras.callbacks.EarlyStopping(
                     monitor="val_mean_absolute_error", mode="min",
-                    factor=float(parameters["lr_reduction_factor"]),
-                    patience=int(parameters["lr_reduction_patience"]),
-                    min_lr=float(parameters["minimum_learning_rate"]), verbose=0,
-                ))
+                    min_delta=float(parameters.get("early_stopping_min_delta", 0.0)),
+                    patience=int(parameters["early_stopping_patience"]),
+                    restore_best_weights=True, verbose=0,
+                )]
+                if "lr_reduction_factor" in parameters:
+                    callbacks.append(tf.keras.callbacks.ReduceLROnPlateau(
+                        monitor="val_mean_absolute_error", mode="min",
+                        factor=float(parameters["lr_reduction_factor"]),
+                        patience=int(parameters["lr_reduction_patience"]),
+                        min_lr=float(parameters["minimum_learning_rate"]), verbose=0,
+                    ))
             kwargs["callbacks"] = callbacks
         history = model.fit(train_x, train_y, **kwargs)
         selected_epochs = len(history.epoch)
-        if validation is not None:
+        if tail_callback is not None:
+            selected_epochs = tail_callback.selected_epochs
+        elif validation is not None:
             selected_epochs = _selected_epoch_count(
                 history.history.get("val_mean_absolute_error", ()),
                 float(parameters.get("early_stopping_min_delta", 0.0)),
@@ -593,9 +782,41 @@ class TensorflowXGBoostBackend:
         parameters = specification_parameters(specification)
         early_stopping = parameters.pop("early_stopping_rounds")
         parameters.pop("target_weighting", None)
+        validation_selection = parameters.pop("validation_selection", "mae")
+        tail_callback = None
+        model_kwargs: dict[str, Any] = {}
+        if validation is not None and validation_selection == "serious_error_gates_then_ranking_v1":
+            if validation.prediction_ranker is None:
+                raise ValueError("validation_prediction_ranker_required")
+            ranker = validation.prediction_ranker
+            validation_matrix = self.xgboost.DMatrix(
+                np.asarray(validation.features, dtype=np.float32)
+            )
+            xgboost = self.xgboost
+
+            class TailAlignedCheckpoint(xgboost.callback.TrainingCallback):
+                def __init__(self) -> None:
+                    self.best_key: tuple[Any, ...] | None = None
+                    self.selected_trees = 0
+
+                def after_iteration(self, booster: Any, epoch: int, evals_log: Any) -> bool:
+                    del evals_log
+                    predictions = booster.predict(
+                        validation_matrix, iteration_range=(0, epoch + 1)
+                    ).reshape(-1).tolist()
+                    key = (*ranker(predictions), epoch + 1)
+                    if self.best_key is None or key < self.best_key:
+                        self.best_key = key
+                        self.selected_trees = epoch + 1
+                    return False
+
+            tail_callback = TailAlignedCheckpoint()
+            model_kwargs["callbacks"] = [tail_callback]
+        elif validation is not None:
+            model_kwargs["early_stopping_rounds"] = early_stopping
         model = self.xgboost.XGBRegressor(
             **parameters, random_state=seed, tree_method="hist", eval_metric="mae",
-            **({"early_stopping_rounds": early_stopping} if validation is not None else {}),
+            **model_kwargs,
         )
         fit_kwargs = {}
         if validation is not None:
@@ -612,12 +833,17 @@ class TensorflowXGBoostBackend:
             **fit_kwargs,
         )
         selected = (
-            int(model.best_iteration) + 1 if validation is not None
+            tail_callback.selected_trees if tail_callback is not None
+            else int(model.best_iteration) + 1 if validation is not None
             else int(parameters["n_estimators"])
         )
+        if selected <= 0:
+            raise ValueError("validation_checkpoint_unavailable")
         return FittedModel(
             specification,
-            lambda rows: model.predict(np.asarray(rows, dtype=np.float32)).reshape(-1).tolist(),
+            lambda rows: model.predict(
+                np.asarray(rows, dtype=np.float32), iteration_range=(0, selected)
+            ).reshape(-1).tolist(),
             {"xgboost": "unnormalized_float32"},
             {"selected_trees": selected, "fitted_parameter_fingerprint": sha256(
                 bytes(model.get_booster().save_raw())
@@ -646,7 +872,8 @@ def _validate_neural_candidate(parameters: Mapping[str, Any]) -> None:
         "layers", "activation", "dropout", "optimizer", "loss", "learning_rate",
         "l2", "batch_size", "maximum_epochs", "early_stopping_patience",
     }
-    if set(parameters) not in (expected, expected | {"target_weighting"}):
+    optional = {"target_weighting", "validation_selection"}
+    if not expected.issubset(parameters) or not set(parameters).issubset(expected | optional):
         raise ValueError("invalid_model_specification")
     _validate_neural_parameters(parameters)
 
@@ -659,6 +886,7 @@ def _validate_neural_parameters(parameters: Mapping[str, Any]) -> None:
     optional = {
         "layer_specs", "early_stopping_min_delta", "lr_reduction_factor",
         "lr_reduction_patience", "minimum_learning_rate", "target_weighting",
+        "validation_selection",
     }
     if not required.issubset(parameters) or not set(parameters).issubset(required | optional):
         raise ValueError("invalid_model_specification")
@@ -668,7 +896,10 @@ def _validate_neural_parameters(parameters: Mapping[str, Any]) -> None:
         or any(not _positive_int(value) for value in layers)
         or parameters["activation"] not in {"relu", "selu", "mish"}
         or parameters["optimizer"] not in {"adam", "adamw"}
-        or parameters["loss"] not in {"mean_absolute_error", "huber", "mean_squared_error"}
+        or parameters["loss"] not in {
+            "mean_absolute_error", "huber", "mean_squared_error",
+            "bounded_serious_tail_loss",
+        }
         or not _bounded_number(parameters["dropout"], 0.0, 1.0, upper_inclusive=False)
         or not _positive_number(parameters["learning_rate"])
         or not _bounded_number(parameters["l2"], 0.0, math.inf)
@@ -702,6 +933,8 @@ def _validate_neural_parameters(parameters: Mapping[str, Any]) -> None:
             for name, check in optional_numbers.items())
         or parameters.get("target_weighting", "none")
         not in {"none", "sliced_resin_mass_band_1_2_3_4"}
+        or parameters.get("validation_selection", "mae")
+        not in {"mae", "serious_error_gates_then_ranking_v1"}
     ):
         raise ValueError("invalid_model_specification")
 
@@ -712,8 +945,10 @@ def _validate_xgboost(parameters: Mapping[str, Any]) -> None:
         "min_child_weight", "gamma", "reg_alpha", "reg_lambda", "objective", "n_jobs",
         "early_stopping_rounds",
     }
+    optional = {"target_weighting", "validation_selection"}
     if (
-        set(parameters) not in (expected, expected | {"target_weighting"})
+        not expected.issubset(parameters)
+        or not set(parameters).issubset(expected | optional)
         or not _positive_int(parameters["n_estimators"])
         or not _positive_int(parameters["max_depth"])
         or not _positive_number(parameters["learning_rate"])
@@ -728,6 +963,8 @@ def _validate_xgboost(parameters: Mapping[str, Any]) -> None:
         or not _positive_int(parameters["early_stopping_rounds"])
         or parameters.get("target_weighting", "none")
         not in {"none", "sliced_resin_mass_band_1_2_3_4"}
+        or parameters.get("validation_selection", "mae")
+        not in {"mae", "serious_error_gates_then_ranking_v1"}
     ):
         raise ValueError("invalid_model_specification")
 

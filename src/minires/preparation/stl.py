@@ -129,6 +129,17 @@ def _contract(profile_digest: str | None = None) -> dict[str, Any]:
         "layer_height_mm": LAYER_HEIGHT_MM,
         "slicer_added_supports": SLICER_ADDED_SUPPORTS,
         "label_source": "UVtools print-properties WeightG",
+        "geometry_measurement": {
+            "volume_semantics": "trimesh_signed_additive_surface_integral",
+            "bounding_box_volume_semantics": "axis_aligned_extent_product",
+            "mesh_volume_must_not_exceed_bounding_box_volume": False,
+            "semantics_apply_with_geometry_version": "recorded_in_result_versions",
+            "pinned_geometry_version": "trimesh 4.10.1",
+            "topology_limit": (
+                "volume_is_not_occupied_union_volume_and_is_not_reliable_for_"
+                "non_watertight_or_inconsistently_wound_meshes"
+            ),
+        },
     }
 
 

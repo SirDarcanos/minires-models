@@ -1,0 +1,188 @@
+# Issue 53: print-axis surface-signature feasibility
+
+This investigation asks whether the existing pre-supported development STL files can all provide one deterministic inference-time geometry representation under bounded resources. It does not fit a model, inspect sliced resin mass, select features from target performance, or access held-out-test geometry.
+
+## Representation decision
+
+The investigation uses `minires-print-axis-surface-signature-v1`, not voxel occupancy. The earlier voxel route was not reliable on the available toolchain: interior filling required an undeclared dependency and surface voxelization exceeded exploratory time limits. Existing sampled files were also non-watertight, so an interior-fill interpretation would require a separate contract.
+
+The selected representation has 32 equal bins along the STL's existing Z axis, normalized between its minimum and maximum vertex Z coordinates. Each triangle is assigned to the bin containing its centroid. Two channels are accumulated and independently normalized to sum to one:
+
+1. triangle surface area;
+2. absolute triangle area projected onto the XY plane.
+
+The extractor loads with trimesh 4.10.1 and `process=False`. It does not rotate, scale, repair, fill, merge, or reslice geometry. Uniform scaling and translation do not change the normalized result. Absolute area terms make it insensitive to winding reversal. Open and overlapping shells are accepted as additive triangle surfaces. The representation is not occupied volume and does not claim to approximate cross-sectional area.
+
+A mesh blocks extraction if it is empty; contains invalid indices or non-finite geometry; has no positive Z extent, surface area, or absolute projected area; or produces a non-finite channel. Every declared development STL must produce the same 64 finite values. Partial-row omission and mixed feature semantics are forbidden.
+
+## Private inventory contract
+
+The run accepts one ignored private JSON manifest with this shape:
+
+```json
+{
+  "version": "minires-development-geometry-inventory-v1",
+  "scope": "pre_supported_training_and_validation_only",
+  "presupported_scope_confirmed": true,
+  "held_out_test_geometry_included": false,
+  "corpus": {
+    "id": "existing-presupported-v1",
+    "separate_from_canonical_dataset": true
+  },
+  "root": "/private/path/to/geometry",
+  "expected_stl_count": 1,
+  "development_rows": [
+    {
+      "partition": "training",
+      "partition_row_index": 0,
+      "relative_stl_path": "private-relative-name.stl"
+    }
+  ],
+  "reconciliation": {
+    "version": "minires-development-geometry-reconciliation-v1",
+    "existing_presupported_stl_count": 1931,
+    "training_row_count": 1,
+    "validation_row_count": 0,
+    "held_out_test_stl_count": 100,
+    "noncanonical_presupported_stl_count": 1830,
+    "missing_development_geometry_count": 0,
+    "duplicate_development_geometry_count": 0,
+    "development_rows_one_to_one": true
+  }
+}
+```
+
+The manifest is private because its root, row mapping, and relative paths may disclose identity. Its scope fields and reconciliation are maintainer attestations, not facts inferred from mesh geometry. `development_rows` must contain between 1 and 2,000 mappings to unique, existing, non-symlinked `.stl` paths beneath the root. Raw-string and resolved-path aliases are rejected.
+
+Training and validation partition-row indexes must be unique; they retain their positions in the full canonical partitions and therefore need not be contiguous within this corpus-specific subset. The two mapped row counts must sum to `expected_stl_count`. Training, validation, held-out-test, and noncanonical counts must also reconcile exactly to the frozen existing pre-supported count of 1,931. Missing or duplicate development geometry must be zero, and the one-to-one attestation must be true. The held-out count is aggregate reconciliation only; its paths are neither listed nor accessed.
+
+The corrected exploratory count of 1,931 pre-supported files is not by itself an eligible inventory. Before execution, private reconciliation must prove exhaustive one-to-one coverage of the training and validation rows while excluding held-out-test geometry. If that boundary cannot be established without accessing held-out-test geometry, the run remains blocked.
+
+Create the manifest through the fixed reconciliation seam:
+
+```bash
+python3 -m minires.preparation.surface_signature_batch_linkage \
+  --batch-result private/current-preparation/result.json \
+  --private-output private/geometry-feature-feasibility/batch-linkage-001.json
+
+python3 -m minires.preparation.surface_signature_reconciliation \
+  --training-records private/current-dataset/train.jsonl \
+  --validation-records private/current-dataset/validation.jsonl \
+  --dataset-manifest private/current-dataset/manifest.json \
+  --dataset-provenance private/current-dataset/provenance.json \
+  --batch-result private/current-preparation/result.json \
+  --batch-linkage private/geometry-feature-feasibility/batch-linkage-001.json \
+  --presupported-root /private/path/to/existing-presupported-corpus \
+  --output-root private/geometry-feature-feasibility/reconciliation-001 \
+  --scope-confirmed
+```
+
+The linkage exporter hashes the complete immutable batch result but selectively decodes only its top-level schema, outcome, aggregate accounting, and inventory. Prepared record payloads—including labels—are skipped rather than deserialized and are absent from the linkage artifact.
+
+The reconciliation command accepts no held-out-test record path. It validates the canonical training, validation, and provenance artifact checksums; hashes the immutable batch bytes without decoding record payloads; requires that hash to equal the exact batch fingerprint recorded by canonical assembly; and independently reselects the identity-only fields from those bytes to require exact equality with the linkage artifact before reconstructing existing-corpus record identities. Held-out path metadata is used privately only to distinguish development mappings and derive aggregate accounting. Only mapped training and validation STL paths are resolved and statted; held-out STL files are not resolved, statted, opened, or loaded. Accepted corpus entries absent from training and validation are counted in aggregate as held out and their paths are not placed in the development inventory. Rejected preparation entries remain noncanonical aggregate accounting. Both outputs are create-only.
+
+## Dataset isolation
+
+The dataset used for Issue 50 remains immutable. Geometry-feature work must not add columns to, replace, repartition, or write files into the existing canonical training, validation, or held-out-test artifact set.
+
+Run 001 reads the separately inventoried existing raw pre-supported STL collection and writes only aggregate feasibility evidence under `private/geometry-feature-feasibility/run-001`. It does not create model-ready rows.
+
+If additional raw STL files are restored or downloaded later, they must be stored under a different ignored private root with their own immutable acquisition inventory. Do not append them to or copy them into the existing raw-STL root. A later reconciliation manifest may reference both inventories privately, but it must preserve their separate corpus identities and prove path and row disjointness.
+
+Any eventual model-ready geometry features must be written as a new versioned private dataset under a geometry-feature-specific root. It may bind to immutable canonical partition rows by private partition and row index, but it must not modify the canonical records. Training and validation feature artifacts remain separate from held-out-test feature artifacts; the latter must not be generated or accessed during development. Combining tabular and geometry features is a later modeling input operation, not a dataset rewrite.
+
+## Synthetic contract checks
+
+Before private geometry, source-neutral tests freeze repeat determinism; winding, translation, and positive uniform-scale invariance; exact centroid behavior at normalized bin boundaries; chunk invariance; open and overlapping-shell semantics; empty, degenerate, non-finite, zero-Z-extent, and zero-projected-area rejection; real subprocess extraction; observed resident-memory blocking; and whole-run deadline accounting.
+
+## Frozen resource and stop contract
+
+The create-only feasibility run uses:
+
+- one worker at a time;
+- 100,000 faces per numerical accumulation chunk;
+- 120 seconds per STL;
+- 8 GiB maximum observed worker resident memory, sampled every 0.25 seconds and checked against the worker's terminal peak;
+- 14,400 seconds maximum elapsed time;
+- zero retries, substitutions, omissions, or budget recycling.
+
+The command is:
+
+```bash
+python3 -m minires.preparation.surface_signature_feasibility \
+  --inventory-manifest private/geometry-feature-feasibility/reconciliation-001/development-inventory.json \
+  --authorization-record private/geometry-feature-feasibility/execution-authorization.json \
+  --output-root private/geometry-feature-feasibility/run-001
+```
+
+Only `private/geometry-feature-feasibility/run-001` is accepted by the command. It is create-only. Inventory reconciliation does not authorize execution. After this predeclaration is committed and reviewed, obtain separate maintainer authorization specifically for Issue 53 surface-signature feasibility run 001. Record it in an ignored private JSON file using version `minires-private-geometry-authorization-v1`, issue `53`, scope `surface_signature_feasibility_run_001`, and `authorized: true`. The command fails closed without that separate record. Do not execute it until both the development-only inventory and authorization record exist.
+
+## Evidence and decision rule
+
+The output contains the frozen plan, aggregate evidence, and artifact checksums. It never persists or prints input paths, identities, fingerprints, per-file feature values, or per-file failures.
+
+The feasibility decision is `completed` only when every declared STL succeeds on its single attempt. Any dependency mismatch, invalid inventory, timeout, resource-limit breach, input change, invalid geometry, worker failure, or incomplete accounting blocks the investigation. A completed result establishes only deterministic mechanical availability over the declared development inventory. It does not establish predictive usefulness, occupied-geometry semantics, validated-scope performance, or permission to inspect held-out evidence.
+
+Downloading the remaining corpus may be considered only after a completed run over the privately reconciled existing development inventory. Any subsequent modeling round needs a separate predeclaration and must apply one frozen feature contract to every training and validation row.
+
+## Run 001 outcome
+
+The separately authorized create-only run processed its fixed inventory once and blocked:
+
+- input and attempted STLs: 1,636;
+- completed STLs: 0;
+- failed STLs: 1,636;
+- aggregate reason: `surface_signature_invalid_geometry` for every attempted STL;
+- elapsed time: approximately 475 seconds;
+- unattempted STLs, retries, omissions, model fits, and locks: zero;
+- labels, source groups, held-out-test geometry, and validation metrics: not accessed;
+- all create-only artifact checksums: verified.
+
+The uniform bounded reason does not establish that every source mesh is geometrically invalid; the worker deliberately suppressed exception details to protect private output. Run 001 therefore provides insufficient diagnostic resolution to distinguish a shared extractor defect, loader incompatibility, or a genuine contract failure. It is preserved as blocked and must not be retried or replaced.
+
+Do not download the remaining corpus or proceed to modeling from this result. Any diagnostic follow-up must be separately predeclared and authorized, remain limited to the reconciled development geometry, and improve source-neutral failure classification before another feasibility run can be considered.
+
+## Predeclaration: failure-stage diagnostic 001
+
+The next permitted step is the source-neutral `minires-surface-signature-diagnostic-v1` diagnostic. This commit predeclares and proves its behavior on synthetic fixtures; it does **not** authorize private execution. It does not retry or replace feasibility run 001 and does not change the feature contract.
+
+The diagnostic requires the same checksum-verified reconciled development inventory used by the feasibility lifecycle and requires exactly the recorded aggregate inventory count of 1,636. From that immutable inventory order it attempts these 16 fixed, content-neutral, evenly spaced ordinals exactly once:
+
+```text
+0, 109, 218, 327, 436, 545, 654, 763,
+872, 981, 1090, 1199, 1308, 1417, 1526, 1635
+```
+
+The rule includes both endpoints and does not inspect geometry, prior failures, labels, source groups, or identities when choosing rows. Failed or unavailable attempts are not replaced, retried, or used to recycle budget. The sample is diagnostic only; it is not evidence that unsampled rows pass or fail.
+
+Each selected STL receives one subprocess attempt with a 30-second ceiling. The complete pass has a 600-second ceiling, one worker at a time, observed worker resident memory capped at 8 GiB, and the same 0.25-second memory sampling interval as run 001. The diagnostic stops after the fixed pass or the total deadline. It does not repair, rotate, scale, reslice, replace, omit, or repartition any row.
+
+Only these bounded reasons may be counted:
+
+- `surface_signature_diagnostic_load_failed`;
+- `surface_signature_diagnostic_mesh_type_invalid`;
+- `surface_signature_diagnostic_array_invalid`;
+- `surface_signature_diagnostic_extents_invalid`;
+- `surface_signature_diagnostic_surface_area_invalid`;
+- `surface_signature_diagnostic_projected_area_invalid`;
+- `surface_signature_diagnostic_binning_invalid`;
+- `surface_signature_diagnostic_extractor_mismatch`;
+- `surface_signature_diagnostic_timeout`;
+- `surface_signature_diagnostic_input_changed`;
+- `surface_signature_diagnostic_resource_limit`;
+- `surface_signature_diagnostic_resource_monitor_unavailable`;
+- `surface_signature_diagnostic_worker_transport_failed`;
+- `surface_signature_diagnostic_total_deadline`.
+
+The create-only output contains a plan, aggregate reason counts, and artifact checksums. It never persists or prints paths, identities, row indexes, fingerprints, feature values, stack traces, raw exception text, or per-file outcomes. Labels, source groups, validation metrics, held-out records, and held-out geometry are unavailable to the interface. A completed diagnostic means only that all 16 fixed attempts received bounded classifications; classification failures do not themselves block diagnostic completion. Infrastructure, dependency, authorization, inventory, or total-deadline failures block it.
+
+Before private execution, obtain separate maintainer authorization for scope `surface_signature_failure_diagnostic_001`. The ignored private authorization record must use version `minires-private-geometry-authorization-v1`, issue `53`, `authorized: true`, and bind `inventory_manifest_sha256` to the exact private development-inventory bytes. Then the sole prospective command is:
+
+```bash
+python3 -m minires.preparation.surface_signature_diagnostic \
+  --inventory-manifest private/geometry-feature-feasibility/reconciliation-001/development-inventory.json \
+  --authorization-record private/geometry-feature-feasibility/diagnostic-authorization-001.json \
+  --output-root private/geometry-feature-feasibility/diagnostic-001
+```
+
+Only that output root is accepted. Stop after one completed or blocked invocation and record aggregate-only results before proposing any extractor change, broader geometry access, or another feasibility run.
