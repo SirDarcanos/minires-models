@@ -138,11 +138,18 @@ def _load_authorization(path: Path) -> None:
         raise ValueError("invalid authorization")
 
 
-def _load_inventory(path: Path) -> tuple[Path, ...]:
+def _load_inventory(
+    path: Path, *, expected_sha256: str | None = None
+) -> tuple[Path, ...]:
     if not is_private_path(path):
         raise ValueError("invalid inventory")
     try:
         content = path.read_bytes()
+    except OSError:
+        raise ValueError("invalid inventory") from None
+    if expected_sha256 is not None and sha256(content).hexdigest() != expected_sha256:
+        raise ValueError("inventory authorization mismatch")
+    try:
         package = json.loads(path.with_name("manifest.json").read_text())
         if (
             not isinstance(package, Mapping)

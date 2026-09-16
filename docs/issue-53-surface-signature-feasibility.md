@@ -141,3 +141,48 @@ The separately authorized create-only run processed its fixed inventory once and
 The uniform bounded reason does not establish that every source mesh is geometrically invalid; the worker deliberately suppressed exception details to protect private output. Run 001 therefore provides insufficient diagnostic resolution to distinguish a shared extractor defect, loader incompatibility, or a genuine contract failure. It is preserved as blocked and must not be retried or replaced.
 
 Do not download the remaining corpus or proceed to modeling from this result. Any diagnostic follow-up must be separately predeclared and authorized, remain limited to the reconciled development geometry, and improve source-neutral failure classification before another feasibility run can be considered.
+
+## Predeclaration: failure-stage diagnostic 001
+
+The next permitted step is the source-neutral `minires-surface-signature-diagnostic-v1` diagnostic. This commit predeclares and proves its behavior on synthetic fixtures; it does **not** authorize private execution. It does not retry or replace feasibility run 001 and does not change the feature contract.
+
+The diagnostic requires the same checksum-verified reconciled development inventory used by the feasibility lifecycle and requires exactly the recorded aggregate inventory count of 1,636. From that immutable inventory order it attempts these 16 fixed, content-neutral, evenly spaced ordinals exactly once:
+
+```text
+0, 109, 218, 327, 436, 545, 654, 763,
+872, 981, 1090, 1199, 1308, 1417, 1526, 1635
+```
+
+The rule includes both endpoints and does not inspect geometry, prior failures, labels, source groups, or identities when choosing rows. Failed or unavailable attempts are not replaced, retried, or used to recycle budget. The sample is diagnostic only; it is not evidence that unsampled rows pass or fail.
+
+Each selected STL receives one subprocess attempt with a 30-second ceiling. The complete pass has a 600-second ceiling, one worker at a time, observed worker resident memory capped at 8 GiB, and the same 0.25-second memory sampling interval as run 001. The diagnostic stops after the fixed pass or the total deadline. It does not repair, rotate, scale, reslice, replace, omit, or repartition any row.
+
+Only these bounded reasons may be counted:
+
+- `surface_signature_diagnostic_load_failed`;
+- `surface_signature_diagnostic_mesh_type_invalid`;
+- `surface_signature_diagnostic_array_invalid`;
+- `surface_signature_diagnostic_extents_invalid`;
+- `surface_signature_diagnostic_surface_area_invalid`;
+- `surface_signature_diagnostic_projected_area_invalid`;
+- `surface_signature_diagnostic_binning_invalid`;
+- `surface_signature_diagnostic_extractor_mismatch`;
+- `surface_signature_diagnostic_timeout`;
+- `surface_signature_diagnostic_input_changed`;
+- `surface_signature_diagnostic_resource_limit`;
+- `surface_signature_diagnostic_resource_monitor_unavailable`;
+- `surface_signature_diagnostic_worker_transport_failed`;
+- `surface_signature_diagnostic_total_deadline`.
+
+The create-only output contains a plan, aggregate reason counts, and artifact checksums. It never persists or prints paths, identities, row indexes, fingerprints, feature values, stack traces, raw exception text, or per-file outcomes. Labels, source groups, validation metrics, held-out records, and held-out geometry are unavailable to the interface. A completed diagnostic means only that all 16 fixed attempts received bounded classifications; classification failures do not themselves block diagnostic completion. Infrastructure, dependency, authorization, inventory, or total-deadline failures block it.
+
+Before private execution, obtain separate maintainer authorization for scope `surface_signature_failure_diagnostic_001`. The ignored private authorization record must use version `minires-private-geometry-authorization-v1`, issue `53`, `authorized: true`, and bind `inventory_manifest_sha256` to the exact private development-inventory bytes. Then the sole prospective command is:
+
+```bash
+python3 -m minires.preparation.surface_signature_diagnostic \
+  --inventory-manifest private/geometry-feature-feasibility/reconciliation-001/development-inventory.json \
+  --authorization-record private/geometry-feature-feasibility/diagnostic-authorization-001.json \
+  --output-root private/geometry-feature-feasibility/diagnostic-001
+```
+
+Only that output root is accepted. Stop after one completed or blocked invocation and record aggregate-only results before proposing any extractor change, broader geometry access, or another feasibility run.

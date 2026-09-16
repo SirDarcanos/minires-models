@@ -194,6 +194,16 @@ class SurfaceSignatureFeasibilityTests(unittest.TestCase):
             result.evidence["failure_reasons"], {"surface_signature_total_deadline": 1}
         )
 
+    def test_inventory_loader_parses_the_exact_authorized_bytes(self):
+        authorized_sha256 = sha256(self.inventory.read_bytes()).hexdigest()
+        self.inventory.write_text(self.inventory.read_text() + "\n")
+        self.refresh_inventory_manifest()
+
+        with self.assertRaisesRegex(ValueError, "inventory authorization mismatch"):
+            feasibility._load_inventory(
+                self.inventory, expected_sha256=authorized_sha256
+            )
+
     def test_nonseparate_corpus_contract_blocks_before_geometry_access(self):
         inventory = json.loads(self.inventory.read_text())
         inventory["corpus"]["separate_from_canonical_dataset"] = False
