@@ -53,6 +53,7 @@ class SurfaceSignatureFeasibilityTests(unittest.TestCase):
                 "development_rows_one_to_one": True,
             },
         }))
+        self.refresh_inventory_manifest()
         self.authorization = self.private / "execution-authorization.json"
         self.authorization.write_text(json.dumps({
             "version": feasibility.AUTHORIZATION_VERSION,
@@ -61,6 +62,14 @@ class SurfaceSignatureFeasibilityTests(unittest.TestCase):
             "authorized": True,
         }))
         self.output = self.private / "surface-signature-run"
+
+    def refresh_inventory_manifest(self):
+        self.inventory.with_name("manifest.json").write_text(json.dumps({
+            "version": feasibility.RECONCILIATION_PACKAGE_VERSION,
+            "artifacts": {
+                self.inventory.name: sha256(self.inventory.read_bytes()).hexdigest(),
+            },
+        }))
 
     def run_feasibility(self):
         return feasibility.run_surface_signature_feasibility(
@@ -78,6 +87,7 @@ class SurfaceSignatureFeasibilityTests(unittest.TestCase):
         reconciliation["validation_row_count"] = 0
         reconciliation["noncanonical_presupported_stl_count"] = 1830
         self.inventory.write_text(json.dumps(inventory))
+        self.refresh_inventory_manifest()
 
         result = self.run_feasibility()
 

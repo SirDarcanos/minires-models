@@ -24,6 +24,7 @@ VERSION = "minires-surface-signature-feasibility-v1"
 INVENTORY_VERSION = "minires-development-geometry-inventory-v1"
 AUTHORIZATION_VERSION = "minires-private-geometry-authorization-v1"
 RECONCILIATION_VERSION = "minires-development-geometry-reconciliation-v1"
+RECONCILIATION_PACKAGE_VERSION = "minires-surface-signature-reconciliation-v1"
 EXPECTED_EXISTING_PRESUPPORTED_STL_COUNT = 1_931
 EXPECTED_TRIMESH_VERSION = "4.10.1"
 MAXIMUM_STL_COUNT = 2_000
@@ -141,7 +142,16 @@ def _load_inventory(path: Path) -> tuple[Path, ...]:
     if not is_private_path(path):
         raise ValueError("invalid inventory")
     try:
-        raw = json.loads(path.read_text())
+        content = path.read_bytes()
+        package = json.loads(path.with_name("manifest.json").read_text())
+        if (
+            not isinstance(package, Mapping)
+            or package.get("version") != RECONCILIATION_PACKAGE_VERSION
+            or not isinstance(package.get("artifacts"), Mapping)
+            or package["artifacts"].get(path.name) != sha256(content).hexdigest()
+        ):
+            raise ValueError("invalid inventory package")
+        raw = json.loads(content)
         root = Path(raw["root"]).resolve()
         development_rows = raw["development_rows"]
         expected = raw["expected_stl_count"]
