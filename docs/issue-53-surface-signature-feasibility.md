@@ -53,6 +53,16 @@ Training and validation row indexes must each be unique and contiguous from zero
 
 The corrected exploratory count of 1,931 pre-supported files is not by itself an eligible inventory. Before execution, private reconciliation must prove exhaustive one-to-one coverage of the training and validation rows while excluding held-out-test geometry. If that boundary cannot be established without accessing held-out-test geometry, the run remains blocked.
 
+## Dataset isolation
+
+The dataset used for Issue 50 remains immutable. Geometry-feature work must not add columns to, replace, repartition, or write files into the existing canonical training, validation, or held-out-test artifact set.
+
+Run 001 reads the separately inventoried existing raw pre-supported STL collection and writes only aggregate feasibility evidence under `private/geometry-feature-feasibility/run-001`. It does not create model-ready rows.
+
+If additional raw STL files are restored or downloaded later, they must be stored under a different ignored private root with their own immutable acquisition inventory. Do not append them to or copy them into the existing raw-STL root. A later reconciliation manifest may reference both inventories privately, but it must preserve their separate corpus identities and prove path and row disjointness.
+
+Any eventual model-ready geometry features must be written as a new versioned private dataset under a geometry-feature-specific root. It may bind to immutable canonical partition rows by private partition and row index, but it must not modify the canonical records. Training and validation feature artifacts remain separate from held-out-test feature artifacts; the latter must not be generated or accessed during development. Combining tabular and geometry features is a later modeling input operation, not a dataset rewrite.
+
 ## Synthetic contract checks
 
 Before private geometry, source-neutral tests freeze repeat determinism; winding, translation, and positive uniform-scale invariance; exact centroid behavior at normalized bin boundaries; chunk invariance; open and overlapping-shell semantics; empty, degenerate, non-finite, zero-Z-extent, and zero-projected-area rejection; real subprocess extraction; observed resident-memory blocking; and whole-run deadline accounting.
