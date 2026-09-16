@@ -124,3 +124,20 @@ The output contains the frozen plan, aggregate evidence, and artifact checksums.
 The feasibility decision is `completed` only when every declared STL succeeds on its single attempt. Any dependency mismatch, invalid inventory, timeout, resource-limit breach, input change, invalid geometry, worker failure, or incomplete accounting blocks the investigation. A completed result establishes only deterministic mechanical availability over the declared development inventory. It does not establish predictive usefulness, occupied-geometry semantics, validated-scope performance, or permission to inspect held-out evidence.
 
 Downloading the remaining corpus may be considered only after a completed run over the privately reconciled existing development inventory. Any subsequent modeling round needs a separate predeclaration and must apply one frozen feature contract to every training and validation row.
+
+## Run 001 outcome
+
+The separately authorized create-only run processed its fixed inventory once and blocked:
+
+- input and attempted STLs: 1,636;
+- completed STLs: 0;
+- failed STLs: 1,636;
+- aggregate reason: `surface_signature_invalid_geometry` for every attempted STL;
+- elapsed time: approximately 475 seconds;
+- unattempted STLs, retries, omissions, model fits, and locks: zero;
+- labels, source groups, held-out-test geometry, and validation metrics: not accessed;
+- all create-only artifact checksums: verified.
+
+The uniform bounded reason does not establish that every source mesh is geometrically invalid; the worker deliberately suppressed exception details to protect private output. Run 001 therefore provides insufficient diagnostic resolution to distinguish a shared extractor defect, loader incompatibility, or a genuine contract failure. It is preserved as blocked and must not be retried or replaced.
+
+Do not download the remaining corpus or proceed to modeling from this result. Any diagnostic follow-up must be separately predeclared and authorized, remain limited to the reconciled development geometry, and improve source-neutral failure classification before another feasibility run can be considered.
