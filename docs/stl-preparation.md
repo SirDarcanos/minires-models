@@ -81,6 +81,12 @@ The command prints only `completed`, `interrupted`, or a bounded run-level error
 inventory_count = accepted_count + rejected_count
 ```
 
+## Investigate print-axis surface signatures
+
+Issue 53 defines a separate development-only feasibility investigation for a 32-bin [print-axis surface signature](issue-53-surface-signature-feasibility.md). It uses additive triangle surface area and absolute XY-projected triangle area, not the signed mesh volume, occupied volume, or slicer output used by the preparation workflow.
+
+The investigation requires a private, maintainer-attested inventory containing only pre-supported training and validation geometry. A directory name or aggregate pre-supported-file count does not establish that boundary. Do not run the investigation against an inventory that may include held-out-test geometry.
+
 ## Process and cleanup boundaries
 
 Every external application receives an argument vector directly; no shell command is built. Each call has a timeout. Preflight and slicing commands must exit successfully. UVtools 6.2.0 `print-properties` is allowed its observed exit status 1 only when stdout has the successful property structure and its `HeaderSettings` line contains an exact, finite, positive `WeightG` field; help, error, incomplete, and malformed output still fails closed. PrusaSlicer receives an explicit output path in a mode-0700 temporary workspace. Geometry and slicing operate on a private copy named `input.stl`, not the source. The entire workspace, including sliced output, is removed after success, rejection, or timeout, and the source checksum is checked again before returning.

@@ -48,3 +48,7 @@ _Avoid_: Bounding-box area
 **Bounding-box occupancy factor**:
 A label-derived training representation equal to sliced resin volume divided by axis-aligned bounding-box volume. It is not assumed to be at most one and is not evidence of physical occupied-union volume.
 _Avoid_: Physical occupancy, occupied-volume fraction
+
+**Print-axis surface signature**:
+A winding-insensitive distribution of additive triangle surface terms along the existing Z axis of a pre-supported miniature. It describes mesh surfaces without inferring an interior and is not occupied volume or a cross-sectional-area measurement.
+_Avoid_: Occupancy profile, filled profile

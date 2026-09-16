@@ -25,6 +25,7 @@ Start with:
 - [Candidate tuning and locked assessment](docs/candidate-tuning.md) for the replacement-model workflow.
 - [Source-balanced partitions](docs/normalization.md#generate-source-balanced-partitions) for current data allocation.
 - [STL preparation](docs/stl-preparation.md) for one-file smoke checks and resumable batches.
+- [Issue 53 surface-signature feasibility](docs/issue-53-surface-signature-feasibility.md) for the bounded development-only geometry investigation.
 
 ## Prepare STL files
 
