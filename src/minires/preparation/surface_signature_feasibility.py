@@ -23,6 +23,7 @@ from . import surface_signature
 VERSION = "minires-surface-signature-feasibility-v1"
 INVENTORY_VERSION = "minires-development-geometry-inventory-v1"
 AUTHORIZATION_VERSION = "minires-private-geometry-authorization-v1"
+RECONCILIATION_VERSION = "minires-development-geometry-reconciliation-v1"
 EXPECTED_EXISTING_PRESUPPORTED_STL_COUNT = 1_931
 EXPECTED_TRIMESH_VERSION = "4.10.1"
 MAXIMUM_STL_COUNT = 2_000
@@ -144,6 +145,7 @@ def _load_inventory(path: Path) -> tuple[Path, ...]:
         root = Path(raw["root"]).resolve()
         development_rows = raw["development_rows"]
         expected = raw["expected_stl_count"]
+        corpus = raw["corpus"]
         reconciliation = raw["reconciliation"]
     except (KeyError, OSError, TypeError, ValueError, json.JSONDecodeError):
         raise ValueError("invalid inventory") from None
@@ -157,6 +159,9 @@ def _load_inventory(path: Path) -> tuple[Path, ...]:
         or expected <= 0 or expected > MAXIMUM_STL_COUNT
         or not isinstance(development_rows, list) or len(development_rows) != expected
         or not root.is_dir()
+        or not isinstance(corpus, Mapping)
+        or corpus.get("id") != "existing-presupported-v1"
+        or corpus.get("separate_from_canonical_dataset") is not True
         or not isinstance(reconciliation, Mapping)
     ):
         raise ValueError("invalid inventory")
@@ -172,6 +177,7 @@ def _load_inventory(path: Path) -> tuple[Path, ...]:
     counts = tuple(reconciliation.get(field) for field in count_fields)
     if (
         any(not isinstance(value, int) or isinstance(value, bool) or value < 0 for value in counts)
+        or reconciliation.get("version") != RECONCILIATION_VERSION
         or reconciliation.get("existing_presupported_stl_count")
         != EXPECTED_EXISTING_PRESUPPORTED_STL_COUNT
         or reconciliation.get("training_row_count", 0)
@@ -194,7 +200,7 @@ def _load_inventory(path: Path) -> tuple[Path, ...]:
         if not isinstance(row, Mapping):
             raise ValueError("invalid inventory")
         partition = row.get("partition")
-        row_index = row.get("row_index")
+        row_index = row.get("partition_row_index")
         item = row.get("relative_stl_path")
         if (
             not isinstance(partition, str)
@@ -229,12 +235,6 @@ def _load_inventory(path: Path) -> tuple[Path, ...]:
         seen_items.add(item)
         seen_paths.add(resolved)
         paths.append(resolved)
-    expected_rows = {
-        *(("training", index) for index in range(reconciliation["training_row_count"])),
-        *(("validation", index) for index in range(reconciliation["validation_row_count"])),
-    }
-    if seen_rows != expected_rows:
-        raise ValueError("invalid inventory")
     return tuple(paths)
 
 

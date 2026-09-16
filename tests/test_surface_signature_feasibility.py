@@ -29,15 +29,20 @@ class SurfaceSignatureFeasibilityTests(unittest.TestCase):
             "scope": "pre_supported_training_and_validation_only",
             "presupported_scope_confirmed": True,
             "held_out_test_geometry_included": False,
+            "corpus": {
+                "id": "existing-presupported-v1",
+                "separate_from_canonical_dataset": True,
+            },
             "root": str(self.geometry),
             "expected_stl_count": 2,
             "development_rows": [
-                {"partition": "training", "row_index": 0,
+                {"partition": "training", "partition_row_index": 4,
                  "relative_stl_path": self.paths[0].name},
-                {"partition": "validation", "row_index": 0,
+                {"partition": "validation", "partition_row_index": 7,
                  "relative_stl_path": self.paths[1].name},
             ],
             "reconciliation": {
+                "version": feasibility.RECONCILIATION_VERSION,
                 "existing_presupported_stl_count": 1931,
                 "training_row_count": 1,
                 "validation_row_count": 1,
@@ -179,6 +184,17 @@ class SurfaceSignatureFeasibilityTests(unittest.TestCase):
             result.evidence["failure_reasons"], {"surface_signature_total_deadline": 1}
         )
 
+    def test_nonseparate_corpus_contract_blocks_before_geometry_access(self):
+        inventory = json.loads(self.inventory.read_text())
+        inventory["corpus"]["separate_from_canonical_dataset"] = False
+        self.inventory.write_text(json.dumps(inventory))
+
+        with patch.object(feasibility, "_bounded_extract") as extract:
+            result = self.run_feasibility()
+
+        self.assertEqual(result.blockers, ("invalid_development_geometry_inventory",))
+        extract.assert_not_called()
+
     def test_incomplete_reconciliation_blocks_before_geometry_access(self):
         incomplete = json.loads(self.inventory.read_text())
         incomplete["reconciliation"]["validation_row_count"] = 2
@@ -204,7 +220,7 @@ class SurfaceSignatureFeasibilityTests(unittest.TestCase):
     def test_duplicate_or_missing_partition_row_blocks_reconciliation(self):
         duplicate = json.loads(self.inventory.read_text())
         duplicate["development_rows"][1]["partition"] = "training"
-        duplicate["development_rows"][1]["row_index"] = 0
+        duplicate["development_rows"][1]["partition_row_index"] = 4
         self.inventory.write_text(json.dumps(duplicate))
 
         with patch.object(feasibility, "_bounded_extract") as extract:

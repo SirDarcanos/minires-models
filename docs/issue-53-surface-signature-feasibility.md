@@ -25,16 +25,21 @@ The run accepts one ignored private JSON manifest with this shape:
   "scope": "pre_supported_training_and_validation_only",
   "presupported_scope_confirmed": true,
   "held_out_test_geometry_included": false,
+  "corpus": {
+    "id": "existing-presupported-v1",
+    "separate_from_canonical_dataset": true
+  },
   "root": "/private/path/to/geometry",
   "expected_stl_count": 1,
   "development_rows": [
     {
       "partition": "training",
-      "row_index": 0,
+      "partition_row_index": 0,
       "relative_stl_path": "private-relative-name.stl"
     }
   ],
   "reconciliation": {
+    "version": "minires-development-geometry-reconciliation-v1",
     "existing_presupported_stl_count": 1931,
     "training_row_count": 1,
     "validation_row_count": 0,
@@ -49,9 +54,32 @@ The run accepts one ignored private JSON manifest with this shape:
 
 The manifest is private because its root, row mapping, and relative paths may disclose identity. Its scope fields and reconciliation are maintainer attestations, not facts inferred from mesh geometry. `development_rows` must contain between 1 and 2,000 mappings to unique, existing, non-symlinked `.stl` paths beneath the root. Raw-string and resolved-path aliases are rejected.
 
-Training and validation row indexes must each be unique and contiguous from zero through their declared count, making missing or duplicate development-row mappings invalid. The two row counts must sum to `expected_stl_count`. Training, validation, held-out-test, and noncanonical counts must also reconcile exactly to the frozen existing pre-supported count of 1,931. Missing or duplicate development geometry must be zero, and the one-to-one attestation must be true. The held-out count is aggregate reconciliation only; its paths are neither listed nor accessed.
+Training and validation partition-row indexes must be unique; they retain their positions in the full canonical partitions and therefore need not be contiguous within this corpus-specific subset. The two mapped row counts must sum to `expected_stl_count`. Training, validation, held-out-test, and noncanonical counts must also reconcile exactly to the frozen existing pre-supported count of 1,931. Missing or duplicate development geometry must be zero, and the one-to-one attestation must be true. The held-out count is aggregate reconciliation only; its paths are neither listed nor accessed.
 
 The corrected exploratory count of 1,931 pre-supported files is not by itself an eligible inventory. Before execution, private reconciliation must prove exhaustive one-to-one coverage of the training and validation rows while excluding held-out-test geometry. If that boundary cannot be established without accessing held-out-test geometry, the run remains blocked.
+
+Create the manifest through the fixed reconciliation seam:
+
+```bash
+python3 -m minires.preparation.surface_signature_batch_linkage \
+  --batch-result private/current-preparation/result.json \
+  --private-output private/geometry-feature-feasibility/batch-linkage-001.json
+
+python3 -m minires.preparation.surface_signature_reconciliation \
+  --training-records private/current-dataset/train.jsonl \
+  --validation-records private/current-dataset/validation.jsonl \
+  --dataset-manifest private/current-dataset/manifest.json \
+  --dataset-provenance private/current-dataset/provenance.json \
+  --batch-result private/current-preparation/result.json \
+  --batch-linkage private/geometry-feature-feasibility/batch-linkage-001.json \
+  --presupported-root /private/path/to/existing-presupported-corpus \
+  --output-root private/geometry-feature-feasibility/reconciliation-001 \
+  --scope-confirmed
+```
+
+The linkage exporter hashes the complete immutable batch result but selectively decodes only its top-level schema, outcome, aggregate accounting, and inventory. Prepared record payloads—including labels—are skipped rather than deserialized and are absent from the linkage artifact.
+
+The reconciliation command accepts no held-out-test record path. It validates the canonical training, validation, and provenance artifact checksums; hashes the immutable batch bytes without decoding record payloads; requires that hash to equal the exact batch fingerprint recorded by canonical assembly; and independently reselects the identity-only fields from those bytes to require exact equality with the linkage artifact before reconstructing existing-corpus record identities. Held-out path metadata is used privately only to distinguish development mappings and derive aggregate accounting. Only mapped training and validation STL paths are resolved and statted; held-out STL files are not resolved, statted, opened, or loaded. Accepted corpus entries absent from training and validation are counted in aggregate as held out and their paths are not placed in the development inventory. Rejected preparation entries remain noncanonical aggregate accounting. Both outputs are create-only.
 
 ## Dataset isolation
 
@@ -82,7 +110,7 @@ The command is:
 
 ```bash
 python3 -m minires.preparation.surface_signature_feasibility \
-  --inventory-manifest private/geometry-feature-feasibility/development-inventory.json \
+  --inventory-manifest private/geometry-feature-feasibility/reconciliation-001/development-inventory.json \
   --authorization-record private/geometry-feature-feasibility/execution-authorization.json \
   --output-root private/geometry-feature-feasibility/run-001
 ```
